@@ -74,6 +74,10 @@ simchart/
   cli.py               run / validate / compare
 scripts/
   seed_sweep.py        ゲートの誤検出率をシードを変えて実測する
+  generate_charts.py   模擬チャートを大量生成する
+  verify_charts.py     生成済みチャートを別経路で再計算して検証する
+docs/images/           README に貼る図。results/ 側のプロットの複製で、
+                       generate_charts.py で再生成できる (README 表示のため追跡する)
 tests/
   test_determinism.py          同一シード 2 回実行でビット単位同一
   test_rng_stability.py        新ストリーム追加後も既存ストリームが不変
@@ -277,6 +281,17 @@ uv run python scripts/generate_charts.py --recompute         # 集計だけ作�
 **seed を記録してあればどのチャートでも 1 秒刻みの完全な経路をビット単位で
 再生成できる**ので、日足だけ保存して 1 秒データ (1 本あたり 94 MB) は捨ててよい。
 
+![S0 chart 0 の日足ローソク足](docs/images/candlestick_chart0.png)
+
+*chart 0 (seed 42) の直近 120 日。ヒゲは 1 秒刻みの経路から取った日中の高値・安値で
+あり、始値と終値だけから作った偽物ではない。実チャートに比べてヒゲが短いのは
+日中のボラ変動がまだ無いためで、S1〜S2 で変わる。*
+
+![S0 の標本経路 12 本](docs/images/sample_paths.png)
+
+*12 本の標本。赤い点線が初期価格 100。1000 本すべてが独立で、どれも
+`seed` から完全に再生成できる。*
+
 ### 出力 (`results/<stage>/charts/`)
 
 | ファイル | 内容 | 1000 本 × 500 日での大きさ |
@@ -301,6 +316,13 @@ S0 には注文流が無い (L1 は定数強度のスタブ、L3 は恒等写像
 
 個々のチャートが「それらしく」見えても、集団として幾何ブラウン運動になっていなければ
 意味がない。`ensemble_metrics.json` に全部入っている。
+
+![1000 本の分位帯と理論 GBM 分位点](docs/images/fan_chart.png)
+
+*青が 1000 本の経験分位帯 (5-95% と 25-75%)、赤が理論 GBM の分位点。日 500 での
+5% 点は経験 60.73 に対し理論 60.47 (比 1.004)。**この図は目視で判断しないこと** —
+帯の端が理論線から離れて見えても、実際には一致していることがある (実際に一度
+読み違えた)。数値は下の表と `ensemble_metrics.json` を見る。*
 
 | 検査 | 実測 | 理論 |
 |---|---|---|
