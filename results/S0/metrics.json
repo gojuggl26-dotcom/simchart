@@ -1,7 +1,7 @@
 {
   "stage": "S0",
-  "created_at": "2026-08-18T10:06:55+00:00",
-  "git_commit": "566e85521956f4ee44ab3d4c49f2bf729504ca6a",
+  "created_at": "2026-08-18T10:19:12+00:00",
+  "git_commit": "afd558f2955ef65db232702c44cf5ea75af4bc5b",
   "git_branch": "master",
   "git_dirty": true,
   "config": {
@@ -3888,7 +3888,7 @@
     "runtime": {
       "pipeline": {
         "completed": true,
-        "runtime_sec": 0.44480639999892446,
+        "runtime_sec": 0.36422049999964656,
         "driver": "grid",
         "layers": {
           "l0": "l0.constant",
@@ -3954,12 +3954,12 @@
         "all_callable": true,
         "n_errors": 0,
         "errors": [],
-        "runtime_sec": 3.66542599999957
+        "runtime_sec": 3.6173568999984127
       },
       "artifacts": {
         "metrics_json_ok": true,
         "path": "E:\\模擬チャート生成\\results\\S0\\metrics.json",
-        "size_bytes": 115812,
+        "size_bytes": 115813,
         "missing_top_level_keys": [],
         "missing_metric_groups": [],
         "n_gates": 16
@@ -4134,5 +4134,5 @@
     "failed_warning": []
   },
   "all_critical_passed": true,
-  "runtime_sec": 5.440187299998797
+  "runtime_sec": 5.167430900000909
 }
