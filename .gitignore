@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+*.env
+.env
+
+# プロットは再生成できる binary なので追跡しない。
+# metrics.json は回帰テストの基準そのものなので **追跡する**。
+results/**/plots/

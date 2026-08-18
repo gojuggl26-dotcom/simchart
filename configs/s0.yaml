@@ -1,0 +1,73 @@
+# S0: 骨格層。価格過程は幾何ブラウン運動のみ。
+#
+# 全段階のフラグをここに書いてある。未実装のものに true を渡すと、どの段階で
+# 実装されるかを書いた NotImplementedError で停止する (暗黙の no-op にはしない)。
+
+# --- 実行 ---
+seed: 42
+n_days: 500
+steps_per_day: 23400        # 1 秒刻み x 6.5 時間
+stage: S0
+
+# --- L0 カレンダー ---
+enable_seasonality: false   # S4: 日内 U 字
+enable_overnight: false     # S4: オーバーナイト・ギャップ
+
+# --- L2 情報価格 ---
+sigma_bar: 0.20             # 年率ボラ
+mu_drift: 0.0
+p0: 100.0                   # 初期価格水準 (リターン統計には影響しない)
+enable_msm: false           # S1: マルコフ・スイッチング・マルチフラクタル
+enable_slow_ou: false       # S1: 緩慢 OU
+enable_rough: false         # S2: ラフ・ボラ (H ~ 0.1)
+enable_jump: false          # S3: Hawkes ジャンプ
+enable_leverage: false      # S3: レバレッジ効果
+enable_chaos_vol: false     # S5: カオス成分 chi_2
+
+# --- L1 潜在活動度 ---
+enable_hawkes: false        # S7: 多変量 Hawkes
+enable_chaos_lambda: false  # S12: chi_1
+enable_chaos_branching: false  # S12: chi_3
+
+# --- L3 板 ---
+enable_book: false             # S6
+enable_metaorder: false        # S8
+enable_queue_reactive: false   # S9
+enable_uncertainty_zones: false  # S9
+kappa: 0.0                     # S10: p* との結合強度
+
+# --- フィードバック ---
+enable_feedback: false      # S11
+feedback_gain: 0.0
+
+# --- 多資産 ---
+n_assets: 1                 # S13
+
+# --- 検証スイートの測定器設定 (モデル設定ではない) ---
+# 段階をまたいで同じ設定で測ることで metrics.json が回帰テストとして機能する。
+# 閾値を緩める代わりに、推定量の精度が出る測り方を選んである (理由は各 docstring)。
+validation:
+  primary_bar_sec: 60       # ゲート判定に使うリターンの粒度
+  scales_sec: [1, 2, 5, 10, 30, 60, 120, 300, 600, 900, 1800, 23400]
+  min_obs_for_gate: 10000   # これ未満の標本数のスケールは記録のみ
+
+  acf_max_lag: 100
+  acf_abs_max_lag: 1000
+  ljung_box_lags: [1, 5, 10, 20, 50]
+  ljung_box_primary_lag: 20   # 多重比較を避けて単一ラグで判定する
+
+  gph_bandwidth_exponent: 0.65   # m = N^0.65。N^0.5 では |d| < 0.05 が 1.6 s.e. しかない
+  gph_bandwidth_profile: [0.5, 0.6, 0.65, 0.7, 0.8]
+  lw_bandwidth_exponent: 0.65
+
+  hill_k_fracs: [0.005, 0.01, 0.02, 0.05, 0.10]
+  hill_primary_k_frac: 0.05
+  qq_n_points: 201
+
+  vr_qs: [2, 4, 8, 16, 32, 64]     # 基準バー (60 秒) の倍数
+  zeta_qs: [0.5, 1.0, 1.5, 2.0, 2.5, 3.0]
+  adf_maxlag: 10
+
+  micro_max_lag: 200
+  micro_fit_lag_range: [5, 200]
+  rng_probe_draws: 1000

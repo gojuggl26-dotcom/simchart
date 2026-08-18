@@ -1,0 +1,39 @@
+[project]
+name = "simchart"
+version = "0.1.0"
+description = "Staged market microstructure simulator (S0 skeleton)"
+readme = "README.md"
+authors = [
+    { name = "ii562", email = "gojuggl26@gmail.com" }
+]
+# 指示書は 3.11+ だが、numpy 2.5 系が 3.12 以上を要求するため下限を上げてある。
+requires-python = ">=3.12"
+dependencies = [
+    "matplotlib>=3.11.1",
+    "numpy>=2.5.2",
+    "pandas>=3.0.5",
+    "pyyaml>=6.0.3",
+    "scipy>=1.18.0",
+    "statsmodels>=0.14.6",
+]
+
+[project.scripts]
+simchart = "simchart.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.12.3,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+    "ignore::DeprecationWarning:statsmodels",
+]
