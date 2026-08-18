@@ -1,0 +1,186 @@
+{
+  "stage": "S0",
+  "git_commit": "842b6104cde9d696d0b6e39ff90b12056654d5f1",
+  "git_dirty": true,
+  "config": {
+    "seed": 42,
+    "n_days": 500,
+    "steps_per_day": 23400,
+    "stage": "S0",
+    "enable_seasonality": false,
+    "enable_overnight": false,
+    "sigma_bar": 0.2,
+    "mu_drift": 0.0,
+    "p0": 100.0,
+    "enable_msm": false,
+    "enable_slow_ou": false,
+    "enable_rough": false,
+    "enable_jump": false,
+    "enable_leverage": false,
+    "enable_chaos_vol": false,
+    "enable_hawkes": false,
+    "enable_chaos_lambda": false,
+    "enable_chaos_branching": false,
+    "enable_book": false,
+    "enable_metaorder": false,
+    "enable_queue_reactive": false,
+    "enable_uncertainty_zones": false,
+    "kappa": 0.0,
+    "enable_feedback": false,
+    "feedback_gain": 0.0,
+    "n_assets": 1,
+    "validation": {
+      "primary_bar_sec": 60,
+      "scales_sec": [
+        1,
+        2,
+        5,
+        10,
+        30,
+        60,
+        120,
+        300,
+        600,
+        900,
+        1800,
+        23400
+      ],
+      "min_obs_for_gate": 10000,
+      "acf_max_lag": 100,
+      "acf_abs_max_lag": 1000,
+      "ljung_box_lags": [
+        1,
+        5,
+        10,
+        20,
+        50
+      ],
+      "ljung_box_primary_lag": 20,
+      "gph_bandwidth_exponent": 0.65,
+      "gph_bandwidth_profile": [
+        0.5,
+        0.6,
+        0.65,
+        0.7,
+        0.8
+      ],
+      "lw_bandwidth_exponent": 0.65,
+      "hill_k_fracs": [
+        0.005,
+        0.01,
+        0.02,
+        0.05,
+        0.1
+      ],
+      "hill_primary_k_frac": 0.05,
+      "qq_n_points": 201,
+      "vr_qs": [
+        2,
+        4,
+        8,
+        16,
+        32,
+        64
+      ],
+      "zeta_qs": [
+        0.5,
+        1.0,
+        1.5,
+        2.0,
+        2.5,
+        3.0
+      ],
+      "adf_maxlag": 10,
+      "micro_max_lag": 200,
+      "micro_fit_lag_range": [
+        5,
+        200
+      ],
+      "rng_probe_draws": 1000
+    }
+  },
+  "config_hash": "f8539aafe0a2867daed5c385f416209e68bbe17bd97747cb6376d3c4303c6025",
+  "generation": {
+    "n_charts": 1000,
+    "n_days": 500,
+    "steps_per_day": 23400,
+    "step_seconds": 1.0,
+    "base_seed": 42,
+    "seeds": [
+      42,
+      1041
+    ],
+    "intraday_samples": 10,
+    "intraday_bar_sec": 60.0,
+    "runtime_sec": 451.8336528
+  },
+  "files": {
+    "daily_ohlc": "daily_ohlc.parquet",
+    "charts_index": "charts_index.parquet",
+    "intraday_ohlc_sample": "intraday_ohlc_sample.parquet"
+  },
+  "ensemble": {
+    "ohlc": {
+      "mean_log_range": 0.020016709821862672,
+      "expected_log_range_continuous": 0.020104801169736914,
+      "expected_log_range_discrete": 0.020008834091539855,
+      "range_ratio_vs_discrete": 1.0003936126556292,
+      "mean_abs_body": 0.010065289192699452,
+      "expected_abs_body": 0.010052400584868457,
+      "body_ratio": 1.0012821422825504,
+      "steps_per_day": 23400
+    },
+    "realized_vol": {
+      "mean": 0.20000080650269791,
+      "std": 4.081286715411935e-05,
+      "min": 0.19988340035813368,
+      "max": 0.20015355987210356,
+      "target": 0.2,
+      "max_abs_dev_from_target": 0.0001535598721035536
+    },
+    "pooled_daily_returns": {
+      "n": 500000,
+      "mean": -9.687838513696453e-05,
+      "expected_mean": -7.936507936507938e-05,
+      "std": 0.012607367432182739,
+      "expected_std": 0.01259881576697424,
+      "skewness": -0.00034787458213772206,
+      "kurtosis": 2.9952633738427368,
+      "kurtosis_se": 0.0069282032302755096,
+      "acf_lag1": 0.0018632382120973908,
+      "acf_lag1_z": 1.3175083747399639
+    },
+    "terminal": {
+      "horizon_years": 1.9841269841269842,
+      "log_return_mean": -0.04843919256848227,
+      "log_return_mean_expected": -0.039682539682539694,
+      "log_return_mean_se": 0.008718141193506395,
+      "log_return_std": 0.2756918313441897,
+      "log_return_std_expected": 0.2817180849095055,
+      "gross_return_mean": 0.9896679209203928,
+      "gross_return_mean_expected": 1.0,
+      "gross_return_mean_se": 0.00882603986332647,
+      "normality_pvalue": 0.9435336764625905
+    },
+    "independence": {
+      "n_pairs": 499500,
+      "corr_se_under_independence": 0.04476614810358452,
+      "max_abs_corr": 0.2345113797663,
+      "max_abs_z": 5.238587408138476,
+      "expected_max_abs_z": 4.75322211546156,
+      "max_abs_z_pvalue": 0.07764423615643308,
+      "mean_corr": -2.6617319411242037e-05,
+      "z_mean": -0.0005945858765791535,
+      "z_std": 1.000770414579815,
+      "frac_abs_z_over_1_96": 0.05007007007007007,
+      "expected_frac_abs_z_over_1_96": 0.05
+    },
+    "drawdown": {
+      "median": 0.2808621482392843,
+      "p05": 0.1542789607311542,
+      "p95": 0.47534891500173293,
+      "max": 0.6434047698054819
+    },
+    "runtime_sec": 451.8336528
+  }
+}

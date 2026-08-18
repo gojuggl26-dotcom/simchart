@@ -11,3 +11,8 @@ __pycache__/
 # プロットは再生成できる binary なので追跡しない。
 # metrics.json は回帰テストの基準そのものなので **追跡する**。
 results/**/plots/
+
+# 生成したチャート本体 (数十 MB〜数 GB)。seed から完全に再生成できるので追跡しない。
+# 何をどう生成したかは charts/ensemble_metrics.json に残る (これは追跡する)。
+results/**/charts/*.parquet
+results/**/charts/*.csv
