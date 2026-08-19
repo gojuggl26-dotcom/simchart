@@ -43,6 +43,7 @@ import math
 from typing import Any
 
 import numpy as np
+from scipy import fft as sp_fft
 from scipy import signal
 
 from ..config import TRADING_DAYS_PER_YEAR, Config
@@ -56,6 +57,9 @@ __all__ = [
     "build_price_layer",
     "solve_m0",
     "msm_theoretical_var_log_sigma",
+    "solve_eta_rough",
+    "rough_discrete_stationary_variance",
+    "davies_harte_fgn",
     "compose_log_sigma",
     "VOL_SUBSAMPLE_SECONDS",
 ]
@@ -91,24 +95,112 @@ def msm_theoretical_var_log_sigma(k: int, m0: float) -> float:
     return k * math.log(m0 / (2.0 - m0)) ** 2 / 16.0
 
 
+def solve_eta_rough(hurst: float, theta_r: float, target_var: float) -> float:
+    """fOU の拡散係数 eta_r を、log sigma への分散配分から逆算する。
+
+    定常分散 (Cheridito-Kawaguchi-Maejima):
+
+        Var(Y) = eta_r^2 * Gamma(2H + 1) / (2 * theta_r^{2H})
+
+    を eta_r について解く。時間の単位は日 (theta_r は [1/日])。
+    """
+    if not (0.0 < hurst < 1.0):
+        raise ValueError("hurst は (0, 1) の範囲である必要があります")
+    if theta_r <= 0 or target_var <= 0:
+        raise ValueError("theta_r と target_var は正である必要があります")
+    return (2.0 * target_var * theta_r ** (2.0 * hurst) / math.gamma(2.0 * hurst + 1.0)) ** 0.5
+
+
+def rough_discrete_stationary_variance(
+    hurst: float, theta_per_day: float, dt_days: float, eta: float
+) -> float:
+    """離散 fOU (AR(1) フィルタ x fGn) の定常分散を厳密に数値計算する。
+
+    Y_k = a Y_{k-1} + eta * g_k, a = e^{-theta dt}, g は per-step 分散 dt^{2H} の
+    fGn。定常分散は
+
+        Var(Y) = eta^2 dt^{2H} / (1 - a^2) * [1 + 2 sum_{h>=1} a^h rho(h)]
+
+    (rho は単位 fGn の自己相関)。連続式 (:func:`solve_eta_rough` の分母) とは
+    離散化の分だけずれるので、**凸性補正とアンサンブル断面はこちらを使う** —
+    補正が実際に生成される過程の分散と一致していないと E[sigma^2] = sigma_bar^2
+    が崩れるため。H < 1/2 では rho の総和が -1/2 に収束する (スペクトルが原点で
+    消える) ため、和の打ち切りは a^h の減衰で決める。
+    """
+    a = math.exp(-theta_per_day * dt_days)
+    n_terms = int(min(60.0 / (theta_per_day * dt_days), 5_000_000)) + 1
+    h = np.arange(1, n_terms, dtype=np.float64)
+    two_h = 2.0 * hurst
+    rho = 0.5 * ((h + 1.0) ** two_h - 2.0 * h**two_h + (h - 1.0) ** two_h)
+    s = 1.0 + 2.0 * float(np.sum(a**h * rho))
+    return eta**2 * dt_days**two_h * s / (1.0 - a * a)
+
+
+def davies_harte_fgn(n: int, hurst: float, rng: np.random.Generator) -> np.ndarray:
+    """単位分散の fGn (fractional Gaussian noise) を n 点、厳密に生成する。
+
+    Davies-Harte (circulant embedding)。O(N log N) で、共分散は近似ではなく厳密
+    (テストが標本自己共分散と理論値の一致を確認する)。H < 1/2 では埋め込みの
+    非負定値性が保証される。Cholesky (O(N^2)) は使わない。
+
+    乱数消費: ``rng.standard_normal(2m)`` を**一度だけ** (m は n 以上の FFT 高速長)。
+    m は n にのみ依存するので、同じ n なら消費列は同一。
+    """
+    if n < 2:
+        raise ValueError("n は 2 以上である必要があります")
+    m = int(sp_fft.next_fast_len(n))
+    k = np.arange(m + 1, dtype=np.float64)
+    two_h = 2.0 * hurst
+    gamma = 0.5 * (
+        (k + 1.0) ** two_h - 2.0 * k**two_h + np.abs(k - 1.0) ** two_h
+    )
+    row = np.concatenate([gamma, gamma[m - 1 : 0 : -1]])
+    eig = np.fft.fft(row).real
+    eig_min = float(eig.min())
+    if eig_min < -1e-8 * float(eig.max()):
+        raise ValueError(
+            f"circulant embedding が非負定値ではありません (最小固有値 {eig_min:.3e})。"
+            f" H={hurst} — H < 1/2 では起きないはずなので実装を疑うこと。"
+        )
+    np.clip(eig, 0.0, None, out=eig)
+
+    z = rng.standard_normal(2 * m)
+    v = np.empty(2 * m, dtype=np.complex128)
+    v[0] = math.sqrt(eig[0]) * z[0]
+    v[m] = math.sqrt(eig[m]) * z[1]
+    half = np.sqrt(eig[1:m] / 2.0)
+    a_part = z[2 : m + 1]
+    b_part = z[m + 1 : 2 * m]
+    v[1:m] = half * (a_part + 1j * b_part)
+    v[m + 1 :] = np.conj(v[1:m][::-1])
+
+    x = np.fft.fft(v) / math.sqrt(2.0 * m)
+    return np.ascontiguousarray(x.real[:n])
+
+
 def compose_log_sigma(
     log_sigma_bar: float,
     half_log_msm: np.ndarray | float,
     x_slow: np.ndarray | float,
     var_slow: float,
+    y_rough: np.ndarray | float = 0.0,
+    var_rough: float = 0.0,
     inplace: bool = False,
 ) -> np.ndarray | float:
     """log sigma の合成式。**生成とアンサンブル検証の両方がこの 1 つを使う。**
 
-    式を 2 か所に書くと、片方だけ直して乖離する事故が起きる。凸性補正 -Var(X) は
-    OU 側のためのもの: E[e^{2X}] = e^{2Var(X)} != 1 なので、引かないと実効ボラが
-    e^{Var(X)} 倍に膨らむ。MSM 側は E[prod M_i] = 1 なので補正不要。
+    式を 2 か所に書くと、片方だけ直して乖離する事故が起きる。凸性補正
+    -Var(X) - Var(Y) はガウス成分 (OU とラフ fOU) のためのもの:
+    E[e^{2X}] = e^{2Var(X)} != 1 なので、引かないと実効ボラが e^{Var} 倍に膨らむ。
+    MSM 側は E[prod M_i] = 1 なので補正不要。**var_rough には生成される離散過程の
+    実分散** (:func:`rough_discrete_stationary_variance`) **を渡すこと** — 連続式の
+    目標値を渡すと離散化の分だけ E[sigma^2] がずれる。
 
     ``inplace=True`` のとき ``half_log_msm`` を書き換えて返す (呼び出し側が所有権を
-    渡す)。本番設定では 1 配列 936MB なので、素直に書くと中間結果だけで 2.8GB を
+    渡す)。本番設定では 1 配列 936MB なので、素直に書くと中間結果だけで数 GB を
     使ってしまうため。**両経路の結果はビット単位で一致する**: IEEE754 の加算は
     可換なので ``log_sigma_bar + a == a + log_sigma_bar`` であり、それ以外の演算
-    順序は同一だからである (tests/test_s1_vol.py が一致を固定している)。
+    順序は同一だからである (tests が一致を固定している)。
     """
     if inplace:
         if not isinstance(half_log_msm, np.ndarray):
@@ -117,8 +209,19 @@ def compose_log_sigma(
         out += log_sigma_bar
         out += x_slow
         out -= var_slow
+        if isinstance(y_rough, np.ndarray) or y_rough != 0.0:
+            out += y_rough
+        if var_rough != 0.0:
+            out -= var_rough
         return out
-    return log_sigma_bar + half_log_msm + x_slow - var_slow
+    result = log_sigma_bar + half_log_msm + x_slow - var_slow
+    # ラフ成分が無いときは加算そのものを行わない (+0.0 は -0.0 を +0.0 に変える
+    # ため、S1 経路とのビット単位一致を「加算しない」ことで保証する)。
+    if isinstance(y_rough, np.ndarray) or y_rough != 0.0:
+        result = result + y_rough
+    if var_rough != 0.0:
+        result = result - var_rough
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +247,8 @@ class GBMPriceLayer:
         self._seconds_per_day = calendar.session_seconds()
         #: 直近の simulate() の診断。pipeline が StageResult.meta に回収する。
         self.last_diagnostics: dict[str, Any] = {}
+        #: 直近に生成したラフ成分の離散定常分散 (凸性補正に使う)。
+        self._rough_var_eff: float = 0.0
 
     # ------------------------------------------------------------------
     # S1: MSM 成分
@@ -306,6 +411,109 @@ class GBMPriceLayer:
         return x
 
     # ------------------------------------------------------------------
+    # S2: ラフ成分 (fractional OU)
+    # ------------------------------------------------------------------
+    def _simulate_rough(self, t: np.ndarray) -> np.ndarray:
+        """定常 fOU (H ~ 0.1) を専用の物理グリッドで生成し、価格グリッドへ展開する。
+
+        なぜ fOU か (指示書 §4)
+        -----------------------
+        rough Bergomi の Volterra 過程 W^H_t は非定常 (分散が t^{2H} で増大) で、
+        5000 日のシミュレーションではそのドリフトが低周波の見かけの長期記憶として
+        GPH に混入する。定常な fOU なら長スケールでは指数減衰し、MSM/OU の帯域を
+        汚染しない。
+
+        なぜ専用グリッドか (指示書 §6)
+        ------------------------------
+        価格グリッド (117M 点) で Davies-Harte を回すと FFT が数 GB になる。
+        ラフ成分は ``rough_grid_seconds`` (既定 60 秒) の**物理グリッド**で生成し、
+        価格グリッドへは区分定数で展開する。「ボラの粗さは 1 分まで解像され、
+        それ以下では一定」というモデル化であり、**steps_per_day と独立**なので
+        同一シードならラフ経路は解像度に依らずビット単位で一致する
+        (時間スケール不変性が構造的に成立する)。
+
+        構成
+        ----
+        1. fGn を Davies-Harte で厳密生成 (per-step sd = dt^H)
+        2. AR(1) 指数フィルタ Y_k = a Y_{k-1} + eta g_k (a = e^{-theta dt})
+        3. バーンイン 40 半減期 (e^{-40 ln 2} ~ 1e-12) を捨てて定常化。
+           Y_0 を定常分布から独立に引かないのは、fOU の現在値は駆動 fGn の過去と
+           相関しており、独立初期化では結合分布が壊れるため
+
+        乱数消費は ``l2.vol_rough`` から standard_normal(2m) を一度だけ。
+        """
+        cfg = self._config
+        rng = self._rng.get("l2.vol_rough")
+        hurst = cfg.rough_hurst
+        theta = math.log(2.0) / cfg.rough_half_life_days  # [1/日]
+        dt_days = cfg.rough_grid_seconds / self._seconds_per_day
+        eta = solve_eta_rough(hurst, theta, cfg.vol_var_target_rough)
+        var_eff = rough_discrete_stationary_variance(hurst, theta, dt_days, eta)
+
+        total_seconds = float(t[-1] - t[0])
+        n_steps_rough = int(round(total_seconds / cfg.rough_grid_seconds))
+        burnin = int(math.ceil(40.0 * cfg.rough_half_life_days / dt_days))
+
+        fgn = davies_harte_fgn(burnin + n_steps_rough, hurst, rng)
+        fgn *= dt_days**hurst  # 物理時間スケール (per-step sd = dt^H)
+        a = math.exp(-theta * dt_days)
+        filtered, _ = signal.lfilter([eta], [1.0, -a], fgn, zi=np.zeros(1))
+        del fgn
+        # グリッド点 p (p = 0..K) は Y_{burnin+p}。filtered[j] = Y_{j+1} (Y_0 = 0)。
+        y = np.empty(n_steps_rough + 1, dtype=np.float64)
+        y[:] = filtered[burnin - 1 : burnin + n_steps_rough]
+        del filtered
+
+        self.last_diagnostics["rough"] = {
+            "hurst": hurst,
+            "half_life_days": cfg.rough_half_life_days,
+            "theta_per_day": theta,
+            "eta": eta,
+            "grid_seconds": cfg.rough_grid_seconds,
+            "dt_days": dt_days,
+            "target_var": cfg.vol_var_target_rough,
+            "var_discrete": var_eff,
+            "sample_var": float(y.var()),
+            "sample_mean": float(y.mean()),
+            "n_rough_points": int(y.shape[0]),
+            "burnin_steps": burnin,
+            "ar_coeff": a,
+            # 解像度を変えても一致することが「物理グリッド定義」の直接証拠
+            # (scale_invariance が照合する)。
+            "y_digest": hashlib.sha256(np.ascontiguousarray(y).tobytes()).hexdigest(),
+        }
+        self._rough_var_eff = var_eff
+        return self._expand_rough_to_grid(y, t)
+
+    def _expand_rough_to_grid(self, y: np.ndarray, t: np.ndarray) -> np.ndarray:
+        """ラフグリッドの値を価格グリッドへ区分定数で展開する。
+
+        価格グリッド点 t_i にはラフ区間 ``floor(t_i / dt_r)`` の値を割り当てる。
+        整数比のときは repeat / スライスで済ませ (117M 点で数百 MB の添字配列を
+        作らないため)、それ以外は floor 添字で引く。
+        """
+        cfg = self._config
+        step_sec = float(t[1] - t[0])
+        n_points = int(t.shape[0])
+        ratio = cfg.rough_grid_seconds / step_sec
+        if abs(ratio - round(ratio)) < 1e-9 and round(ratio) >= 1:
+            k = int(round(ratio))  # 1 ラフ区間 = k 価格ステップ
+            expanded = np.repeat(y, k)[:n_points]
+        elif abs(1.0 / ratio - round(1.0 / ratio)) < 1e-9:
+            m = int(round(1.0 / ratio))  # 価格ステップがラフ区間の m 倍粗い
+            expanded = y[::m][:n_points].copy()
+        else:
+            idx = np.floor(t / cfg.rough_grid_seconds + 1e-9).astype(np.int64)
+            np.clip(idx, 0, y.shape[0] - 1, out=idx)
+            expanded = y[idx]
+            del idx
+        if expanded.shape[0] != n_points:
+            raise ValueError(
+                f"ラフ成分の展開点数が合いません: {expanded.shape[0]} != {n_points}"
+            )
+        return expanded
+
+    # ------------------------------------------------------------------
     # 拡張フック
     # ------------------------------------------------------------------
     def _log_vol_path(self, t: np.ndarray) -> np.ndarray:
@@ -322,18 +530,23 @@ class GBMPriceLayer:
         n = t.shape[0]
         log_sigma_bar = math.log(cfg.sigma_bar)
 
-        if not (cfg.enable_msm or cfg.enable_slow_ou):
+        if not (cfg.enable_msm or cfg.enable_slow_ou or cfg.enable_rough):
             return np.full(n, log_sigma_bar, dtype=np.float64)
 
         t_days = t / self._seconds_per_day
         half_log_msm: np.ndarray | float = 0.0
         x_slow: np.ndarray | float = 0.0
+        y_rough: np.ndarray | float = 0.0
         var_slow = 0.0
+        var_rough = 0.0
         if cfg.enable_msm:
             half_log_msm = self._simulate_msm(t_days)
         if cfg.enable_slow_ou:
             x_slow = self._simulate_slow_ou(t_days)
             var_slow = cfg.vol_var_target_slow
+        if cfg.enable_rough:
+            y_rough = self._simulate_rough(t)
+            var_rough = self._rough_var_eff
 
         # 診断用サブサンプル (分単位)。成分内訳を全ステップ保持すると本番設定で
         # 数 GB になるため間引く。検証スイートの path 診断がこれを使う。
@@ -354,23 +567,31 @@ class GBMPriceLayer:
             "x_slow": (
                 x_slow[::stride].copy() if isinstance(x_slow, np.ndarray) else np.zeros(n_sub)
             ),
+            "y_rough": (
+                y_rough[::stride].copy() if isinstance(y_rough, np.ndarray) else np.zeros(n_sub)
+            ),
         }
 
         # MSM の配列は自分で確保したものなので、そのまま合成先として使い回す。
         log_vol = np.asarray(
             compose_log_sigma(
                 log_sigma_bar, half_log_msm, x_slow, var_slow,
+                y_rough, var_rough,
                 inplace=isinstance(half_log_msm, np.ndarray),
             ),
             dtype=np.float64,
         )
+        # 展開済みラフ配列 (本番で 936MB) はもう不要。
+        if isinstance(y_rough, np.ndarray):
+            del y_rough
         subsample["log_vol"] = log_vol[::stride].copy()
         self.last_diagnostics["vol_subsample"] = subsample
         self.last_diagnostics["composition"] = {
             "log_sigma_bar": log_sigma_bar,
-            "convexity_correction": -var_slow,
+            "convexity_correction": -var_slow - var_rough,
             "enable_msm": cfg.enable_msm,
             "enable_slow_ou": cfg.enable_slow_ou,
+            "enable_rough": cfg.enable_rough,
         }
         return log_vol
 
@@ -474,8 +695,6 @@ def build_price_layer(
     calendar: ConstantCalendar,
     activity: ConstantActivity,
 ) -> GBMPriceLayer:
-    if config.enable_rough:
-        raise NotImplementedError("ラフ・ボラティリティは S2 で simchart/layers/l2_price.py に実装します。")
     if config.enable_jump or config.enable_leverage:
         raise NotImplementedError("ジャンプ / レバレッジは S3 で simchart/layers/l2_price.py に実装します。")
     if config.enable_chaos_vol:

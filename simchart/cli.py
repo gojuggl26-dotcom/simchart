@@ -20,6 +20,8 @@ from typing import Any, Mapping, Sequence
 
 from .config import Config
 from .pipeline import (
+    BASELINE_STAGE,
+    baseline_invariance_check,
     determinism_check,
     rng_diffusion_check,
     rng_stability_check,
@@ -129,6 +131,11 @@ def _print_key_metrics(metrics: Mapping[str, Any]) -> None:
         ("予算シェア 断面 (分母 0.25)", get("vol.ensemble.shares_of_budget")),
         ("予算使用率 断面", get("vol.ensemble.budget_used_fraction")),
         ("E[σ²]/σ̄² 断面", get("vol.ensemble.e_sigma2_ratio")),
+        ("粗さ H (潜在, 5分〜4時間)", get("rough.h_latent.h")),
+        ("粗さ ζ_q 線形性 R²", get("rough.h_latent.linearity_r2")),
+        ("粗さ H (RV 側, 記録のみ)", get("rough.h_rv.h")),
+        ("ボラ増分 ACF(1) (60秒)", get("rough.increment_acf.lag1")),
+        ("ラフ予算シェア (経路)", get("rough.share_of_budget_path.value")),
     ]
     width = max(len(label) for label, _ in rows)
     print()
@@ -190,6 +197,22 @@ def cmd_run(args: argparse.Namespace) -> int:
     validation_started = time.perf_counter()
     metrics = run_all(result, config)
     errors = collect_errors(metrics)
+
+    baseline_inv = None
+    if stage in BASELINE_STAGE:
+        base_stage = BASELINE_STAGE[stage]
+        print(f"[4b/6] {base_stage} からの不変性照合 (results/{base_stage}/metrics.json)")
+        baseline_inv = baseline_invariance_check(
+            config, metrics, base_stage, results_root=args.results_dir
+        )
+        if baseline_inv.get("error"):
+            print(f"      基準が読めません: {baseline_inv['error']}")
+        else:
+            print(f"      不変性: {baseline_inv['passed']}")
+            for name, chk in baseline_inv["checks"].items():
+                if not chk.get("passed"):
+                    print(f"        不一致: {name}  {chk}")
+
     metrics["runtime"] = {
         "pipeline": {
             "completed": True,
@@ -205,6 +228,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         "rng_stability": rng_stability,
         "rng_diffusion": rng_diffusion,
         **({"scale_invariance": scale_invariance} if scale_invariance is not None else {}),
+        **({"baseline_invariance": baseline_inv} if baseline_inv is not None else {}),
         "validation": {
             "all_callable": not errors,
             "n_errors": len(errors),

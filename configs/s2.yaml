@@ -1,0 +1,131 @@
+# S2: ラフボラティリティ成分 (定常 fOU, H ~ 0.1) を S1 に加算。
+#
+# S2 の合否は「何が増えたか」ではなく「何が変わらなかったか」で決まる。
+# 追加 (短スケール): ボラ増分の粗さ H ~ 0.1、増分の反持続性。
+# 不変 (長スケール): |r| の長期記憶 (gph_d ±0.03)、べき則 ACF — 動いたら
+# スケール分離の失敗 (診断は S2 指示書 §10)。
+#
+# ★MSM と緩慢 OU のパラメータは S1 から一切変更しないこと。変更すると
+# compare S1 S2 の判定が無意味になる。
+
+# --- 実行 ---
+seed: 42
+n_days: 5000
+steps_per_day: 23400
+stage: S2
+
+# --- L0 カレンダー ---
+enable_seasonality: false   # S4
+enable_overnight: false     # S4
+
+# --- L2 情報価格 ---
+sigma_bar: 0.20
+mu_drift: 0.0
+p0: 100.0
+enable_msm: true            # S1
+enable_slow_ou: true        # S1
+enable_rough: true          # S2 ★
+enable_jump: false          # S3
+enable_leverage: false      # S3
+enable_chaos_vol: false     # S5
+
+# --- L2 / S1: 確率ボラ ---
+# m0 は書かない (分散配分から solve_m0 で逆算される。d も創発量で指定不可)。
+# 分散予算: 最終目標 Var(log sigma) = 0.25 のうち S1 は 0.175 (70%) まで。
+# 残り 0.075 は S2 ラフ (0.025) と S5 chi_2 (0.050) の枠。使い切らない。
+msm_k: 10
+msm_b: 2.0
+msm_gamma1_per_day: 0.002   # 1/500 [1/日] — 物理時間定義。時定数レンジ 1〜500 日
+vol_var_target_msm: 0.125   # 50% (→ m0 ≈ 1.220)
+vol_var_target_slow: 0.050  # 20%
+ou_half_life_days: 30.0
+
+# --- L2 / S2: ラフ成分 (fOU) ---
+# eta_r は書かない (分散配分から solve_eta_rough で逆算)。非定常な fBm/Volterra は
+# 使わない — ドリフトが低周波の見かけの長期記憶として GPH に混入する。
+# 専用の物理グリッド (60 秒) で生成するため steps_per_day と独立で、
+# 時間スケール不変性が構造的に保たれる。
+# H 入力 0.08 の理由: H_latent は合成後の log sigma で測るため MSM の短スケール
+# 混入で +0.05〜0.06 系統的に高く出る (実測)。0.10 入力だと測定がゲート上限
+# (0.15) に乗る。0.08 入力で測定 ~0.13。gph_d はこの選択に依存しない (実測 ±0.01)。
+rough_hurst: 0.08
+rough_half_life_days: 0.75  # 1 日以下厳守 (MSM 最速成分の帯域に食い込ませない)
+vol_var_target_rough: 0.025 # 10% — S2 の到達点は 0.200 (予算の 80%)
+rough_grid_seconds: 60.0
+
+# --- L1 潜在活動度 ---
+enable_hawkes: false        # S7
+enable_chaos_lambda: false  # S12
+enable_chaos_branching: false  # S12
+
+# --- L3 板 ---
+enable_book: false             # S6
+enable_metaorder: false        # S8
+enable_queue_reactive: false   # S9
+enable_uncertainty_zones: false  # S9
+kappa: 0.0                     # S10
+
+# --- フィードバック ---
+enable_feedback: false      # S11
+feedback_gain: 0.0
+
+# --- 多資産 ---
+n_assets: 1                 # S13
+
+# --- 検証スイートの測定器設定 ---
+# ★既存キーは s0.yaml と同一値のまま (段階間比較の前提)。S1 で追加された
+# 測定器 (daily / ensemble / scale invariance) の設定のみ新規。
+validation:
+  primary_bar_sec: 60
+  scales_sec: [1, 2, 5, 10, 30, 60, 120, 300, 600, 900, 1800, 23400]
+  min_obs_for_gate: 10000
+
+  acf_max_lag: 100
+  acf_abs_max_lag: 1000
+  ljung_box_lags: [1, 5, 10, 20, 50]
+  ljung_box_primary_lag: 20
+
+  gph_bandwidth_exponent: 0.65
+  gph_bandwidth_profile: [0.5, 0.6, 0.65, 0.7, 0.8]
+  lw_bandwidth_exponent: 0.65
+
+  hill_k_fracs: [0.005, 0.01, 0.02, 0.05, 0.10]
+  hill_primary_k_frac: 0.05
+  qq_n_points: 201
+
+  vr_qs: [2, 4, 8, 16, 32, 64]
+  zeta_qs: [0.5, 1.0, 1.5, 2.0, 2.5, 3.0]
+  adf_maxlag: 10
+
+  micro_max_lag: 200
+  micro_fit_lag_range: [5, 200]
+  rng_probe_draws: 1000
+
+  # --- S1 追加: 日次系列の測定器 ---
+  daily_acf_max_lag: 150
+  daily_powerlaw_lag_range: [1, 100]
+  daily_gph_bandwidth_exponent: 0.65
+  daily_scales_days: [1, 2, 5, 10, 20, 50]
+  daily_min_obs_for_gate: 250
+  daily_zeta_qs: [0.5, 1.0, 1.5, 2.0, 2.5, 3.0]
+
+  # --- S1 追加: アンサンブル断面と時間スケール不変性 ---
+  # (si_tol は S1 実測のペア差分布に基づく現行既定値)
+  ensemble_n_paths: 200000
+  scale_invariance_steps_per_day: 390
+  si_tol_kurtosis_rel: 0.25
+  si_tol_gph_d_abs: 0.10
+  si_tol_acf1_abs: 0.07
+  si_tol_var_logvol_abs: 0.025
+
+  # --- S2 追加: 粗さ H の測定器と S1 不変性トレランス ---
+  # ★H の測定窓 (5 分〜4 時間) と GPH の測定窓 (1〜100 日) を重ねない (指示書 §7)
+  rough_h_scales_seconds: [300, 600, 1200, 1800, 3600, 7200, 14400]
+  rough_h_qs: [0.5, 1.0, 1.5, 2.0, 3.0]
+  rv_window_seconds: 1800
+  vol_incr_acf_max_lag: 60
+  inv_tol_gph_d_abs: 0.03       # ★最重要 (指示書 §9)
+  inv_tol_powerlaw_gamma_rel: 0.10
+  inv_tol_acf_profile_mean_abs: 0.02
+  inv_tol_kurtosis_daily_increase: 0.5
+  inv_tol_zeta_c2_abs: 0.005

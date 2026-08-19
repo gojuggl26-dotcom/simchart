@@ -17,7 +17,10 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .base import get_path, jsonable
 
-__all__ = ["Gate", "GateResult", "S0_GATES", "S1_GATES", "STAGE_GATES", "evaluate", "summarize"]
+__all__ = [
+    "Gate", "GateResult", "S0_GATES", "S1_GATES", "S2_GATES", "STAGE_GATES",
+    "evaluate", "summarize",
+]
 
 #: 大きすぎて metrics.json のゲート欄に載せたくないキー。
 _BULKY_KEYS = frozenset(
@@ -477,8 +480,132 @@ _S1_INFRA_GATES: tuple[Gate, ...] = tuple(
 
 S1_GATES: tuple[Gate, ...] = _S1_INFRA_GATES + _S1_INVARIANT_GATES + _S1_NEW_GATES
 
-#: 段階ごとのゲート。S2 以降を実装するときはここに追加する。
-STAGE_GATES: dict[str, tuple[Gate, ...]] = {"S0": S0_GATES, "S1": S1_GATES}
+
+# ---------------------------------------------------------------------------
+# S2 のゲート
+# ---------------------------------------------------------------------------
+#: S1 のゲートのうち S2 でそのまま維持するもの (var_total だけ範囲が変わる)。
+_S2_INHERITED_GATES: tuple[Gate, ...] = tuple(
+    g for g in S1_GATES if g.name != "var_total"
+)
+
+_S2_NEW_GATES: tuple[Gate, ...] = (
+    Gate(
+        name="var_total",
+        metric_path="vol.ensemble.var_log_sigma",
+        check=_between(0.185, 0.215),
+        threshold="Var(log sigma) ∈ [0.185, 0.215] (アンサンブル断面)",
+        description="S2 の到達点は最終予算 0.25 の 80% (S1 の 0.175 + ラフ 0.025)。",
+    ),
+    Gate(
+        name="h_latent",
+        metric_path="rough.h_latent.h",
+        check=_between(0.08, 0.15),
+        threshold="潜在 log sigma の粗さ指数 H ∈ [0.08, 0.15] (5 分〜4 時間)",
+        description=(
+            "S2 の中心的検証。判定は潜在パス (真値) で行う — RV 側推定は推定誤差で"
+            "下方に偏るため記録のみ (rough.h_rv)。"
+        ),
+    ),
+    Gate(
+        name="h_linearity",
+        metric_path="rough.h_latent.linearity_r2",
+        check=_gt(0.98),
+        threshold="zeta_q^vol の q 線形回帰 R^2 > 0.98",
+        description="単一フラクタルな粗さであること (ラフ成分の帯域では q に線形)。",
+    ),
+    Gate(
+        name="vol_incr_acf_negative",
+        metric_path="rough.increment_acf.lag1",
+        check=_lt(0.0),
+        threshold="log sigma 増分の 1 ラグ ACF < 0 (60 秒グリッド)",
+        description=(
+            "反持続性の確認。H < 1/2 の fGn 駆動なら ~2^{2H-1}-1 ≈ -0.43。"
+            "持続的な過程を誤って入れるとここが正になる。"
+        ),
+    ),
+    Gate(
+        name="var_budget_rough",
+        metric_path="rough.share_of_budget_path.value",
+        check=_between(0.08, 0.12),
+        threshold="ラフ成分の実測分散シェア 8〜12% (経路実測 / 分母 0.25)",
+        description=(
+            "ラフ成分は半減期 <1 日で経路分散が良く推定できる (SD ~2.5%) ため、"
+            "MSM/OU と違い経路実測で判定する。DH + フィルタ + eta 逆算の"
+            "パイプライン全体を end-to-end に検証する。"
+        ),
+    ),
+    Gate(
+        name="stationarity_y",
+        metric_path="rough.stationarity_y.stationary",
+        check=_is_true,
+        threshold="Y が定常 (前半/後半の平均・分散一致、ADF 棄却)",
+        description=(
+            "非定常な fBm/Volterra の混入検査。分散が t^{2H} で増大していると"
+            "後半の分散が大きくなり、低周波ドリフトが GPH を汚染する (§10-1)。"
+        ),
+    ),
+    Gate(
+        name="inv_gph_d",
+        metric_path="runtime.baseline_invariance.checks.gph_d.passed",
+        check=_is_true,
+        threshold="|d(S2) - d(S1)| <= 0.03 (日次 |r|)",
+        description=(
+            "★S2 で最重要。長スケールの記憶が動いたらスケール分離の失敗であり、"
+            "ラフ成分が MSM/OU の帯域に漏れている。診断手順は指示書 §10 "
+            "(非定常 fBm → HL_r 過大 → シェア過大 → 測定窓重複 → パラメータ改変 → "
+            "チャンク接合、の順に確認)。"
+        ),
+    ),
+    Gate(
+        name="inv_absr_powerlaw_gamma",
+        metric_path="runtime.baseline_invariance.checks.absr_powerlaw_gamma.passed",
+        check=_is_true,
+        threshold="|r| ACF べき則指数が S1 から ±10% 以内 (binned R^2 も非劣化)",
+        description="長スケールのべき則減衰の形状が保たれていること (③)。",
+    ),
+    Gate(
+        name="inv_absr_acf_profile",
+        metric_path="runtime.baseline_invariance.checks.absr_acf_profile.passed",
+        check=_is_true,
+        threshold="日次 |r| ACF (ラグ 10〜100) の平均 |Δrho| <= 0.02",
+        description="長スケールの ACF プロファイルが S1 と一致していること (③)。",
+    ),
+    Gate(
+        name="inv_kurtosis_daily",
+        metric_path="runtime.baseline_invariance.checks.kurtosis_daily.passed",
+        check=_is_true,
+        threshold="日次尖度の増加が +0.5 以内",
+        description="ラフ成分の分散混合で微増するのは正しいが、過大な増加は配分過大の兆候。",
+    ),
+    Gate(
+        name="inv_zeta_c2",
+        metric_path="runtime.baseline_invariance.checks.zeta_c2.passed",
+        check=_is_true,
+        critical=False,
+        threshold="zeta 曲率 c2 が S1 から悪化していない (記録系)",
+        description="マルチフラクタル性の萌芽が保たれていること (⑱)。判定は S1 と同じく警告扱い。",
+    ),
+    Gate(
+        name="inv_rng_s1_streams",
+        metric_path="runtime.baseline_invariance.checks.rng_s1_streams.passed",
+        check=_is_true,
+        threshold="MSM の切替回数・占有率と OU の x0・経路統計が S1 と厳密一致",
+        description=(
+            "l2.vol_rough を追加しても S1 のストリーム (l2.diffusion / l2.vol_msm / "
+            "l2.vol_slow) に 1 draw も触れていないことの実測 (名前ハッシュ RNG の検証)。"
+        ),
+    ),
+)
+
+S2_GATES: tuple[Gate, ...] = _S2_INHERITED_GATES + _S2_NEW_GATES
+
+#: 段階ごとのゲート。S3 以降を実装するときはここに追加する。
+STAGE_GATES: dict[str, tuple[Gate, ...]] = {
+    "S0": S0_GATES,
+    "S1": S1_GATES,
+    "S2": S2_GATES,
+}
 
 
 def gates_for(stage: str) -> tuple[Gate, ...]:

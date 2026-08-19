@@ -253,6 +253,81 @@ def run_all(result: StageResult, config: Config | None = None) -> dict[str, Any]
     }
 
     # ------------------------------------------------------------------
+    # rough: 粗さの測定 (S2 で追加)。★H の測定窓 (5 分〜4 時間) と GPH の測定窓
+    # (1〜100 日) は重ねない — 前者はラフ成分、後者は MSM/OU が支配する帯域で、
+    # 重ねると互いに汚染してどちらの推定も信用できなくなる (S2 指示書 §7)。
+    # H は潜在 log sigma (真値) で判定し、RV 側は記録のみ (推定誤差で下方に偏る
+    # のが既知であり、実証と同じ見え方をするかの参考値)。
+    sub = result.meta.get("l2", {}).get("vol_subsample")
+    rough_meta = result.meta.get("l2", {}).get("rough")
+    if sub is not None:
+        sub_dt_sec = float(sub["step_seconds"]) * float(sub["stride"])
+        h_scales_steps = [
+            max(int(round(s / sub_dt_sec)), 1) for s in v.rough_h_scales_seconds
+        ]
+        log_vol_sub = np.asarray(sub["log_vol"])
+        y_rough_sub = np.asarray(sub.get("y_rough", np.zeros(0)))
+    else:
+        h_scales_steps = []
+        log_vol_sub = np.zeros(0)
+        y_rough_sub = np.zeros(0)
+
+    def _h_rv() -> dict:
+        if obs.step_seconds is None or v.rv_window_seconds % obs.step_seconds != 0:
+            return {"status": "not_applicable", "reason": "RV 窓が刻みの整数倍ではありません", "value": None}
+        steps_per_window = int(v.rv_window_seconds / obs.step_seconds)
+        rv = scaling.realized_variance(np.diff(obs.log_price), steps_per_window)
+        if not np.all(rv > 0):
+            return {"status": "not_applicable", "reason": "RV に 0 が含まれます", "value": None}
+        log_sigma_rv = 0.5 * np.log(rv)
+        rv_scales = [
+            max(int(round(s / v.rv_window_seconds)), 1)
+            for s in v.rough_h_scales_seconds
+            if s >= v.rv_window_seconds
+        ]
+        return scaling.roughness_exponent(log_sigma_rv, rv_scales, v.rough_h_qs)
+
+    metrics["rough"] = {
+        "generator": (
+            {"status": "ok", "value": None, **{
+                k_: v_ for k_, v_ in rough_meta.items()
+            }}
+            if rough_meta
+            else {"status": "not_applicable", "reason": "enable_rough=False", "value": None}
+        ),
+        "h_latent": safe_call(
+            scaling.roughness_exponent, log_vol_sub, h_scales_steps, v.rough_h_qs
+        ),
+        "h_pure_y": (
+            safe_call(scaling.roughness_exponent, y_rough_sub, h_scales_steps, v.rough_h_qs)
+            if rough_meta
+            else {"status": "not_applicable", "reason": "enable_rough=False", "value": None}
+        ),
+        "h_rv": safe_call(_h_rv),
+        "increment_acf": safe_call(memory.vol_increment_acf, log_vol_sub, v.vol_incr_acf_max_lag),
+        "stationarity_y": (
+            safe_call(scaling.path_stationarity, y_rough_sub)
+            if rough_meta
+            else {"status": "not_applicable", "reason": "enable_rough=False", "value": None}
+        ),
+        "share_of_budget_path": (
+            {
+                "status": "ok",
+                "value": rough_meta["sample_var"] / cfg.vol_var_budget_total,
+                "sample_var": rough_meta["sample_var"],
+                "var_discrete": rough_meta["var_discrete"],
+                "budget": cfg.vol_var_budget_total,
+                "note": (
+                    "ラフ成分は半減期が短く経路分散が良く推定できる (SD ~2.5%) ため、"
+                    "予算ゲートは経路実測で判定できる (MSM/OU は断面でしか判定できない)"
+                ),
+            }
+            if rough_meta
+            else {"status": "not_applicable", "reason": "enable_rough=False", "value": None}
+        ),
+    }
+
+    # ------------------------------------------------------------------
     trades = result.events.trades()
     signs = trades.side.astype(np.float64) if not trades.is_empty else None
     sizes = trades.size if not trades.is_empty else None

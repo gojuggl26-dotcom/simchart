@@ -33,8 +33,14 @@ import math
 
 import numpy as np
 
-from ..config import Config
-from ..layers.l2_price import compose_log_sigma, msm_theoretical_var_log_sigma, solve_m0
+from ..config import SESSION_SECONDS, Config
+from ..layers.l2_price import (
+    compose_log_sigma,
+    msm_theoretical_var_log_sigma,
+    rough_discrete_stationary_variance,
+    solve_eta_rough,
+    solve_m0,
+)
 from ..rng import RNGRegistry
 from .base import na, num, ok
 
@@ -46,9 +52,16 @@ def vol_cross_section(config: Config, n_paths: int | None = None) -> dict:
 
     乱数は ``validation.ensemble`` ストリーム (config.seed から名前ハッシュ導出)
     を使うので決定論的で、生成系のストリームには一切触れない。
+
+    S2 のラフ成分は定常ガウス (fOU) なので、断面は N(0, Var_disc) から引く。
+    Var_disc は**実際に生成される離散過程の分散**
+    (:func:`~simchart.layers.l2_price.rough_discrete_stationary_variance`) を使う —
+    連続式の目標値を使うと、凸性補正との整合検査 (e_sigma2) が離散化誤差の分だけ
+    甘くなる。乱数の消費順は (MSM, OU, rough) で固定 — 末尾に足したので、
+    S1 設定での断面はビット単位で以前と同一のまま。
     """
-    if not (config.enable_msm or config.enable_slow_ou):
-        return na("確率ボラが無効です (enable_msm / enable_slow_ou とも False)")
+    if not (config.enable_msm or config.enable_slow_ou or config.enable_rough):
+        return na("確率ボラが無効です (enable_msm / enable_slow_ou / enable_rough とも False)")
 
     n = int(n_paths if n_paths is not None else config.validation.ensemble_n_paths)
     rng = RNGRegistry(config.seed).get("validation.ensemble")
@@ -71,8 +84,22 @@ def vol_cross_section(config: Config, n_paths: int | None = None) -> dict:
         var_slow = config.vol_var_target_slow
         x_slow = rng.normal(0.0, math.sqrt(var_slow), size=n)
 
+    y_rough: np.ndarray | float = 0.0
+    var_rough = 0.0
+    if config.enable_rough:
+        theta_r = math.log(2.0) / config.rough_half_life_days
+        dt_days = config.rough_grid_seconds / SESSION_SECONDS
+        eta_r = solve_eta_rough(config.rough_hurst, theta_r, config.vol_var_target_rough)
+        var_rough = rough_discrete_stationary_variance(
+            config.rough_hurst, theta_r, dt_days, eta_r
+        )
+        y_rough = rng.normal(0.0, math.sqrt(var_rough), size=n)
+
     log_sigma = np.asarray(
-        compose_log_sigma(log_sigma_bar, half_log_msm, x_slow, var_slow), dtype=np.float64
+        compose_log_sigma(
+            log_sigma_bar, half_log_msm, x_slow, var_slow, y_rough, var_rough
+        ),
+        dtype=np.float64,
     )
 
     sigma2_ratio = np.exp(2.0 * (log_sigma - log_sigma_bar))
@@ -85,9 +112,11 @@ def vol_cross_section(config: Config, n_paths: int | None = None) -> dict:
         var_components["msm"] = float(np.asarray(half_log_msm).var(ddof=1))
     if config.enable_slow_ou:
         var_components["slow_ou"] = float(np.asarray(x_slow).var(ddof=1))
+    if config.enable_rough:
+        var_components["rough"] = float(np.asarray(y_rough).var(ddof=1))
     shares = {k_: v / var_log_sigma for k_, v in var_components.items()}
 
-    var_total_theory = var_msm_theory + var_slow
+    var_total_theory = var_msm_theory + var_slow + var_rough
     budget = config.vol_var_budget_total
     return ok(
         num(mean_ratio),
@@ -110,6 +139,7 @@ def vol_cross_section(config: Config, n_paths: int | None = None) -> dict:
         shares_theory_of_budget={
             **({"msm": num(var_msm_theory / budget)} if config.enable_msm else {}),
             **({"slow_ou": num(var_slow / budget)} if config.enable_slow_ou else {}),
+            **({"rough": num(var_rough / budget)} if config.enable_rough else {}),
         },
         m0=num(m0) if m0 is not None else None,
         sd_log_sigma=num(math.sqrt(var_log_sigma)),

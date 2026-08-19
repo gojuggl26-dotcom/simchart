@@ -37,7 +37,7 @@ __all__ = [
 STAGES: tuple[str, ...] = tuple(f"S{i}" for i in range(14))
 
 #: 現時点で実装が存在する段階。段階を進めるたびにここへ追加する。
-IMPLEMENTED_STAGES: tuple[str, ...] = ("S0", "S1")
+IMPLEMENTED_STAGES: tuple[str, ...] = ("S0", "S1", "S2")
 
 #: 年率ボラを 1 ステップ分に落とすときの営業日数。
 TRADING_DAYS_PER_YEAR: int = 252
@@ -52,7 +52,6 @@ SESSION_SECONDS: float = 6.5 * 3600.0
 UNIMPLEMENTED_FLAGS: dict[str, tuple[str, str, str]] = {
     "enable_seasonality": ("S4", "日内 U 字の活動度季節性 phi(t)", "simchart/layers/l0_calendar.py"),
     "enable_overnight": ("S4", "オーバーナイト・ギャップと寄引", "simchart/layers/l0_calendar.py"),
-    "enable_rough": ("S2", "ラフ・ボラティリティ (H≈0.1) 成分", "simchart/layers/l2_price.py"),
     "enable_jump": ("S3", "Hawkes ジャンプ成分", "simchart/layers/l2_price.py"),
     "enable_leverage": ("S3", "レバレッジ効果 (リターンとボラの負相関)", "simchart/layers/l2_price.py"),
     "enable_chaos_vol": ("S5", "カオス的ボラ成分 chi_2", "simchart/layers/l2_price.py"),
@@ -72,6 +71,7 @@ UNIMPLEMENTED_FLAGS: dict[str, tuple[str, str, str]] = {
 IMPLEMENTED_FLAGS: tuple[str, ...] = (
     "enable_msm",  # S1
     "enable_slow_ou",  # S1
+    "enable_rough",  # S2
 )
 
 #: フラグ以外 (数値パラメータ) の未実装条件。
@@ -161,6 +161,25 @@ class ValidationConfig:
     # した独立標本の断面で行う。20 万本で E[sigma^2] の標準誤差 ≈ 0.22%。
     ensemble_n_paths: int = 200_000
 
+    # --- S2 追加: 粗さ指数 H の測定器設定 ---
+    # ★H の測定窓 (5 分〜4 時間) と GPH の測定窓 (1〜100 日) を**重ねない**こと。
+    # 重ねると互いに汚染し、どちらの推定も信用できなくなる (S2 指示書 §7)。
+    # H はラフ成分が支配する帯域、GPH は MSM/OU が支配する帯域で測る。
+    rough_h_scales_seconds: tuple[int, ...] = (300, 600, 1200, 1800, 3600, 7200, 14400)
+    rough_h_qs: tuple[float, ...] = (0.5, 1.0, 1.5, 2.0, 3.0)
+    #: RV 側の H 推定に使う実現分散の窓 (秒)。30 分ビン。
+    rv_window_seconds: int = 1800
+    #: ボラ増分 ACF の最大ラグ (ラフグリッドのステップ数)。
+    vol_incr_acf_max_lag: int = 60
+
+    # --- S2 追加: S1 からの不変性トレランス (compare S1 S2 がゲート) ---
+    # S2 の合否は「何が増えたか」ではなく「何が変わらなかったか」で決まる。
+    inv_tol_gph_d_abs: float = 0.03  # ★最重要。動いたらスケール分離失敗 (指示書 §9)
+    inv_tol_powerlaw_gamma_rel: float = 0.10
+    inv_tol_acf_profile_mean_abs: float = 0.02  # 日次ラグ 10〜100 の平均 |Δrho|
+    inv_tol_kurtosis_daily_increase: float = 0.5
+    inv_tol_zeta_c2_abs: float = 0.005
+
     # --- S1 追加: 時間スケール不変性の対照解像度とトレランス ---
     # 同一シードなら MSM 切替過程は解像度に依存せず完全一致するので、残る差は
     # 拡散乱数と OU 乱数の実現差のみ。トレランスはそのペア差の実測分布
@@ -235,8 +254,26 @@ class Config:
     vol_var_target_slow: float = 0.050  # Var(log sigma) の緩慢 OU 配分 (20%)
     ou_half_life_days: float = 30.0  # 緩慢 OU の半減期 [日] (推奨 20〜60)
     #: Var(log sigma) の最終予算 (全 13 段階の合計)。分散シェアの分母はこれ。
-    #: S1 時点の配分後の残り 0.075 は S2 ラフ (0.025) + S5 chi_2 (0.050) の枠。
+    #: S2 時点の配分後の残り 0.050 は S5 chi_2 の枠。
     vol_var_budget_total: float = 0.25
+
+    # --- L2 / S2: ラフボラティリティ (fractional OU, H ~ 0.1) ---
+    # 非定常な fBm/Volterra ではなく**定常な fOU** を使う (非定常だと分散の増大が
+    # 低周波の見かけの長期記憶として GPH に混入する — S2 最頻の事故)。
+    # eta_r は直接指定せず、分散配分 vol_var_target_rough から solve_eta_rough()
+    # で逆算する。ラフ成分は専用の物理グリッド (rough_grid_seconds) 上で生成され、
+    # steps_per_day と独立 — 時間スケール不変性が構造的に保たれる。
+    #: Hurst 指数 (指示書の許容範囲 0.08〜0.15)。既定 0.08 の理由: H_latent ゲートは
+    #: **合成後の log sigma** で測るが、測定窓 (5 分〜4 時間) には MSM 最速成分の
+    #: 切替も混入し、H の測定値を +0.05〜0.06 系統的に押し上げる (実測)。入力 0.10
+    #: だと測定 0.150〜0.154 でゲート上限に乗るため、範囲内の 0.08 を入力して
+    #: 測定 ~0.13 に置く。gph_d はこの選択に依存しない (ペア実験で ±0.01 不変)。
+    rough_hurst: float = 0.08
+    #: fOU の平均回帰半減期 [日]。**1 日より長くしないこと** — MSM 最速成分
+    #: (時定数 ~1 日) の帯域に食い込み、長スケールの記憶 (gph_d) を汚染する。
+    rough_half_life_days: float = 0.75
+    vol_var_target_rough: float = 0.025  # Var(log sigma) 配分 (最終予算 0.25 の 10%)
+    rough_grid_seconds: float = 60.0  # ラフ成分の解像度。これ以下ではボラは一定
     enable_jump: bool = False  # S3
     enable_leverage: bool = False  # S3
     enable_chaos_vol: bool = False  # S5  (chi_2)
@@ -317,6 +354,9 @@ class Config:
     #: 何も起きない (暗黙 no-op) ため、その組み合わせを構成エラーとして弾く。
     _S1_MSM_PARAMS = ("msm_k", "msm_b", "msm_gamma1_per_day", "vol_var_target_msm")
     _S1_SLOW_PARAMS = ("ou_half_life_days", "vol_var_target_slow")
+    _S2_ROUGH_PARAMS = (
+        "rough_hurst", "rough_half_life_days", "vol_var_target_rough", "rough_grid_seconds",
+    )
 
     def _check_s1_params(self) -> None:
         defaults = {f.name: f.default for f in dataclasses.fields(type(self))}
@@ -324,6 +364,7 @@ class Config:
         for flag, params in (
             ("enable_msm", self._S1_MSM_PARAMS),
             ("enable_slow_ou", self._S1_SLOW_PARAMS),
+            ("enable_rough", self._S2_ROUGH_PARAMS),
         ):
             if not getattr(self, flag):
                 changed = [n for n in params if getattr(self, n) != defaults[n]]
@@ -354,16 +395,44 @@ class Config:
                     "enable_slow_ou=True なのに vol_var_target_slow が 0 以下です。"
                     " 分散配分 0 の OU は暗黙 no-op になるため許可しません。"
                 )
+        if self.enable_rough:
+            if not (0.0 < self.rough_hurst < 0.5):
+                raise ValueError(
+                    "rough_hurst は (0, 0.5) の範囲である必要があります"
+                    " (H >= 0.5 は「ラフ」ではなく持続的で、長スケールの記憶を汚染する)"
+                )
+            if self.rough_half_life_days <= 0:
+                raise ValueError("rough_half_life_days は正である必要があります")
+            if self.rough_half_life_days > 1.0:
+                raise ValueError(
+                    "rough_half_life_days は 1 日以下である必要があります。"
+                    " MSM 最速成分 (時定数 ~1 日) の帯域に食い込むと gph_d が動き、"
+                    " スケール分離が壊れます (S2 指示書 §4)。"
+                )
+            if self.vol_var_target_rough <= 0:
+                raise ValueError(
+                    "enable_rough=True なのに vol_var_target_rough が 0 以下です。"
+                    " 分散配分 0 のラフ成分は暗黙 no-op になるため許可しません。"
+                )
+            if self.rough_grid_seconds <= 0:
+                raise ValueError("rough_grid_seconds は正である必要があります")
+            if SESSION_SECONDS % self.rough_grid_seconds != 0:
+                raise ValueError(
+                    "rough_grid_seconds はセッション長を割り切る必要があります"
+                    " (日境界でグリッドが揃わないと物理時間定義が壊れる)"
+                )
         if self.vol_var_budget_total <= 0:
             raise ValueError("vol_var_budget_total は正である必要があります")
-        allocated = (self.vol_var_target_msm if self.enable_msm else 0.0) + (
-            self.vol_var_target_slow if self.enable_slow_ou else 0.0
+        allocated = (
+            (self.vol_var_target_msm if self.enable_msm else 0.0)
+            + (self.vol_var_target_slow if self.enable_slow_ou else 0.0)
+            + (self.vol_var_target_rough if self.enable_rough else 0.0)
         )
         if allocated > self.vol_var_budget_total + 1e-12:
             raise ValueError(
                 f"分散配分の合計 ({allocated:.4f}) が最終予算"
                 f" ({self.vol_var_budget_total}) を超えています。予算を使い切ると"
-                f" S2 (ラフ) と S5 (chi_2) が入らなくなります (指示書 §6)。"
+                f" 後段 (S5 chi_2 など) が入らなくなります (指示書 §6)。"
             )
 
     # ------------------------------------------------------------------

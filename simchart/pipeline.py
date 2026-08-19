@@ -37,8 +37,14 @@ __all__ = [
     "rng_stability_check",
     "rng_diffusion_check",
     "scale_invariance_check",
+    "baseline_invariance_check",
+    "BASELINE_STAGE",
     "GridDriver",
 ]
+
+#: 各段階の不変性照合の基準となる直前段階。
+#: S2 の合否は「S1 から何が変わらなかったか」で決まる (S2 指示書 §0)。
+BASELINE_STAGE: dict[str, str] = {"S2": "S1"}
 
 
 @dataclass
@@ -295,10 +301,159 @@ def scale_invariance_check(config: Config, reference_result: StageResult) -> dic
             "hi": digest_hi,
             "lo": digest_lo,
         }
+    if config.enable_rough:
+        # ラフ成分は専用の物理グリッド (rough_grid_seconds) 上で生成されるため、
+        # steps_per_day を変えても経路そのものがビット単位で一致するはず。
+        y_hi = reference_result.meta.get("l2", {}).get("rough", {}).get("y_digest")
+        y_lo = low_result.meta.get("l2", {}).get("rough", {}).get("y_digest")
+        checks["rough_path_identical"] = {
+            "passed": bool(y_hi is not None and y_hi == y_lo),
+            "hi": y_hi,
+            "lo": y_lo,
+        }
 
     return {
         "passed": bool(all(c["passed"] for c in checks.values())),
         "steps_per_day_hi": config.steps_per_day,
         "steps_per_day_lo": v.scale_invariance_steps_per_day,
+        "checks": checks,
+    }
+
+
+def baseline_invariance_check(
+    config: Config,
+    metrics: dict[str, Any],
+    baseline_stage: str,
+    results_root: str | None = None,
+) -> dict[str, Any]:
+    """保存済みの前段階 metrics.json と突き合わせ、不変であるべき量を照合する。
+
+    S2 の合否は「何が増えたか」ではなく「何が変わらなかったか」で決まる
+    (S2 指示書 §0)。同一シードなら S1 のストリーム (拡散・MSM・OU) は名前ハッシュ
+    RNG によりビット単位で不変のはずで、日次統計の差はラフ成分の追加効果だけになる。
+
+    - **gph_d (±0.03) が最重要** — 動いたらスケール分離の失敗であり、ラフ成分が
+      MSM/OU の帯域 (1〜100 日) に漏れている (診断手順は指示書 §10)
+    - RNG の証人: MSM の成分別切替回数・占有率、OU の x0・経路統計が JSON の
+      float 往復 (repr 17 桁) で**厳密一致**すること — S1 のストリームに 1 draw
+      でも触れていれば一致しない
+    """
+    from .report import load_metrics
+
+    try:
+        base = load_metrics(baseline_stage, root=results_root)
+    except FileNotFoundError as exc:
+        return {"passed": False, "baseline_stage": baseline_stage, "error": str(exc), "checks": {}}
+
+    bm = base.get("metrics", {})
+    v = config.validation
+    checks: dict[str, dict[str, Any]] = {}
+
+    def get(tree: dict, path: str) -> Any:
+        node: Any = tree
+        for part in path.split("."):
+            if not isinstance(node, dict) or part not in node:
+                return None
+            node = node[part]
+        return node
+
+    def add_abs(name: str, path: str, tol: float) -> None:
+        a, b = get(bm, path), get(metrics, path)
+        okc = a is not None and b is not None and abs(b - a) <= tol
+        checks[name] = {
+            "passed": bool(okc), "baseline": a, "current": b,
+            "diff": (b - a) if (a is not None and b is not None) else None, "tol": tol,
+        }
+
+    # ★最重要: 長スケールの記憶が動いていないこと。
+    add_abs("gph_d", "daily.gph_abs_r.d", v.inv_tol_gph_d_abs)
+
+    # |r| ACF のべき則指数 (相対 ±10%) と binned R^2 の非劣化。
+    g1 = get(bm, "daily.acf_abs_r_powerlaw.gamma")
+    g2 = get(metrics, "daily.acf_abs_r_powerlaw.gamma")
+    r2_1 = get(bm, "daily.acf_abs_r_powerlaw.r2")
+    r2_2 = get(metrics, "daily.acf_abs_r_powerlaw.r2")
+    gamma_ok = (
+        g1 is not None and g2 is not None and g1 != 0
+        and abs(g2 - g1) / abs(g1) <= v.inv_tol_powerlaw_gamma_rel
+    )
+    checks["absr_powerlaw_gamma"] = {
+        "passed": bool(gamma_ok), "baseline": g1, "current": g2,
+        "rel_diff": (abs(g2 - g1) / abs(g1)) if (g1 not in (None, 0) and g2 is not None) else None,
+        "tol_rel": v.inv_tol_powerlaw_gamma_rel,
+        "r2_baseline": r2_1, "r2_current": r2_2,
+        "r2_not_degraded": bool(
+            r2_1 is not None and r2_2 is not None and r2_2 >= r2_1 - 0.05
+        ),
+    }
+
+    # 日次 |r| ACF のプロファイル (ラグ 10〜100 の平均 |差|)。
+    vals1 = get(bm, "daily.acf_abs_r.values")
+    vals2 = get(metrics, "daily.acf_abs_r.values")
+    if vals1 and vals2:
+        hi = min(len(vals1), len(vals2), 101)
+        a1 = np.array([x if x is not None else np.nan for x in vals1[10:hi]])
+        a2 = np.array([x if x is not None else np.nan for x in vals2[10:hi]])
+        mean_abs = float(np.nanmean(np.abs(a2 - a1)))
+        checks["absr_acf_profile"] = {
+            "passed": bool(mean_abs <= v.inv_tol_acf_profile_mean_abs),
+            "mean_abs_diff": mean_abs, "tol": v.inv_tol_acf_profile_mean_abs,
+            "lags": [10, hi - 1],
+        }
+    else:
+        checks["absr_acf_profile"] = {"passed": False, "reason": "ACF 値が取得できません"}
+
+    # 日次尖度: ラフ成分の分散混合で微増するのは正しい (+0.5 まで)。
+    k1 = get(bm, "daily.moments.kurtosis")
+    k2 = get(metrics, "daily.moments.kurtosis")
+    checks["kurtosis_daily"] = {
+        "passed": bool(
+            k1 is not None and k2 is not None
+            and (k2 - k1) <= v.inv_tol_kurtosis_daily_increase
+        ),
+        "baseline": k1, "current": k2,
+        "increase": (k2 - k1) if (k1 is not None and k2 is not None) else None,
+        "tol_increase": v.inv_tol_kurtosis_daily_increase,
+    }
+
+    # zeta 曲率: 悪化していない (より凹でなくなっていない) こと。
+    c1 = get(bm, "daily.zeta_curvature.c2")
+    c2v = get(metrics, "daily.zeta_curvature.c2")
+    checks["zeta_c2"] = {
+        "passed": bool(
+            c1 is not None and c2v is not None and c2v <= c1 + v.inv_tol_zeta_c2_abs
+        ),
+        "baseline": c1, "current": c2v, "tol": v.inv_tol_zeta_c2_abs,
+    }
+
+    # RNG の証人: S1 のストリームがビット単位で不変であることの実測 (JSON の
+    # float は repr 17 桁で往復するため、厳密一致 = ビット単位一致)。
+    table1 = get(bm, "vol.msm.table") or []
+    table2 = get(metrics, "vol.msm.table") or []
+    msm_ok = (
+        len(table1) == len(table2) > 0
+        and all(
+            r1.get("n_switches") == r2.get("n_switches")
+            and r1.get("occupancy_hi") == r2.get("occupancy_hi")
+            for r1, r2 in zip(table1, table2)
+        )
+    )
+    ou_fields = ("x0", "sample_var", "sample_mean")
+    ou_ok = all(
+        get(bm, f"vol.slow_ou.{f}") is not None
+        and get(bm, f"vol.slow_ou.{f}") == get(metrics, f"vol.slow_ou.{f}")
+        for f in ou_fields
+    )
+    checks["rng_s1_streams"] = {
+        "passed": bool(msm_ok and ou_ok),
+        "msm_witness_equal": bool(msm_ok),
+        "ou_witness_equal": bool(ou_ok),
+    }
+
+    return {
+        "passed": bool(all(c.get("passed") for c in checks.values())),
+        "baseline_stage": baseline_stage,
+        "baseline_git_commit": base.get("git_commit"),
+        "baseline_seed": (base.get("config") or {}).get("seed"),
         "checks": checks,
     }

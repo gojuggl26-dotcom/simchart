@@ -67,8 +67,8 @@ def test_multi_asset_raises_for_s13() -> None:
 
 def test_unimplemented_stage_raises() -> None:
     with pytest.raises(NotImplementedError) as excinfo:
-        Config(stage="S2")
-    assert "S2" in str(excinfo.value)
+        Config(stage="S3")
+    assert "S3" in str(excinfo.value)
 
 
 def test_unknown_stage_is_a_value_error() -> None:
@@ -109,7 +109,6 @@ def _force(config: Config, **changes: object) -> Config:
     "flag,builder,stage",
     [
         ("enable_seasonality", "calendar", "S4"),
-        ("enable_rough", "price", "S2"),
         ("enable_jump", "price", "S3"),
         ("enable_hawkes", "activity", "S7"),
         ("enable_book", "book", "S6"),

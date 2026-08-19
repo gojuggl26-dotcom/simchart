@@ -23,6 +23,8 @@ S0 での期待値
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 from scipy import stats
 from statsmodels.tsa.stattools import adfuller
@@ -41,6 +43,9 @@ __all__ = [
     "kurtosis_decay_fit",
     "zeta_curvature",
     "daily_invariance_stats",
+    "roughness_exponent",
+    "realized_variance",
+    "path_stationarity",
 ]
 
 
@@ -616,6 +621,160 @@ def zeta_curvature(
         zetas=[num(z) for z in zetas],
         per_q=per_q,
         scales_days=[int(s) for s in scales_days],
+    )
+
+
+def roughness_exponent(
+    log_vol: np.ndarray,
+    scales_steps,
+    qs=(0.5, 1.0, 1.5, 2.0, 3.0),
+    min_pairs: int = 1000,
+) -> dict:
+    """粗さ指数 H を q 次モーメントスケーリングで推定する (S2 の中心的検証)。
+
+        m(q, Delta) = E[|log sigma_{t+Delta} - log sigma_t|^q] ∝ Delta^{qH}
+
+    log m を log Delta に回帰して zeta_q^vol を得、zeta_q を q に回帰した傾きが H。
+    zeta_q が q に線形 (R^2) であることが「単一フラクタルな粗さ」の確認になる。
+
+    ★測定窓は**ラフ成分が支配する帯域** (既定 5 分〜4 時間) に限ること。GPH の
+    測定窓 (1〜100 日) と重ねると互いに汚染し、どちらも信用できなくなる
+    (S2 指示書 §7)。``scales_steps`` は入力系列のステップ数で与える。
+    """
+    scales_steps = [int(s) for s in scales_steps]
+    if not scales_steps:
+        return na("測定スケールがありません (サブサンプルが無い段階)")
+    x = np.asarray(log_vol, dtype=np.float64).ravel()
+    x = x[np.isfinite(x)]
+    if x.size < min_pairs + max(scales_steps):
+        return na(f"標本数が足りません (n={x.size})")
+
+    qs = tuple(float(q) for q in qs)
+    log_scales: list[float] = []
+    moments: dict[float, list[float]] = {q: [] for q in qs}
+    used_scales: list[int] = []
+    for scale in scales_steps:
+        k = int(scale)
+        if k < 1 or x.size - k < min_pairs:
+            continue
+        d = np.abs(x[k:] - x[:-k])
+        if not np.any(d > 0):
+            return na("log sigma が定数です (増分が 0)")
+        used_scales.append(k)
+        log_scales.append(math.log(k))
+        for q in qs:
+            moments[q].append(float(np.mean(d**q)))
+
+    if len(used_scales) < 4:
+        return na(f"有効なスケールが足りません (n={len(used_scales)})")
+
+    ls = np.array(log_scales)
+    per_q = []
+    zetas: list[float] = []
+    for q in qs:
+        m = np.array(moments[q])
+        if np.any(m <= 0):
+            per_q.append({"q": q, "status": "not_applicable", "zeta": None})
+            continue
+        fit = stats.linregress(ls, np.log(m))
+        per_q.append(
+            {
+                "q": q,
+                "status": "ok",
+                "zeta": num(fit.slope),
+                "se": num(fit.stderr),
+                "r2": num(fit.rvalue**2),
+                "h_implied": num(fit.slope / q),
+            }
+        )
+        zetas.append(float(fit.slope))
+
+    if len(zetas) < 3:
+        return na("zeta_q^vol を推定できた次数が足りません", per_q=per_q)
+
+    q_used = np.array([row["q"] for row in per_q if row["status"] == "ok"])
+    z_used = np.array(zetas)
+    hfit = stats.linregress(q_used, z_used)
+    return ok(
+        num(hfit.slope),
+        h=num(hfit.slope),
+        h_se=num(hfit.stderr),
+        linearity_r2=num(hfit.rvalue**2),
+        intercept=num(hfit.intercept),
+        scales_steps=used_scales,
+        per_q=per_q,
+    )
+
+
+def realized_variance(returns: np.ndarray, steps_per_window: int) -> np.ndarray:
+    """実現分散 (窓ごとの二乗リターン和) の系列を返す (S2 追加)。
+
+    素の配列を返すユーティリティ。H の RV 側推定と、S11 の RV フィードバックで
+    再利用する。端数は捨てる。
+    """
+    r = np.asarray(returns, dtype=np.float64).ravel()
+    k = int(steps_per_window)
+    if k < 1:
+        raise ValueError("steps_per_window は正整数である必要があります")
+    n_windows = r.size // k
+    if n_windows < 1:
+        raise ValueError(f"窓 ({k} ステップ) に対してリターンが足りません (n={r.size})")
+    return (r[: n_windows * k].reshape(n_windows, k) ** 2).sum(axis=1)
+
+
+def path_stationarity(
+    y: np.ndarray, adf_maxlag: int = 10, max_adf_points: int = 20_000
+) -> dict:
+    """経路の定常性検査 (S2 の stationarity_Y ゲート)。
+
+    非定常な fBm/Volterra を混入させた場合の最も分かりやすい症状は「後半の分散が
+    前半より大きい」ことなので、(1) 前半・後半の平均差 (自己相関補正つき z)、
+    (2) 分散比、(3) ADF (帰無: 単位根あり) の 3 点で見る。ADF は実効標本を保った
+    まま点数を間引いて行う (数百万点の OLS を避ける)。
+
+    分散比の許容 [0.85, 1.18] は、半減期 ~1 日・5000 日の fOU で実現分散の
+    片側 SD が ~4%、比の SD が ~6% であることに基づく (~2.7 sigma)。
+    """
+    x = np.asarray(y, dtype=np.float64).ravel()
+    x = x[np.isfinite(x)]
+    n = x.size
+    if n < 1000:
+        return na(f"標本数が足りません (n={n})")
+
+    half = n // 2
+    first, second = x[:half], x[half : 2 * half]
+    rho1 = float(np.corrcoef(x[:-1], x[1:])[0, 1])
+    rho1 = min(max(rho1, -0.999), 0.999)
+    n_eff = max(half * (1.0 - rho1) / (1.0 + rho1), 4.0)
+    pooled_var = 0.5 * (float(first.var(ddof=1)) + float(second.var(ddof=1)))
+    se_mean_diff = math.sqrt(2.0 * pooled_var / n_eff)
+    mean_diff_z = (float(second.mean()) - float(first.mean())) / se_mean_diff
+
+    var_ratio = float(second.var(ddof=1) / first.var(ddof=1))
+
+    stride = max(n // max_adf_points, 1)
+    adf = adf_test(x[::stride], maxlag=adf_maxlag)
+    adf_p = adf.get("pvalue")
+
+    checks = {
+        "mean_stable": bool(abs(mean_diff_z) < 4.0),
+        "variance_stable": bool(0.85 <= var_ratio <= 1.18),
+        "adf_rejects_unit_root": bool(adf_p is not None and adf_p < 0.01),
+    }
+    return ok(
+        bool(all(checks.values())),
+        stationary=bool(all(checks.values())),
+        checks=checks,
+        mean_first=num(first.mean()),
+        mean_second=num(second.mean()),
+        mean_diff_z=num(mean_diff_z),
+        var_first=num(first.var(ddof=1)),
+        var_second=num(second.var(ddof=1)),
+        var_ratio=num(var_ratio),
+        lag1_autocorr=num(rho1),
+        n_eff=num(n_eff),
+        adf_pvalue=num(adf_p) if adf_p is not None else None,
+        adf_stride=int(stride),
     )
 
 

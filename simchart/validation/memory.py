@@ -30,6 +30,7 @@ __all__ = [
     "power_law_fit",
     "acf_power_law",
     "acf_powerlaw_fit",
+    "vol_increment_acf",
 ]
 
 
@@ -293,6 +294,34 @@ def acf_power_law(acf_result: dict, lag_range: tuple[int, int]) -> dict:
         [np.nan if v is None else v for v in acf_result["values"]], dtype=np.float64
     )
     return power_law_fit(lags, values, lag_range)
+
+
+def vol_increment_acf(log_vol: np.ndarray, max_lag: int = 60) -> dict:
+    """log sigma の**増分**の ACF (S2 追加)。
+
+    ラフ成分 (H < 1/2) は反持続的で、増分の 1 ラグ自己相関は負になる
+    (fGn では 2^{2H-1} - 1、H=0.1 で ~-0.43)。定数ボラや持続的なボラでは
+    負にならないので、粗さの存在の独立な検査になる。入力はラフグリッド解像度
+    (60 秒) でサンプルした log sigma を想定。
+    """
+    x = np.asarray(log_vol, dtype=np.float64).ravel()
+    x = x[np.isfinite(x)]
+    if x.size < 200:
+        return na(f"標本数が足りません (n={x.size})")
+    d = np.diff(x)
+    if float(d.var()) <= 0:
+        return na("log sigma が定数です (増分の分散が 0)")
+    base = acf(d, max_lag=min(max_lag, d.size - 1))
+    if base["status"] != "ok":
+        return base
+    return ok(
+        base["lag1"],
+        lag1=base["lag1"],
+        lag1_z=base["lag1_z"],
+        n=base["n"],
+        lags=base["lags"][:21],
+        values=base["values"][:21],
+    )
 
 
 def acf_powerlaw_fit(
