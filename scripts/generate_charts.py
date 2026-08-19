@@ -228,6 +228,13 @@ def generate(args: argparse.Namespace) -> int:
                     }
                 )
             )
+            del bo, bh, bl, bc
+
+        # ★ここで明示的に解放する。del を書かないと、次の反復の run() が走っている
+        # あいだ前のチャートの経路 (t / log_p / log_vol = 本番設定で 2.8GB) が
+        # まだ束縛されたままになり、常に 2 本分が同時に生きてピークが 2.8GB 増える。
+        # 実測でピーク 9.4GB・空き 1.8GB まで落ちた (15.3GB 機で危険水準)。
+        del result, log_price, o, h, l, c, rv_daily, daily_ret
 
         if (i + 1) % args.progress_every == 0 or i + 1 == n:
             elapsed = time.perf_counter() - started
