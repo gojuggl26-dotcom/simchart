@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from simchart.config import STAGES, UNIMPLEMENTED_FLAGS, Config
+from simchart.config import IMPLEMENTED_FLAGS, STAGES, UNIMPLEMENTED_FLAGS, Config
 from simchart.layers import (
     build_activity,
     build_book_layer,
@@ -38,8 +38,13 @@ def test_every_flag_is_registered() -> None:
     # `from __future__ import annotations` により f.type は文字列になる。
     bool_flags = {f.name for f in dataclasses.fields(Config) if f.type in (bool, "bool")}
     assert bool_flags, "bool フラグが 1 つも検出できていません (型注釈の書式を確認)"
-    unregistered = bool_flags - set(UNIMPLEMENTED_FLAGS)
-    assert not unregistered, f"UNIMPLEMENTED_FLAGS に未登録のフラグ: {sorted(unregistered)}"
+    unregistered = bool_flags - set(UNIMPLEMENTED_FLAGS) - set(IMPLEMENTED_FLAGS)
+    assert not unregistered, (
+        f"どの台帳にも載っていないフラグ: {sorted(unregistered)} "
+        f"(UNIMPLEMENTED_FLAGS か IMPLEMENTED_FLAGS に登録すること)"
+    )
+    overlap = set(UNIMPLEMENTED_FLAGS) & set(IMPLEMENTED_FLAGS)
+    assert not overlap, f"両方の台帳に載っているフラグ: {sorted(overlap)}"
 
 
 def test_kappa_raises_for_s10() -> None:
@@ -62,8 +67,8 @@ def test_multi_asset_raises_for_s13() -> None:
 
 def test_unimplemented_stage_raises() -> None:
     with pytest.raises(NotImplementedError) as excinfo:
-        Config(stage="S1")
-    assert "S1" in str(excinfo.value)
+        Config(stage="S2")
+    assert "S2" in str(excinfo.value)
 
 
 def test_unknown_stage_is_a_value_error() -> None:
@@ -104,7 +109,6 @@ def _force(config: Config, **changes: object) -> Config:
     "flag,builder,stage",
     [
         ("enable_seasonality", "calendar", "S4"),
-        ("enable_msm", "price", "S1"),
         ("enable_rough", "price", "S2"),
         ("enable_jump", "price", "S3"),
         ("enable_hawkes", "activity", "S7"),

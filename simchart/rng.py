@@ -52,6 +52,9 @@ STREAM_NAMES: tuple[str, ...] = (
     "l3.order_price",
     "l3.cancel",
     "l3.metaorder",
+    # --- S1 で追加 (追加しても既存ストリームの系列は変わらない: 名前ハッシュ方式) ---
+    "l2.vol_slow",  # 緩慢 OU (S1)
+    "validation.ensemble",  # 検証スイートのアンサンブル断面 (S1)。生成系とは独立
 )
 
 #: 後段で必要になることが設計上ほぼ確実なストリーム。先に名前だけ確保しておく。
@@ -61,7 +64,6 @@ RESERVED_STREAM_NAMES: tuple[str, ...] = (
     # S10: PriceProcess.at() をブラウン橋で補間する方式に切り替える場合に使う。
     # S0 の既定は決定論的な線形補間なので未使用 (README §補間の設計判断 を参照)。
     "l2.bridge",
-    "l2.vol_ou",  # S1: 緩慢 OU
     "l2.leverage",  # S3: レバレッジ相関の直交成分
     "l0.calendar",  # S4: 日次のカレンダー撹乱 (祝日・半日立会など)
     "l0.overnight",  # S4: オーバーナイト・ギャップ

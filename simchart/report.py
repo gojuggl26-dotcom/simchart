@@ -283,6 +283,51 @@ def make_plots(
         ax.set_title(f"{stage}: signature plot (max rel dev={sig['max_rel_dev']:.4f})")
         save(fig, "signature_plot.png")
 
+    # 8. 日次 |r| ACF の log-log (S1 以降の長期記憶の可視化)
+    pl = metrics.get("daily", {}).get("acf_abs_r_powerlaw", {})
+    acf_daily = metrics.get("daily", {}).get("acf_abs_r", {})
+    if pl.get("status") == "ok" and acf_daily.get("status") == "ok":
+        fig, ax = plt.subplots(figsize=(5.4, 3.8))
+        lags = np.array(acf_daily["lags"][1:])
+        values = np.array([v if v is not None else np.nan for v in acf_daily["values"][1:]])
+        pos = values > 0
+        ax.plot(lags[pos], values[pos], ".", ms=2.5, alpha=0.4, label="raw ACF (positive)")
+        bins = pl.get("bins", [])
+        if bins:
+            bx = [b["lag"] for b in bins if b["acf"] and b["acf"] > 0]
+            by = [b["acf"] for b in bins if b["acf"] and b["acf"] > 0]
+            ax.plot(bx, by, "o-", ms=5, label="log-binned mean")
+            grid_x = np.geomspace(min(bx), max(bx), 50)
+            ax.plot(grid_x, np.exp(pl["intercept"]) * grid_x ** (-pl["gamma"]),
+                    "r--", lw=1, label=f"power law (gamma={pl['gamma']:.2f})")
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.set_xlabel("lag (days)")
+        ax.set_ylabel("ACF of |daily return|")
+        ax.set_title(f"{stage}: |r| ACF decay (binned R^2={pl['r2']:.3f})")
+        ax.legend(fontsize=7)
+        save(fig, "daily_absr_acf.png")
+
+    # 9. log sigma の経路 (S1 以降のボラ過程の可視化)
+    if result is not None:
+        sub = result.meta.get("l2", {}).get("vol_subsample")
+        if sub is not None:
+            t_days = np.asarray(sub["t_days"])
+            log_vol = np.asarray(sub["log_vol"])
+            stride = max(t_days.size // 20000, 1)
+            fig, axes = plt.subplots(2, 1, figsize=(9, 5), sharex=True)
+            axes[0].plot(t_days[::stride], np.exp(log_vol[::stride]) * 100, lw=0.5)
+            axes[0].set_ylabel("sigma (annual, %)")
+            axes[0].set_title(f"{stage}: instantaneous volatility path")
+            axes[1].plot(t_days[::stride], np.asarray(sub["half_log_msm"])[::stride],
+                         lw=0.5, label="MSM (0.5 sum log M)")
+            axes[1].plot(t_days[::stride], np.asarray(sub["x_slow"])[::stride],
+                         lw=0.7, label="slow OU")
+            axes[1].set_xlabel("day")
+            axes[1].set_ylabel("log-vol component")
+            axes[1].legend(fontsize=8)
+            save(fig, "vol_path.png")
+
     # 7. 分散比
     vr = metrics.get("scaling", {}).get("variance_ratio", {})
     if vr.get("status") == "ok":

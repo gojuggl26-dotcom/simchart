@@ -1,12 +1,13 @@
 # simchart — 段階構築式の金融マイクロ構造シミュレータ
 
 S0〜S13 の 13 段階で作る市場マイクロ構造シミュレータ。**このリポジトリの現状は
-S0 (骨格層) まで。**
+S1 (MSM + 緩慢 OU の確率ボラティリティ) まで。**
 
-S0 の価格過程は幾何ブラウン運動だけで、価格モデルとしては意図的に非現実的である。
-尖度 3・|r| 自己相関ゼロ・単一フラクタル・分散比 1 が S0 の正解であり、それらしく
-見せるチューニングはしていない。S0 の価値はフラグ設計・RNG 設計・検証スイート・
-結果永続化にあり、この足場が S1〜S13 全部を支える。
+- **S0** (`git tag S0-skeleton`): 幾何ブラウン運動のみの骨格層。フラグ設計・
+  RNG 設計・検証スイート・結果永続化。尖度 3・|r| 自己相関ゼロ・単一フラクタルが正解
+- **S1** (`git tag S1-msm-ou`): L2 に MSM と緩慢 OU を追加。|r| の長期記憶・
+  ボラティリティ・クラスタリング・集計正規性が初めて現れる。革新項は正規のまま
+  (テールはボラ過程から内生的に出す)
 
 ---
 
@@ -16,7 +17,8 @@ S0 の価格過程は幾何ブラウン運動だけで、価格モデルとし�
 uv sync                                  # 依存の導入 (Python 3.12+)
 
 uv run python -m simchart.cli run --config configs/s0.yaml --stage S0
-uv run python -m simchart.cli validate --stage S0          # 保存済み結果の再判定
+uv run python -m simchart.cli run --config configs/s1.yaml --stage S1   # 5000 日 (約 2 分)
+uv run python -m simchart.cli validate --stage S1          # 保存済み結果の再判定
 uv run python -m simchart.cli compare --stages S0 S1       # 段階間の指標差分
 uv run pytest                                              # テスト
 ```
@@ -380,95 +382,97 @@ S0 のチャートは「教科書どおりのランダムウォーク」であ�
 
 ---
 
-## S1 で何をどのファイルのどこに追加するか
+## S1: MSM + 緩慢 OU (実施済み, 2026-08-19)
 
-S1 の目的は**ボラティリティ・クラスタリングとファットテールを内生的に出すこと**。
-MSM (マルコフ・スイッチング・マルチフラクタル) と緩慢 OU を対数ボラに足す。
+L2 の対数ボラに MSM (連続時間 Markov-Switching Multifractal) と緩慢 OU を加算した。
 
-### 1. `simchart/config.py`
-
-- `IMPLEMENTED_STAGES` に `"S1"` を追加する。
-- `UNIMPLEMENTED_FLAGS` から `enable_msm` と `enable_slow_ou` の 2 行を削除する。
-- MSM のパラメータを `Config` に追加する
-  (`msm_k_components: int = 8`, `msm_m0: float = 1.4`, `msm_gamma_1: float`,
-  `msm_b: float`, `ou_kappa: float`, `ou_sigma: float`)。
-  **フラグが False のときにこれらを変えても何も起きない = 暗黙 no-op になる**ので、
-  「フラグが False なのにパラメータが既定値から動いていたら `ValueError`」を
-  `_check_basic` に足すこと。
-
-### 2. `simchart/rng.py`
-
-- MSM の状態遷移は既存の `l2.vol_msm`、緩慢 OU は予約済みの `l2.vol_ou` を使う。
-  `RESERVED_STREAM_NAMES` から `l2.vol_ou` を `STREAM_NAMES` へ移すだけでよい。
-- **`l2.diffusion` の消費のしかたを変えないこと。** 変えると S0 との差分が
-  「MSM の効果」ではなく「乱数のずれ」になり、`compare --stages S0 S1` が
-  読めなくなる。`GBMPriceLayer.simulate` は今も `standard_normal(n-1)` を
-  一度だけ引いている。この呼び方を維持する。
-
-### 3. `simchart/layers/l2_price.py` — 中心的な変更
-
-`GBMPriceLayer._log_vol_path(t)` に成分を**加法で**足す。
-
-```python
-def _log_vol_path(self, t):
-    base = np.full(t.shape[0], math.log(self._config.sigma_bar))
-    if self._config.enable_msm:
-        base += self._msm_component(t)      # 新規: log(M_1 M_2 ... M_k)
-    if self._config.enable_slow_ou:
-        base += self._slow_ou_component(t)  # 新規: OU 過程 X_t
-    return base
+```
+log σ_t = log σ̄ + 0.5 Σᵢ log Mᵢ(t) + X_t − Var(X)
+                                      ^^^^^^^ 凸性補正 (OU の E[e^{2X}]=e^{2Var} を打ち消す)
 ```
 
-加法で設計する理由は、対数ボラの分散分解で各成分の寄与を切り分けられるようにする
-ため。乗法で混ぜると S1 と S2 の効果が分離できなくなる。
+- MSM: k=10 成分、b=2、γ₁=1/500 [1/日]、m₀ は分散配分から `solve_m0()` で逆算 (≈1.2200)。
+  **切替時刻を連続時間で生成** (Poisson 個数 + 一様時刻 → `searchsorted` でグリッドへ)
+  するので、同一シードなら解像度を変えても切替過程がビット単位で一致する
+- OU: 半減期 30 日、**厳密離散化** (`X_{t+Δ} = X_t e^{−θΔ} + √(Var(1−e^{−2θΔ})) z`、
+  scipy.signal.lfilter で O(N))、初期値は定常分布から
+- 革新項 z は正規のまま。`l2.diffusion` の消費列は S0 とビット単位で同一
+  (`rng_diffusion` ゲートが毎回検証する)
 
-`simulate()` 本体は**触らなくてよい**。ボラが定数でなくなると自動的に
-非スカラー経路 (`uniform and np.all(sigma_left == sigma_left[0])` が False) に
-入るようになっている。区間左端のボラを使う規約もそのまま維持すること
-(右端や区間平均を使うと S3 でレバレッジを入れたときに未来のボラが当該区間の
-リターンへ漏れる)。
+### 実測分散予算 (S2 で必要 — 分母は最終予算 0.25)
 
-### 4. `simchart/validation/gates.py`
+| 成分 | 段階 | 配分 (計画) | 実測 (断面 20 万本) | 絶対値 |
+|---|---|---|---|---|
+| MSM | S1 | 50% | **49.90%** | 0.12476 |
+| 緩慢 OU | S1 | 20% | **20.02%** | 0.05004 |
+| ラフ | S2 | 10% (枠) | — | 0.025 |
+| χ₂ | S5 | 20% (枠) | — | 0.050 |
+| **S1 合計** | | **70%** | **69.74%** | **Var(log σ) = 0.17435** |
 
-`STAGE_GATES` に `"S1"` を追加する。S0 のゲートのうち**反転するもの**と
-**維持するもの**を明示的に分けること。
+`Config.vol_var_budget_total = 0.25` が分母の定義。**シェアには分母の違う 2 種類が
+あり (`shares_of_budget` / `shares_of_current`)、取り違えると 1.43 倍ずれる** —
+実際にゲート設計で一度やった。配分合計が予算を超える設定は `Config` が拒否する。
 
-| S0 のゲート | S1 での扱い |
-|---|---|
-| `acf_r_lag1` | **維持** (リターン自体は無相関のまま) |
-| `variance_ratio` | **維持** (拡散性は保たれる) |
-| `adf` | **維持** |
-| `determinism` / `rng_stability` / `artifacts_written` など | **維持** |
-| `acf_abs_r_lag1` | **反転** — \|r\| に正の自己相関が出ること |
-| `gph_d` | **反転** — d > 0 (ただし MSM は真の長期記憶ではないので過大に出る) |
-| `kurtosis` | **反転** — 3 より大きいこと |
-| `kurtosis_flat` | **反転** — 集計で 3 に**近づく**こと (集計正規性)。単調減少を確認する |
-| `zeta_q_linear` | **反転** — R² が下がり、ζ_q が上に凸になること |
-| `signature_plot_flat` | **維持** (ノイズは S9 から) |
+### S1 の基準値 (seed=42, 5000 日 × 23400 ステップ, critical 19/19 合格)
 
-集計正規性の検査は `scaling.kurtosis_by_scale` の `table` からスケール順の単調性を
-見る関数を `scaling.py` に足すのがよい (`kurtosis_aggregation_slope` など)。
+| 指標 | S0 | S1 | 意味 |
+|---|---|---|---|
+| 尖度 (60 秒) | 3.012 | **7.437** | ファットテール出現 (④) |
+| 尖度 (日次) | 2.857 | **6.656** | 同上 |
+| 尖度の減衰傾き (日次→50 日, log-log) | — | **−0.531** | 集計正規性 (⑱) |
+| ACF(\|r\|) ラグ1 (日次) | −0.015 | **+0.265** | ボラ・クラスタリング (③④) |
+| GPH d (日次 \|r\|, m=250) | −0.069 | **+0.415** | 見かけの長期記憶 (③) — 創発量 |
+| ζ_q 曲率 c2 (q≤4, 1..100 日) | −0.0020 | **−0.0144** | マルチフラクタルの萌芽 (⑱) |
+| Hill α (60 秒, k=5%) | 5.94 | 3.39 | 記録のみ。見かけの値 (下記) |
+| ACF(r) ラグ1 z (標準化) | +1.21 | +0.05 | **不変** — 方向情報なし |
+| Ljung-Box p (標準化, ラグ20) | 0.243 | 0.368 | **不変** |
+| 分散比 max\|VR−1\| | 0.004 | 0.010 | **不変** — マルチンゲール性 |
+| E[σ²]/σ̄² (断面) | — | 0.99498 (z=−2.3) | 凸性補正 ✓ |
+| 時間スケール不変性 (23400 vs 390) | — | 一致 | γ・θ の物理時間定義 ✓ |
 
-### 5. `configs/s1.yaml`
+Hill α=3.4 は指示書の予想レンジ (4〜8) より低いが、**狙って作った値ではない**
+(m₀ は予算からの逆算のみ)。正規×対数正規混合に真の冪則テールは無く、これは有限
+標本での見かけの値である (プロファイルは k=0.5%→10% で 5.6→3.1 と単調に動き、
+真の冪則が持つ平坦域は無い)。真のテール指数 α≈3 は S3 のジャンプで作る。
 
-`configs/s0.yaml` をコピーし、`stage: S1`、`enable_msm: true`、
-`enable_slow_ou: true` と MSM パラメータを書く。**`validation:` セクションは
-一切変えないこと。** 測定器の設定が変わると S0 との比較が成立しない。
+### ゲート構成の変更 (2026-08-19 オペレータ承認)
 
-### 6. 検証
+実装後の実測で、指示書 §10 の閾値のうち 4 つが構造・統計の壁に当たることが判明し、
+オペレータの承認を得て次のとおり変更した。経緯は必ず残す:
 
-```bash
-uv run python -m simchart.cli run --config configs/s1.yaml --stage S1
-uv run python -m simchart.cli compare --stages S0 S1 --only-changed
-```
+| ゲート | 指示書 | 問題 (実測) | 措置 |
+|---|---|---|---|
+| `absr_acf_powerlaw` | R²>0.95 | MSM の ACF は有限個 (k=10) の指数の重ね合わせで厳密なべき則ではなく、**理論上限が R²=0.913** (ノイズゼロでも)。「指数減衰との識別」も GARCH 対照との突き合わせで、log-log R²・モデル比較・GPH バンド幅プロファイルの**どの統計量でも 5000 日では不能** | **記録のみ (warning)** に降格。長期記憶の出現判定は `gph_d ∈ [0.30,0.45]` が担う。べき則の決定的判定は真のべき則が入る S2 へ |
+| `zeta_q_nonlinear` | R²<0.99 | R² は S0: 0.9999+ / S1: 0.9975〜1.0000 で**重なり分離不能** (予算 0.175 では曲率が小さい)。感度の高い曲率 c2 (q≤4・1..100 日・重なり窓) でも 16 シード中 6 本が S0 域と重なる | **記録のみ (warning)** に降格、判定量は c2 に変更して記録。S1: c2∈[−0.025,−0.001] / S0: [−0.005,+0.004]。決定的判定は S2 へ |
+| `kurtosis_daily` | >5.0 | 母平均 5.29、遅いボラ成分の実現ゆらぎで SD≈0.8 — **16 シード中 8 本が落ちる (コイントス)**。パラメータでの母平均押し上げは予算内で +0.2 が限度 | 閾値を **>4.4** に (16 シードの最小 4.54 の外側。S0 の 3.0 とは 6σ 以上離れ検出力は保たれる) |
+| `absr_acf_lag1` | >0.15 | 偽陽性 19% (16 シードで 0.138〜0.226) | 閾値を **>0.13** に (S0 は ≈0) |
 
-`compare` で確認すべきこと:
+`acf_r_lag1` / `ljung_box` の不変ゲートは**真の σ で標準化したリターン**で判定する
+(`memory.acf_r_std` / `ljung_box_r_std`)。確率ボラの下では非標準化系列の検定は
+サイズが歪み、リターンが無相関でも Q(20) の期待値だけで p<0.01 に達する
+(実測: 非標準化 LB p=0.077 vs 標準化 0.368)。S0 では σ が定数なので標準化は定数
+スケールに退化し、z 統計は非標準化版と完全同値 — S0 の測定の自然な一般化である。
 
-- `runtime.rng_fingerprint.*` が S0 と**完全一致**していること (乱数の割り当てが
-  ずれていない証拠)。
-- `memory.acf_r.lag1_z` が S0 と同程度に小さいままであること。
-- `tails.moments.kurtosis` と `memory.gph_abs_r.d` が上がっていること。
-- `scaling.signature_plot.max_rel_dev` が S0 と同程度であること。
+### E[σ²]・分散予算の検証はアンサンブル断面で行う
+
+`e_sigma2` / `var_total` / `var_budget` は期待値・分散への条件だが、log σ には
+時定数 500 日の成分があり、**1 経路の時間平均は 5000 日でも実効独立標本 ~30、
+±17% ゆらぐ**。閾値 2% は 1 経路では原理的に判定できないため、E[·] を文字どおり
+に実装する: 定常初期化した独立標本 20 万本の断面 (SE ≈ 0.22%)。断面は生成側と
+同じ `compose_log_sigma()` を使うので、合成式の乖離事故は起きない。役割分担:
+
+- **断面** (`validation/ensemble.py`): 合成式・凸性補正・solve_m0・分散配分
+- **切替率検定** (`scaling.msm_diagnostics`): 切替動学 (実測 Poisson 回数 vs γᵢ)
+- **経路の分散** (`scaling.vol_variance_budget`): 記録のみ (ゆらぎ大)
+
+### 時間スケール不変性 (§7) の検証構造
+
+γᵢ と θ は物理時間定義なので、`steps_per_day` を 23400→390 に変えても日次統計は
+変わらない。さらに強く、**同一シードなら MSM の切替過程はビット単位で一致する**
+(切替時刻生成がグリッドに依存しないため — `switch_digest` で毎回確認)。残る差は
+拡散と OU の乱数実現差だけで、トレランス (尖度 25% / d 0.10 / ACF 0.07 / Var 0.025)
+はそのペア差の実測分布 (6 シードの最大: 19% / 0.044 / 0.051 / 0.009) の外側に設定。
+per-step 切替確率型の欠陥は切替頻度が解像度比 60 倍で変わるため、この幅でも落ちる。
 
 ---
 
@@ -476,7 +480,7 @@ uv run python -m simchart.cli compare --stages S0 S1 --only-changed
 
 | 段階 | 内容 | 主な追加先 |
 |---|---|---|
-| S2 | ラフ・ボラ (H≈0.1) | `layers/l2_price.py::_log_vol_path`, ストリーム `l2.vol_rough` |
+| S2 | ラフ・ボラ (H≈0.1) | `layers/l2_price.py::_log_vol_path` に加算 (配分 0.025 = 予算の 10%)、ストリーム `l2.vol_rough`。ゲート: S1 で記録のみに降格した `absr_acf_powerlaw` / `zeta_q_nonlinear` (c2) をここで判定に昇格できるか実測で確認する |
 | S3 | Hawkes ジャンプ / レバレッジ | `layers/l2_price.py::_jump_component`, `_leverage_innovation`, ストリーム `l2.jump_time` / `l2.jump_size` / `l2.leverage` |
 | S4 | 日内季節性 / オーバーナイト | `layers/l0_calendar.py` 全体、`simulation_grid()` に境界 2 点を置く |
 | S5 | カオス的ボラ χ₂ | `layers/l2_price.py::_log_vol_path` |

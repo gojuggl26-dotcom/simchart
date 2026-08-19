@@ -19,7 +19,13 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .config import Config
-from .pipeline import determinism_check, rng_stability_check, run as run_pipeline
+from .pipeline import (
+    determinism_check,
+    rng_diffusion_check,
+    rng_stability_check,
+    run as run_pipeline,
+    scale_invariance_check,
+)
 from .report import (
     compare_stages,
     load_metrics,
@@ -113,6 +119,16 @@ def _print_key_metrics(metrics: Mapping[str, Any]) -> None:
         ("signature plot 最大乖離", get("scaling.signature_plot.max_rel_dev")),
         ("ADF p (log P)", get("scaling.adf.log_price_pvalue")),
         ("ADF p (r)", get("scaling.adf.returns_pvalue")),
+        ("日次 尖度", get("daily.moments.kurtosis")),
+        ("日次 ACF(|r|) ラグ1", get("daily.acf_abs_r.lag1")),
+        ("日次 GPH d (|r|)", get("daily.gph_abs_r.d")),
+        ("日次 |r| ACF べき則 R^2", get("daily.acf_abs_r_powerlaw.r2")),
+        ("日次 zeta_q 直線性 R^2", get("daily.zeta_q.r2")),
+        ("尖度の減衰傾き (日次→複数日)", get("daily.kurtosis_decay.decay_slope")),
+        ("Var(log σ) 断面", get("vol.ensemble.var_log_sigma")),
+        ("予算シェア 断面 (分母 0.25)", get("vol.ensemble.shares_of_budget")),
+        ("予算使用率 断面", get("vol.ensemble.budget_used_fraction")),
+        ("E[σ²]/σ̄² 断面", get("vol.ensemble.e_sigma2_ratio")),
     ]
     width = max(len(label) for label, _ in rows)
     print()
@@ -157,6 +173,19 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(f"      既存ストリーム不変: {rng_stability['unchanged']} / "
           f"相互に別系列: {rng_stability['streams_distinct']}")
 
+    rng_diffusion = rng_diffusion_check(config, result)
+    print(f"      l2.diffusion 消費列の一致: {rng_diffusion['match']}")
+
+    scale_invariance = None
+    if stage != "S0":
+        low_steps = config.validation.scale_invariance_steps_per_day
+        print(f"[3b/6] 時間スケール不変性 (steps_per_day={low_steps} で対照実行)")
+        scale_invariance = scale_invariance_check(config, result)
+        print(f"      日次統計の一致: {scale_invariance['passed']}")
+        for name, chk in scale_invariance["checks"].items():
+            if not chk["passed"]:
+                print(f"        不一致: {name}  hi={chk.get('hi')}  lo={chk.get('lo')}")
+
     print("[4/6] 検証スイート")
     validation_started = time.perf_counter()
     metrics = run_all(result, config)
@@ -174,6 +203,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         },
         "determinism": determinism,
         "rng_stability": rng_stability,
+        "rng_diffusion": rng_diffusion,
+        **({"scale_invariance": scale_invariance} if scale_invariance is not None else {}),
         "validation": {
             "all_callable": not errors,
             "n_errors": len(errors),

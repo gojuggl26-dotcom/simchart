@@ -16,14 +16,10 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..config import Config
+from ..config import SESSION_SECONDS, Config
 from ..rng import RNGRegistry
 
 __all__ = ["ConstantCalendar", "build_calendar", "SESSION_SECONDS"]
-
-#: 1 立会日の長さ (秒)。6.5 時間 = 23400 秒。
-#: ``Config.steps_per_day`` はこの長さを何分割するかを表す。
-SESSION_SECONDS: float = 6.5 * 3600.0
 
 
 class ConstantCalendar:

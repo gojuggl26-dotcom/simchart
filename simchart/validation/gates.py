@@ -17,7 +17,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .base import get_path, jsonable
 
-__all__ = ["Gate", "GateResult", "S0_GATES", "STAGE_GATES", "evaluate", "summarize"]
+__all__ = ["Gate", "GateResult", "S0_GATES", "S1_GATES", "STAGE_GATES", "evaluate", "summarize"]
 
 #: 大きすぎて metrics.json のゲート欄に載せたくないキー。
 _BULKY_KEYS = frozenset(
@@ -300,8 +300,185 @@ S0_GATES: tuple[Gate, ...] = (
     ),
 )
 
-#: 段階ごとのゲート。S1 以降を実装するときはここに追加する。
-STAGE_GATES: dict[str, tuple[Gate, ...]] = {"S0": S0_GATES}
+# ---------------------------------------------------------------------------
+# S1 のゲート
+# ---------------------------------------------------------------------------
+def _budget_check(value: Any) -> bool:
+    """分散予算: MSM シェア 45〜55%、緩慢 OU シェア 15〜25%。
+
+    **分母は最終予算 vol_var_budget_total (0.25) であって、現在の Var(log sigma)
+    合計 (S1 で 0.175) ではない** (指示書 §6 の配分表の定義)。現在合計を分母に
+    すると 0.716 / 0.287 になり 1.43 倍ずれる。
+    """
+    if not isinstance(value, Mapping):
+        return False
+    msm = value.get("msm")
+    slow = value.get("slow_ou")
+    if msm is None or slow is None:
+        return False
+    return 0.45 <= float(msm) <= 0.55 and 0.15 <= float(slow) <= 0.25
+
+
+#: S1 で S0 から**不変**であるべきゲート (確率ボラは方向情報を与えない)。
+#: acf / ljung_box は真の sigma で標準化した系列で測る。確率ボラの下では
+#: 非標準化系列の検定はサイズが歪み (Q(20) の期待値だけで p < 0.01)、
+#: 「実装バグでないのに落ちる」ため。S0 では標準化は定数スケールに退化し
+#: 非標準化版と z 統計が同値なので、これは S0 の測定の自然な一般化である。
+_S1_INVARIANT_GATES: tuple[Gate, ...] = (
+    Gate(
+        name="acf_r_lag1",
+        metric_path="memory.acf_r_std.lag1_z",
+        check=_abs_lt(2.0),
+        threshold="|rho(1)| < 2/sqrt(N)  (|z| < 2, 標準化リターン)",
+        description="ボラ変動がリターンの自己相関を作っていないこと。S0 から不変。",
+    ),
+    Gate(
+        name="ljung_box",
+        metric_path="memory.ljung_box_r_std.pvalue_primary",
+        check=_gt(0.01),
+        threshold="p > 0.01 (ラグ 20, 標準化リターン)",
+        description="同上 (まとめて検定)。S0 から不変。",
+    ),
+    Gate(
+        name="variance_ratio",
+        metric_path="scaling.variance_ratio.max_abs_dev",
+        check=_lt(0.10),
+        threshold="全 q で 0.90 <= VR <= 1.10",
+        description="マルチンゲール性の保持。S0 から不変。",
+    ),
+    Gate(
+        name="adf",
+        metric_path="scaling.adf.combined_ok",
+        check=_is_true,
+        threshold="log P で単位根を棄却せず、リターンで棄却",
+        description="価格の非定常性とリターンの定常性。S0 から不変。",
+    ),
+    Gate(
+        name="rng_diffusion",
+        metric_path="runtime.rng_diffusion.match",
+        check=_is_true,
+        threshold="l2.diffusion の消費列が S0 相当とビット単位一致",
+        description=(
+            "MSM/OU のストリームを足しても拡散乱数の系列が変わっていないこと。"
+            "名前ハッシュ方式 RNG 設計の実地検証。"
+        ),
+    ),
+)
+
+#: S1 で新規に満たすべきゲート。
+_S1_NEW_GATES: tuple[Gate, ...] = (
+    Gate(
+        name="gph_d",
+        metric_path="daily.gph_abs_r.d",
+        check=_between(0.30, 0.45),
+        threshold="d ∈ [0.30, 0.45] (日次 |r|)",
+        description="MSM から創発する見かけの長期記憶。d は直接指定できない量。",
+    ),
+    Gate(
+        name="absr_acf_powerlaw",
+        metric_path="daily.acf_abs_r_powerlaw.r2",
+        check=_gt(0.95),
+        critical=False,
+        threshold="log-log R^2 > 0.95 (ラグ 1〜100 日) — 記録のみ (2026-08-19 オペレータ承認)",
+        description=(
+            "MSM の ACF は有限個の指数の重ね合わせで厳密なべき則ではなく、"
+            "理論上限が R^2=0.913 (ノイズゼロでも)。指数減衰との識別も 5000 日では"
+            "どの統計量でも不能と実測で確認済み。長期記憶の出現判定は gph_d が担い、"
+            "決定的なべき則判定は真のべき則が入る S2 (ラフ成分) に持ち越す。"
+        ),
+    ),
+    Gate(
+        name="absr_acf_lag1",
+        metric_path="daily.acf_abs_r.lag1",
+        check=_gt(0.13),
+        threshold="rho(1) > 0.13 (日次 |r|)",
+        description=(
+            "ボラティリティ・クラスタリングの水準。閾値は実測分布 (16 シードで"
+            " 0.138〜0.226、母平均 0.18) の外側に設定 (2026-08-19 オペレータ承認。"
+            "指示書の 0.15 は偽陽性 19%)。S0 では ~0。"
+        ),
+    ),
+    Gate(
+        name="kurtosis_daily",
+        metric_path="daily.moments.kurtosis",
+        check=_gt(4.4),
+        threshold="日次尖度 > 4.4",
+        description=(
+            "ボラ混合によるファットテール (部分的 — alpha~3 は S3 の仕事)。"
+            "閾値は実測分布 (16 シードで 4.54〜7.14、母平均 5.3) の外側に設定"
+            " (2026-08-19 オペレータ承認。指示書の 5.0 は偽陽性 50%)。S0 では 3.0。"
+        ),
+    ),
+    Gate(
+        name="kurtosis_decreasing",
+        metric_path="daily.kurtosis_decay.decreasing",
+        check=_is_true,
+        threshold="集計スケール増で尖度が減少 (回帰傾き負 かつ 最細 > 最粗)",
+        description="集計正規性の萌芽。外生ファットテールではこれが出ない。",
+    ),
+    Gate(
+        name="zeta_q_nonlinear",
+        metric_path="daily.zeta_curvature.c2",
+        check=_lt(0.0),
+        critical=False,
+        threshold="zeta_q の 2 次係数 c2 < 0 — 記録のみ (2026-08-19 オペレータ承認)",
+        description=(
+            "マルチフラクタル性の出現。指示書の R^2 < 0.99 は S0/S1 の実測分布が"
+            "重なり分離不能 (分散予算 0.175 では曲率が小さい)。感度の高い曲率 c2"
+            " (q<=4, 1..100 日, 重なり窓) でも 16 シード中 6 本が S0 域と重なる"
+            "ため判定はできず、記録して S2 (ラフ成分で曲率が増える) で判定する。"
+            "S1 の c2 は [-0.025, -0.001]、S0 は [-0.005, +0.004]。"
+        ),
+    ),
+    Gate(
+        name="var_budget",
+        metric_path="vol.ensemble.shares_of_budget",
+        check=_budget_check,
+        threshold="MSM 45〜55% / 緩慢OU 15〜25% (分母 = 最終予算 0.25、断面)",
+        description="分散予算の配分。S2/S5 の枠を残す。",
+    ),
+    Gate(
+        name="var_total",
+        metric_path="vol.ensemble.var_log_sigma",
+        check=_between(0.15, 0.20),
+        threshold="Var(log sigma) ∈ [0.15, 0.20] (アンサンブル断面)",
+        description="S1 の到達点は最終予算 0.25 の 70%。使い切らない。",
+    ),
+    Gate(
+        name="e_sigma2",
+        metric_path="vol.ensemble.e_sigma2_ratio",
+        check=_between(0.98, 1.02),
+        threshold="|E[sigma^2]/sigma_bar^2 - 1| < 0.02 (アンサンブル断面 20 万本)",
+        description=(
+            "凸性補正 -Var(X) の検証。1 経路の時間平均は ±17% ゆらぐため、"
+            "定常断面のアンサンブル平均で判定する (SE ~ 0.22%)。"
+        ),
+    ),
+    Gate(
+        name="scale_invariance",
+        metric_path="runtime.scale_invariance.passed",
+        check=_is_true,
+        threshold="2 解像度 (23400 / 390) で日次統計が一致",
+        description=(
+            "gamma_i と theta が物理時間定義であることの検証。"
+            "per-step 切替確率型の実装はここで落ちる。"
+        ),
+    ),
+)
+
+#: S0 のインフラ系ゲート (S1 でもそのまま維持)。
+_S1_INFRA_GATES: tuple[Gate, ...] = tuple(
+    g for g in S0_GATES
+    if g.name in (
+        "pipeline_runs", "determinism", "rng_stability", "rng_streams_distinct",
+        "validation_callable", "artifacts_written",
+    )
+)
+
+S1_GATES: tuple[Gate, ...] = _S1_INFRA_GATES + _S1_INVARIANT_GATES + _S1_NEW_GATES
+
+#: 段階ごとのゲート。S2 以降を実装するときはここに追加する。
+STAGE_GATES: dict[str, tuple[Gate, ...]] = {"S0": S0_GATES, "S1": S1_GATES}
 
 
 def gates_for(stage: str) -> tuple[Gate, ...]:

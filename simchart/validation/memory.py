@@ -29,6 +29,7 @@ __all__ = [
     "local_whittle",
     "power_law_fit",
     "acf_power_law",
+    "acf_powerlaw_fit",
 ]
 
 
@@ -292,3 +293,85 @@ def acf_power_law(acf_result: dict, lag_range: tuple[int, int]) -> dict:
         [np.nan if v is None else v for v in acf_result["values"]], dtype=np.float64
     )
     return power_law_fit(lags, values, lag_range)
+
+
+def acf_powerlaw_fit(
+    x: np.ndarray,
+    lag_range: tuple[int, int],
+    max_lag: int | None = None,
+    n_bins: int = 12,
+) -> dict:
+    """系列 ``x`` の ACF に log-log 回帰で冪則を当て、減衰指数と R^2 を返す。
+
+    指数減衰との識別は R^2 で行う: 真の冪則なら log-log で直線 (R^2 高)、
+    指数減衰なら下に凸に折れて R^2 が下がる。
+
+    **回帰は生のラグ点ではなく対数間隔ビンの平均に対して行う。** 個々の ACF 点は
+    SE ~ 1/sqrt(N) のノイズを持ち、遠いラグでは真値がノイズと同程度になる。
+    log を取るとこのノイズが増幅・非対称化され (正に振れた点だけが log で残り、
+    負に振れた点は捨てられる)、R^2 が「曲線の直線性」ではなく「ノイズ量」を測る
+    統計量に化けてしまう。べき則検定の定石どおり、対数等間隔ビンで平均してから
+    (ビン内 ~m 点で SE が 1/sqrt(m) に減る) 回帰する。生ラグ点の回帰結果も
+    ``raw_fit`` として併記する。
+    """
+    lo, hi = int(lag_range[0]), int(lag_range[1])
+    effective_max = max_lag if max_lag is not None else hi
+    base = acf(x, max_lag=effective_max)
+    if base["status"] != "ok":
+        return base
+    lags = np.asarray(base["lags"], dtype=np.float64)
+    values = np.array([np.nan if v is None else v for v in base["values"]], dtype=np.float64)
+
+    window = (lags >= lo) & (lags <= hi) & np.isfinite(values)
+    lag_w = lags[window]
+    val_w = values[window]
+    if lag_w.size < 8:
+        return na(f"当てはめ範囲のラグが足りません (n={lag_w.size})", lag_range=[lo, hi])
+
+    # 対数等間隔のビン境界。各ビンに最低 1 ラグが入るよう重複境界は潰す。
+    edges = np.unique(
+        np.round(np.geomspace(lo, hi + 1, n_bins + 1)).astype(np.int64)
+    )
+    bin_lags: list[float] = []
+    bin_vals: list[float] = []
+    bin_counts: list[int] = []
+    for a, b in zip(edges[:-1], edges[1:]):
+        mask = (lag_w >= a) & (lag_w < b)
+        if not np.any(mask):
+            continue
+        mean_val = float(val_w[mask].mean())
+        bin_lags.append(float(np.exp(np.log(lag_w[mask]).mean())))  # 幾何平均ラグ
+        bin_vals.append(mean_val)
+        bin_counts.append(int(mask.sum()))
+
+    positive = [(l_, v_) for l_, v_ in zip(bin_lags, bin_vals) if v_ > 0]
+    if len(positive) < max(5, len(bin_lags) // 2):
+        return na(
+            f"ビン平均 ACF の正値が足りません (正 {len(positive)}/{len(bin_lags)})。"
+            f" 記憶が無い系列では正常な結果です。",
+            bins=[{"lag": l_, "acf": v_} for l_, v_ in zip(bin_lags, bin_vals)],
+        )
+    lx = np.log([p[0] for p in positive])
+    ly = np.log([p[1] for p in positive])
+    slope, intercept, rvalue, _, stderr = stats.linregress(lx, ly)
+
+    raw_fit = power_law_fit(lags, values, (lo, hi))
+    gamma = -slope
+    return ok(
+        num(gamma),
+        gamma=num(gamma),
+        se=num(stderr),
+        r2=num(rvalue**2),
+        intercept=num(intercept),
+        n_bins=len(positive),
+        bin_counts=bin_counts,
+        bins=[{"lag": num(l_), "acf": num(v_)} for l_, v_ in zip(bin_lags, bin_vals)],
+        acf_lag1=base["lag1"],
+        implied_d=num((1.0 - gamma) / 2.0),
+        lag_range=[lo, hi],
+        raw_fit={
+            "r2": raw_fit.get("r2"),
+            "gamma": raw_fit.get("gamma"),
+            "status": raw_fit.get("status"),
+        },
+    )

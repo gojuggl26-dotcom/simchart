@@ -37,10 +37,13 @@ __all__ = [
 STAGES: tuple[str, ...] = tuple(f"S{i}" for i in range(14))
 
 #: 現時点で実装が存在する段階。段階を進めるたびにここへ追加する。
-IMPLEMENTED_STAGES: tuple[str, ...] = ("S0",)
+IMPLEMENTED_STAGES: tuple[str, ...] = ("S0", "S1")
 
 #: 年率ボラを 1 ステップ分に落とすときの営業日数。
 TRADING_DAYS_PER_YEAR: int = 252
+
+#: 1 立会日の長さ (秒)。6.5 時間。steps_per_day はこの長さを何分割するかを表す。
+SESSION_SECONDS: float = 6.5 * 3600.0
 
 
 # ---------------------------------------------------------------------------
@@ -49,8 +52,6 @@ TRADING_DAYS_PER_YEAR: int = 252
 UNIMPLEMENTED_FLAGS: dict[str, tuple[str, str, str]] = {
     "enable_seasonality": ("S4", "日内 U 字の活動度季節性 phi(t)", "simchart/layers/l0_calendar.py"),
     "enable_overnight": ("S4", "オーバーナイト・ギャップと寄引", "simchart/layers/l0_calendar.py"),
-    "enable_msm": ("S1", "マルコフ・スイッチング・マルチフラクタル (MSM) ボラ", "simchart/layers/l2_price.py"),
-    "enable_slow_ou": ("S1", "緩慢 OU による長期ボラ変動", "simchart/layers/l2_price.py"),
     "enable_rough": ("S2", "ラフ・ボラティリティ (H≈0.1) 成分", "simchart/layers/l2_price.py"),
     "enable_jump": ("S3", "Hawkes ジャンプ成分", "simchart/layers/l2_price.py"),
     "enable_leverage": ("S3", "レバレッジ効果 (リターンとボラの負相関)", "simchart/layers/l2_price.py"),
@@ -64,6 +65,14 @@ UNIMPLEMENTED_FLAGS: dict[str, tuple[str, str, str]] = {
     "enable_uncertainty_zones": ("S9", "uncertainty zones による価格離散化", "simchart/layers/l3_book.py"),
     "enable_feedback": ("S11", "RV から L1/L3 へのフィードバック", "simchart/pipeline.py"),
 }
+
+#: 実装済みの機能フラグ。UNIMPLEMENTED_FLAGS から行を移すときはこちらに追記する。
+#: (テストが「全 bool フラグはどちらかの台帳に載っている」ことを強制し、
+#:  新フラグの登録漏れ = 暗黙 no-op を構造的に防ぐ)
+IMPLEMENTED_FLAGS: tuple[str, ...] = (
+    "enable_msm",  # S1
+    "enable_slow_ou",  # S1
+)
 
 #: フラグ以外 (数値パラメータ) の未実装条件。
 _UNIMPLEMENTED_NUMERIC = {
@@ -135,6 +144,35 @@ class ValidationConfig:
     micro_fit_lag_range: tuple[int, int] = (5, 200)
     rng_probe_draws: int = 1000
 
+    # --- S1 追加: 日次系列の測定器設定 ---
+    # S1 の長期記憶ゲート (gph_d / absr_acf_powerlaw) は日次集計 |r| で測る。
+    # MSM の成分レンジ (1〜500 日) が日内スケールより長いため、日内粒度では
+    # 記憶もマルチフラクタル性も見えない。
+    daily_acf_max_lag: int = 150
+    daily_powerlaw_lag_range: tuple[int, int] = (1, 100)
+    daily_gph_bandwidth_exponent: float = 0.65
+    daily_scales_days: tuple[int, ...] = (1, 2, 5, 10, 20, 50)
+    daily_min_obs_for_gate: int = 250
+    daily_zeta_qs: tuple[float, ...] = (0.5, 1.0, 1.5, 2.0, 2.5, 3.0)
+
+    # --- S1 追加: ボラ正規化のアンサンブル断面検証 ---
+    # E[sigma^2] や Var(log sigma) は遅い成分の自己相関のせいで 1 経路の時間平均では
+    # ±15〜20% ゆらぐ (5000 日でも実効独立標本 ~30)。期待値 E[·] の検証は定常初期化
+    # した独立標本の断面で行う。20 万本で E[sigma^2] の標準誤差 ≈ 0.22%。
+    ensemble_n_paths: int = 200_000
+
+    # --- S1 追加: 時間スケール不変性の対照解像度とトレランス ---
+    # 同一シードなら MSM 切替過程は解像度に依存せず完全一致するので、残る差は
+    # 拡散乱数と OU 乱数の実現差のみ。トレランスはそのペア差の実測分布
+    # (5000 日 x 6 シード: 尖度相対差 max 0.19 / gph max 0.044 / acf1 max 0.051 /
+    # var max 0.009) に余裕を載せた値。per-step 切替確率型の欠陥は切替頻度が
+    # 解像度比 (60 倍) で変わり統計が桁で動くため、この幅でも検出力は落ちない。
+    scale_invariance_steps_per_day: int = 390
+    si_tol_kurtosis_rel: float = 0.25
+    si_tol_gph_d_abs: float = 0.10
+    si_tol_acf1_abs: float = 0.07
+    si_tol_var_logvol_abs: float = 0.025
+
     def __post_init__(self) -> None:
         if self.primary_bar_sec <= 0:
             raise ValueError("primary_bar_sec は正整数である必要があります")
@@ -153,6 +191,15 @@ class ValidationConfig:
         lo, hi = self.micro_fit_lag_range
         if not (1 <= lo < hi):
             raise ValueError("micro_fit_lag_range は 1 <= lo < hi である必要があります")
+        dlo, dhi = self.daily_powerlaw_lag_range
+        if not (1 <= dlo < dhi):
+            raise ValueError("daily_powerlaw_lag_range は 1 <= lo < hi である必要があります")
+        if dhi > self.daily_acf_max_lag:
+            raise ValueError("daily_powerlaw_lag_range の上限が daily_acf_max_lag を超えています")
+        if self.ensemble_n_paths < 1000:
+            raise ValueError("ensemble_n_paths は 1000 以上である必要があります (それ未満では検定力が無い)")
+        if self.scale_invariance_steps_per_day < 1:
+            raise ValueError("scale_invariance_steps_per_day は正整数である必要があります")
 
 
 @dataclass(frozen=True)
@@ -173,9 +220,23 @@ class Config:
     sigma_bar: float = 0.20  # 年率
     mu_drift: float = 0.0
     p0: float = 100.0  # 初期価格水準。リターン系の統計には一切影響しない
-    enable_msm: bool = False  # S1
-    enable_slow_ou: bool = False  # S1
+    enable_msm: bool = False  # S1 (実装済み)
+    enable_slow_ou: bool = False  # S1 (実装済み)
     enable_rough: bool = False  # S2
+
+    # --- L2 / S1: 確率ボラのパラメータ ---
+    # m0 は直接指定しない。分散配分 vol_var_target_msm から solve_m0() で逆算する
+    # (S2/S5 で予算を再配分するときに手計算し直さないため)。見かけの長期記憶 d も
+    # (m0, b, k) から創発する量であり、パラメータには存在しない。
+    msm_k: int = 10  # MSM 成分数
+    msm_b: float = 2.0  # 周波数比 (gamma_i = gamma_1 * b^(i-1))
+    msm_gamma1_per_day: float = 0.002  # 最遅成分の切替強度 [1/日]。物理時間定義 (§7)
+    vol_var_target_msm: float = 0.125  # Var(log sigma) の MSM 配分 (最終予算 0.25 の 50%)
+    vol_var_target_slow: float = 0.050  # Var(log sigma) の緩慢 OU 配分 (20%)
+    ou_half_life_days: float = 30.0  # 緩慢 OU の半減期 [日] (推奨 20〜60)
+    #: Var(log sigma) の最終予算 (全 13 段階の合計)。分散シェアの分母はこれ。
+    #: S1 時点の配分後の残り 0.075 は S2 ラフ (0.025) + S5 chi_2 (0.050) の枠。
+    vol_var_budget_total: float = 0.25
     enable_jump: bool = False  # S3
     enable_leverage: bool = False  # S3
     enable_chaos_vol: bool = False  # S5  (chi_2)
@@ -209,6 +270,7 @@ class Config:
         self._check_basic()
         self._check_stage()
         self._check_unimplemented()
+        self._check_s1_params()
 
     def _check_basic(self) -> None:
         if self.n_days <= 0:
@@ -221,8 +283,11 @@ class Config:
             raise ValueError("n_assets は 1 以上である必要があります")
         if not isinstance(self.validation, ValidationConfig):
             raise TypeError("validation は ValidationConfig である必要があります")
-        if self.validation.primary_bar_sec > self.steps_per_day:
-            raise ValueError("primary_bar_sec が 1 日の長さを超えています")
+        if self.validation.primary_bar_sec > SESSION_SECONDS:
+            raise ValueError(
+                f"primary_bar_sec ({self.validation.primary_bar_sec}s) が"
+                f" セッション長 ({SESSION_SECONDS:.0f}s) を超えています"
+            )
 
     def _check_stage(self) -> None:
         if self.stage not in STAGES:
@@ -246,6 +311,59 @@ class Config:
             raise _not_implemented(
                 "n_assets", "S13", "多資産 (共通因子と Hayashi-Yoshida 共分散)",
                 "simchart/pipeline.py", self.n_assets,
+            )
+
+    #: フラグごとの従属パラメータ。フラグが False のままこれらを既定値から動かしても
+    #: 何も起きない (暗黙 no-op) ため、その組み合わせを構成エラーとして弾く。
+    _S1_MSM_PARAMS = ("msm_k", "msm_b", "msm_gamma1_per_day", "vol_var_target_msm")
+    _S1_SLOW_PARAMS = ("ou_half_life_days", "vol_var_target_slow")
+
+    def _check_s1_params(self) -> None:
+        defaults = {f.name: f.default for f in dataclasses.fields(type(self))}
+
+        for flag, params in (
+            ("enable_msm", self._S1_MSM_PARAMS),
+            ("enable_slow_ou", self._S1_SLOW_PARAMS),
+        ):
+            if not getattr(self, flag):
+                changed = [n for n in params if getattr(self, n) != defaults[n]]
+                if changed:
+                    raise ValueError(
+                        f"{flag}=False のまま {', '.join(changed)} が既定値から変更されています。"
+                        f" フラグが無効な成分のパラメータは無視される (暗黙 no-op) ため、"
+                        f" 意図があるならフラグを有効にし、無いなら既定値に戻してください。"
+                    )
+
+        if self.enable_msm:
+            if self.msm_k < 1:
+                raise ValueError("msm_k は 1 以上である必要があります")
+            if self.msm_b <= 1.0:
+                raise ValueError("msm_b は 1 より大きい必要があります (成分の時定数を分離するため)")
+            if self.msm_gamma1_per_day <= 0:
+                raise ValueError("msm_gamma1_per_day は正である必要があります")
+            if self.vol_var_target_msm <= 0:
+                raise ValueError(
+                    "enable_msm=True なのに vol_var_target_msm が 0 以下です。"
+                    " 分散配分 0 の MSM は暗黙 no-op になるため許可しません。"
+                )
+        if self.enable_slow_ou:
+            if self.ou_half_life_days <= 0:
+                raise ValueError("ou_half_life_days は正である必要があります")
+            if self.vol_var_target_slow <= 0:
+                raise ValueError(
+                    "enable_slow_ou=True なのに vol_var_target_slow が 0 以下です。"
+                    " 分散配分 0 の OU は暗黙 no-op になるため許可しません。"
+                )
+        if self.vol_var_budget_total <= 0:
+            raise ValueError("vol_var_budget_total は正である必要があります")
+        allocated = (self.vol_var_target_msm if self.enable_msm else 0.0) + (
+            self.vol_var_target_slow if self.enable_slow_ou else 0.0
+        )
+        if allocated > self.vol_var_budget_total + 1e-12:
+            raise ValueError(
+                f"分散配分の合計 ({allocated:.4f}) が最終予算"
+                f" ({self.vol_var_budget_total}) を超えています。予算を使い切ると"
+                f" S2 (ラフ) と S5 (chi_2) が入らなくなります (指示書 §6)。"
             )
 
     # ------------------------------------------------------------------

@@ -36,6 +36,11 @@ __all__ = [
     "signature_plot",
     "adf_test",
     "adf_combined",
+    "vol_variance_budget",
+    "msm_diagnostics",
+    "kurtosis_decay_fit",
+    "zeta_curvature",
+    "daily_invariance_stats",
 ]
 
 
@@ -368,6 +373,286 @@ def adf_test(x: np.ndarray, maxlag: int = 10, regression: str = "c") -> dict:
         regression=regression,
         critical_values={str(k): num(v) for k, v in crit.items()},
     )
+
+
+# ---------------------------------------------------------------------------
+# S1 追加: ボラ過程の診断
+# ---------------------------------------------------------------------------
+def vol_variance_budget(components: dict[str, np.ndarray] | None) -> dict:
+    """log sigma の成分別分散シェアを返す (指示書 §6 の予算検証)。
+
+    Parameters
+    ----------
+    components:
+        成分名 -> log sigma への加法寄与の系列 (同一長)。例:
+        ``{"msm": half_log_msm, "slow_ou": x_slow}``。
+
+    Notes
+    -----
+    シェアは Var(成分)/Var(合計) で定義する。成分間が独立なら共分散 ~ 0 で
+    シェアの和は 1 に近いが、有限標本では共分散項の分だけずれる。その残差も
+    ``cross_share`` として返す (大きければ独立性が壊れている兆候)。
+
+    **1 経路の時間平均は遅い成分のせいで大きくゆらぐ** (5000 日でも実効独立標本
+    ~30、SD ≈ ±15%)。ゲート判定にはアンサンブル断面 (ensemble.py) を使い、
+    こちらは経路の記録として扱うこと。
+    """
+    if not components:
+        return na("ボラ成分がありません (enable_msm / enable_slow_ou が無効)")
+    arrays = {k: np.asarray(v, dtype=np.float64).ravel() for k, v in components.items()}
+    n = {k: a.size for k, a in arrays.items()}
+    if len(set(n.values())) != 1:
+        return na(f"成分の長さが揃っていません: {n}")
+    total = np.sum(list(arrays.values()), axis=0)
+    var_total = float(total.var())
+    if var_total <= 0:
+        return na("log sigma の分散が 0 です")
+    shares = {k: float(a.var() / var_total) for k, a in arrays.items()}
+    return ok(
+        num(var_total),
+        var_total=num(var_total),
+        component_vars={k: num(float(a.var())) for k, a in arrays.items()},
+        shares={k: num(v) for k, v in shares.items()},
+        cross_share=num(1.0 - sum(shares.values())),
+        n_samples=int(next(iter(n.values()))),
+    )
+
+
+def msm_diagnostics(msm_meta: dict | None, horizon_days: float | None = None) -> dict:
+    """MSM の実測切替率と占有率を、指定パラメータと突き合わせる。
+
+    生成時に記録された成分別の切替回数 (Poisson) と m0 側占有率を検定する。
+    切替回数は Poisson(gamma_i * T) なので z = (観測 - 期待)/sqrt(期待)。
+    占有率の期待は 1/2 だが、遅い成分は実効標本が少なくゆらぎが大きいので、
+    z は切替回数ベースの実効標本数で正規化する。
+
+    これは**切替動学**の検証を担当する。合成式と正規化の検証はアンサンブル断面
+    (ensemble.py)、経路の分散は :func:`vol_variance_budget` が担当し、三者で
+    役割を分担している。
+    """
+    if not msm_meta:
+        return na("MSM が無効です (enable_msm=False)")
+    n_switches = msm_meta.get("n_switches")
+    expected = msm_meta.get("expected_switches")
+    occupancy = msm_meta.get("occupancy_hi")
+    if not n_switches or not expected:
+        return na("MSM の診断情報が不完全です", keys=sorted(msm_meta))
+
+    rows = []
+    max_abs_z = 0.0
+    for i, (obs, exp) in enumerate(zip(n_switches, expected)):
+        z = (obs - exp) / np.sqrt(exp) if exp > 0 else None
+        if z is not None:
+            max_abs_z = max(max_abs_z, abs(z))
+        # 占有率の実効標本 ~ 区間数 (切替回数 + 1)。
+        occ = occupancy[i] if occupancy else None
+        occ_z = None
+        if occ is not None and obs + 1 > 1:
+            occ_z = (occ - 0.5) / (0.5 / np.sqrt(obs + 1))
+        rows.append(
+            {
+                "component": i + 1,
+                "n_switches": int(obs),
+                "expected_switches": num(exp),
+                "z": num(z) if z is not None else None,
+                "occupancy_hi": num(occ) if occ is not None else None,
+                "occupancy_z": num(occ_z) if occ_z is not None else None,
+            }
+        )
+    return ok(
+        num(max_abs_z),
+        max_abs_switch_z=num(max_abs_z),
+        k=msm_meta.get("k"),
+        m0=num(msm_meta.get("m0")),
+        horizon_days=num(horizon_days if horizon_days is not None else msm_meta.get("horizon_days")),
+        table=rows,
+    )
+
+
+def kurtosis_decay_fit(r_daily: np.ndarray, scales_days=(1, 2, 5, 10, 20, 50), min_obs: int = 100) -> dict:
+    """尖度の集計スケール依存 (集計正規性) を定量化する。
+
+    日次リターンを ``scales_days`` 日で集計し、超過尖度 (kurt - 3) を両対数回帰する。
+    ボラ変動があると細かいスケールほど尖度が高く、集計で 3 に近づく (減衰指数が負)。
+
+    判定は 2 つの条件の AND:
+    (1) log(超過尖度) の log-log 回帰傾きが負
+    (2) 最細スケールの尖度 > 最粗 (gated) スケールの尖度
+    厳密な単調減少を要求しないのは、粗いスケールは標本数が少なく尖度推定が
+    ノイジーで、隣接ペアの逆転が乱数だけで起きるため。
+
+    集計は**重なり窓** (rolling sum) で行う。非重複ブロックだと粗いスケールの
+    標本数が n/k に落ちて集計ノイズが支配的になる。重なり窓は独立標本数こそ
+    増やさないが、ブロック切りの位相という人工的なノイズ源を消し、モーメント
+    推定を平滑化する。
+    """
+    r = np.asarray(r_daily, dtype=np.float64).ravel()
+    r = r[np.isfinite(r)]
+    if r.size < 200:
+        return na(f"日次リターンが足りません (n={r.size})")
+
+    cs = np.concatenate([[0.0], np.cumsum(r)])
+    rows = []
+    points = []
+    for scale in scales_days:
+        k = int(scale)
+        n_windows = r.size - k + 1
+        n_independent = r.size // k
+        if n_independent < 30:
+            rows.append({"scale_days": k, "status": "not_applicable", "kurtosis": None})
+            continue
+        agg = cs[k:] - cs[:-k]  # 重なり窓の k 日リターン (n_windows 本)
+        kurt = float(stats.kurtosis(agg, fisher=False, bias=False))
+        gated = n_independent >= min_obs
+        rows.append(
+            {
+                "scale_days": k,
+                "status": "ok",
+                "n_windows": int(n_windows),
+                "n_independent": int(n_independent),
+                "kurtosis": num(kurt),
+                "excess": num(kurt - 3.0),
+                "gated": bool(gated),
+            }
+        )
+        if gated and kurt > 3.0:
+            points.append((k, kurt - 3.0))
+
+    gated_rows = [row for row in rows if row.get("gated")]
+    if len(gated_rows) < 3:
+        return na("ゲート判定に足るスケールがありません", table=rows)
+
+    slope = None
+    slope_se = None
+    r2 = None
+    if len(points) >= 3:
+        lx = np.log([p[0] for p in points])
+        ly = np.log([p[1] for p in points])
+        fit = stats.linregress(lx, ly)
+        slope, slope_se, r2 = float(fit.slope), float(fit.stderr), float(fit.rvalue**2)
+
+    finest = gated_rows[0]["kurtosis"]
+    coarsest = gated_rows[-1]["kurtosis"]
+    decreasing = bool(
+        slope is not None and slope < 0 and finest is not None and coarsest is not None
+        and finest > coarsest
+    )
+    return ok(
+        num(slope) if slope is not None else None,
+        decay_slope=num(slope) if slope is not None else None,
+        decay_slope_se=num(slope_se) if slope_se is not None else None,
+        decay_r2=num(r2) if r2 is not None else None,
+        kurtosis_finest=num(finest),
+        kurtosis_coarsest_gated=num(coarsest),
+        decreasing=decreasing,
+        n_fit_points=len(points),
+        table=rows,
+    )
+
+
+def zeta_curvature(
+    r_daily: np.ndarray,
+    qs=(0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0),
+    scales_days=(1, 2, 5, 10, 20, 50, 100),
+    min_independent: int = 40,
+) -> dict:
+    """zeta_q の曲率 (q への 2 次回帰の 2 次係数 c2) を推定する。
+
+    マルチフラクタルなら zeta_q は上に凸で c2 < 0。線形回帰の R^2 は小さな曲率に
+    鈍感 (S1 の予算では S0 と分離できない) ため、曲率を直接推定する。モーメントは
+    重なり窓で、q は 4 まで、スケールは 1..100 日 — いずれも曲率の信号を最大化する
+    選択 (それでも S1 の分離は確率的。決定的な判定は S2 で行う)。
+
+    :func:`zeta_q` (非重複・q<=3・ゲート用) とは役割が違うので別関数として追加
+    してある。既存関数は変更しない。
+    """
+    r = np.asarray(r_daily, dtype=np.float64).ravel()
+    r = r[np.isfinite(r)]
+    if r.size < 500:
+        return na(f"日次リターンが足りません (n={r.size})")
+
+    cs = np.concatenate([[0.0], np.cumsum(r)])
+    zetas: list[float] = []
+    used_q: list[float] = []
+    per_q = []
+    for q in qs:
+        pts = []
+        for k in scales_days:
+            k = int(k)
+            if r.size // k < min_independent:
+                continue
+            agg = np.abs(cs[k:] - cs[:-k])
+            moment = float(np.mean(agg ** float(q)))
+            if moment > 0:
+                pts.append((k, moment))
+        if len(pts) < 4:
+            per_q.append({"q": float(q), "status": "not_applicable", "zeta": None})
+            continue
+        lx = np.log([p[0] for p in pts])
+        ly = np.log([p[1] for p in pts])
+        fit = stats.linregress(lx, ly)
+        zetas.append(float(fit.slope))
+        used_q.append(float(q))
+        per_q.append(
+            {"q": float(q), "status": "ok", "zeta": num(fit.slope),
+             "se": num(fit.stderr), "n_scales": len(pts)}
+        )
+
+    if len(zetas) < 4:
+        return na("zeta を推定できたモーメント次数が足りません", per_q=per_q)
+
+    qa = np.array(used_q)
+    za = np.array(zetas)
+    design = np.column_stack([np.ones_like(qa), qa, qa**2])
+    coef, residuals, _, _ = np.linalg.lstsq(design, za, rcond=None)
+    lin = stats.linregress(qa, za)
+    return ok(
+        num(float(coef[2])),
+        c2=num(float(coef[2])),
+        c1=num(float(coef[1])),
+        c0=num(float(coef[0])),
+        linear_r2=num(lin.rvalue**2),
+        qs=list(used_q),
+        zetas=[num(z) for z in zetas],
+        per_q=per_q,
+        scales_days=[int(s) for s in scales_days],
+    )
+
+
+def daily_invariance_stats(result) -> dict:
+    """時間スケール不変性の比較に使う日次統計 (尖度・GPH d・|r|ACF(1)・Var(log sigma))。
+
+    2 つの解像度の実行を**同じ汎関数**で測るための最小セット。Var(log sigma) は
+    生成時の分単位サブサンプル (物理時刻グリッドが解像度に依らず共通) から取る。
+    """
+    from .memory import acf as acf_fn
+    from .memory import gph_estimator
+    from .tails import basic_moments
+
+    obs = result.observation
+    bars = obs.to_bars(obs.session_seconds)
+    r_daily = bars.returns()
+    abs_r = np.abs(r_daily)
+
+    moments = basic_moments(r_daily)
+    gph = gph_estimator(abs_r, bandwidth_exponent=result.config.validation.daily_gph_bandwidth_exponent)
+    acf_abs = acf_fn(abs_r, max_lag=min(100, abs_r.size - 1))
+
+    sub = result.meta.get("l2", {}).get("vol_subsample")
+    var_log_vol = None
+    if sub is not None:
+        log_vol_sub = np.asarray(sub["log_vol"], dtype=np.float64)
+        var_log_vol = float(log_vol_sub.var())
+    else:
+        var_log_vol = float(np.asarray(result.price.log_vol).var())
+
+    return {
+        "kurtosis_daily": moments.get("kurtosis"),
+        "gph_d": gph.get("d"),
+        "acf_abs_lag1": acf_abs.get("lag1"),
+        "var_log_vol": var_log_vol,
+        "n_days": int(r_daily.size),
+    }
 
 
 def adf_combined(log_price_result: dict, returns_result: dict, alpha: float = 0.01) -> dict:

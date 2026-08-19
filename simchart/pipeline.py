@@ -30,7 +30,15 @@ from .layers import (
 from .rng import STREAM_NAMES, RNGRegistry
 from .types import BookSnapshot, EventLog, Observation, PriceProcess, StageResult
 
-__all__ = ["run", "run_twice", "determinism_check", "rng_stability_check", "GridDriver"]
+__all__ = [
+    "run",
+    "run_twice",
+    "determinism_check",
+    "rng_stability_check",
+    "rng_diffusion_check",
+    "scale_invariance_check",
+    "GridDriver",
+]
 
 
 @dataclass
@@ -97,6 +105,9 @@ def run(config: Config, *, rng: RNGRegistry | None = None) -> StageResult:
             "l2": layers.price.name,
             "l3": layers.book.name,
         },
+        # L2 の生成時診断 (MSM 切替・OU 統計・成分サブサンプル・拡散 z ダイジェスト)。
+        # 生配列を含むので metrics.json へは要約だけを載せること (suite が選別する)。
+        "l2": dict(getattr(layers.price, "last_diagnostics", {})),
         "grid": {
             "n_points": price.n_points,
             "t_start_sec": price.t_start,
@@ -203,4 +214,91 @@ def rng_stability_check(config: Config, n_draws: int | None = None) -> dict[str,
         "n_draws": draws,
         "probe_streams": list(probe_names),
         "per_stream": per_stream,
+    }
+
+
+def rng_diffusion_check(config: Config, result: StageResult) -> dict[str, Any]:
+    """パイプラインが消費した拡散乱数が、S0 相当の消費列と一致するかを検査する。
+
+    S1 で MSM / OU のストリームを足しても、``l2.diffusion`` の系列は名前ハッシュ
+    方式によって不変のはず。ここでは独立に RNGRegistry を作り、同一シードで
+    同じ個数を引いた列のダイジェストを「期待値」として、パイプラインが実際に
+    消費した列のダイジェスト (生成時に記録) と突き合わせる。実装が誤って
+    ``l2.diffusion`` から先に別の乱数を引いたり、消費個数を変えたりすると
+    ここで不一致になる。
+    """
+    import hashlib
+
+    expected_z = RNGRegistry(config.seed).get("l2.diffusion").standard_normal(
+        config.total_steps
+    )
+    expected = hashlib.sha256(np.ascontiguousarray(expected_z).tobytes()).hexdigest()
+    observed = result.meta.get("l2", {}).get("diffusion_digest")
+    return {
+        "match": bool(observed == expected),
+        "expected_digest": expected,
+        "observed_digest": observed,
+        "n_draws": config.total_steps,
+    }
+
+
+def scale_invariance_check(config: Config, reference_result: StageResult) -> dict[str, Any]:
+    """時間スケール不変性の検査 (指示書 §7)。
+
+    同一シード・同一日数のまま ``steps_per_day`` だけを対照解像度に変えて再実行し、
+    **日次集計した統計量** (尖度・GPH d・|r| ACF(1)・Var(log sigma)) が許容誤差内で
+    一致することを確認する。「1 ステップあたり切替確率」型の実装はここで落ちる。
+
+    同一シードなら MSM の切替過程は物理時間定義により解像度に依らず**ビット単位で
+    一致する** (switch_digest で直接確認)。残る差は拡散乱数と OU 乱数の実現差だけ
+    なので、日次統計はサンプリング誤差の範囲で一致するはずである。トレランスは
+    その実現差の実測分布から設定してある (tests/test_scale_invariance.py)。
+    """
+    from .validation.scaling import daily_invariance_stats
+
+    v = config.validation
+    low_config = config.replace(steps_per_day=v.scale_invariance_steps_per_day)
+    low_result = run(low_config)
+
+    hi = daily_invariance_stats(reference_result)
+    lo = daily_invariance_stats(low_result)
+
+    checks: dict[str, dict[str, Any]] = {}
+
+    def add(name: str, a: float | None, b: float | None, tol: float, relative: bool) -> None:
+        if a is None or b is None:
+            checks[name] = {"passed": False, "hi": a, "lo": b, "reason": "統計が計算できませんでした"}
+            return
+        diff = abs(a - b)
+        denom = abs(0.5 * (a + b)) if relative else 1.0
+        value = diff / denom if denom > 0 else diff
+        checks[name] = {
+            "passed": bool(value <= tol),
+            "hi": a,
+            "lo": b,
+            "diff": diff,
+            "measure": "relative" if relative else "absolute",
+            "value": value,
+            "tol": tol,
+        }
+
+    add("kurtosis_daily", hi["kurtosis_daily"], lo["kurtosis_daily"], v.si_tol_kurtosis_rel, True)
+    add("gph_d_daily", hi["gph_d"], lo["gph_d"], v.si_tol_gph_d_abs, False)
+    add("acf_abs_r_lag1_daily", hi["acf_abs_lag1"], lo["acf_abs_lag1"], v.si_tol_acf1_abs, False)
+    add("var_log_vol", hi["var_log_vol"], lo["var_log_vol"], v.si_tol_var_logvol_abs, False)
+
+    digest_hi = reference_result.meta.get("l2", {}).get("msm", {}).get("switch_digest")
+    digest_lo = low_result.meta.get("l2", {}).get("msm", {}).get("switch_digest")
+    if config.enable_msm:
+        checks["msm_switch_process_identical"] = {
+            "passed": bool(digest_hi is not None and digest_hi == digest_lo),
+            "hi": digest_hi,
+            "lo": digest_lo,
+        }
+
+    return {
+        "passed": bool(all(c["passed"] for c in checks.values())),
+        "steps_per_day_hi": config.steps_per_day,
+        "steps_per_day_lo": v.scale_invariance_steps_per_day,
+        "checks": checks,
     }
