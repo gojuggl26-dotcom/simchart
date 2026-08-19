@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from generate_charts import ohlc_from_log_price  # noqa: E402
 
 from simchart import Config, run  # noqa: E402
+from simchart.config import IMPLEMENTED_FLAGS  # noqa: E402
 from simchart.report import results_dir  # noqa: E402
 
 
@@ -81,7 +82,10 @@ def main() -> int:
     n_days = int(daily["day"].max()) + 1
     passed: list[bool] = []
 
+    saved = _saved_config(charts_dir)
+    flags = [f for f in IMPLEMENTED_FLAGS if getattr(saved, f)]
     print(f"{charts_dir}")
+    print(f"stage={saved.stage}  有効フラグ={', '.join(flags) if flags else 'なし (S0)'}")
     print(f"チャート {n_charts} 本 x {n_days} 日 = {len(daily):,} 行")
     print()
     print("1. OHLC の内部整合")
@@ -109,7 +113,9 @@ def main() -> int:
     rng = np.random.default_rng(0)
     sample_ids = sorted(rng.choice(n_charts, size=min(args.n_regenerate, n_charts),
                                    replace=False).tolist())
-    base = Config(n_days=n_days, steps_per_day=_steps_per_day(charts_dir))
+    # ★生成時の設定を復元する。素の Config(...) を組むと S1 のフラグが落ちて
+    # S0 相当の経路と照合してしまい、ダイジェストが必ず不一致になる。
+    base = _saved_config(charts_dir).replace(n_days=n_days)
     steps_per_day = base.steps_per_day
     regenerated: dict[int, np.ndarray] = {}
     for cid in sample_ids:
@@ -159,11 +165,12 @@ def main() -> int:
     return 0 if n_ok == len(passed) else 1
 
 
-def _steps_per_day(charts_dir: Path) -> int:
+def _saved_config(charts_dir: Path) -> Config:
+    """生成時に保存された設定を復元する (段階のフラグごと)。"""
     import json
 
     with open(charts_dir / "ensemble_metrics.json", encoding="utf-8") as fh:
-        return int(json.load(fh)["generation"]["steps_per_day"])
+        return Config.from_dict(json.load(fh)["config"])
 
 
 if __name__ == "__main__":

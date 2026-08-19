@@ -127,6 +127,13 @@ def build_base_config(args: argparse.Namespace) -> Config:
 
 
 def generate(args: argparse.Namespace) -> int:
+    if args.recompute:
+        # 再計算は保存済みの設定を読むので、段階ガード (フラグの整合検査) は不要。
+        # --stage S1 だけ渡しても通るよう、ガードより前に分岐する。
+        stage = args.stage or (Config.load(args.config).stage if args.config else "S0")
+        out_dir = results_dir(stage, args.results_dir) / "charts"
+        return recompute(out_dir, args)
+
     base = build_base_config(args)
     stage = base.stage
     n_days, steps_per_day = base.n_days, base.steps_per_day
@@ -141,9 +148,6 @@ def generate(args: argparse.Namespace) -> int:
 
     out_dir = results_dir(stage, args.results_dir) / "charts"
     out_dir.mkdir(parents=True, exist_ok=True)
-
-    if args.recompute:
-        return recompute(out_dir, args)
 
     n = args.n_charts
     total_days = n * n_days
@@ -618,14 +622,22 @@ def make_plots(
             label=f"empirical {lo}-{hi}%",
         )
     ax.plot(days, np.median(close, axis=0), color="C0", lw=1.2, label="empirical median")
+    is_s0 = not any(getattr(config, f) for f in IMPLEMENTED_FLAGS)
+    # 定数ボラの GBM 分位点。S1 以降でも E[∫σ²] = σ̄²T なので**総分散は同じ**だが、
+    # 分布は分散混合になりテールが厚くなる。したがってこの線は「理論」ではなく
+    # 「同じ総分散をもつ定数ボラの参照線」であり、経験帯が外側にはみ出すのが正しい。
+    ref_label = "theoretical GBM" if is_s0 else "constant-vol reference (same total variance)"
     for q, style in ((0.05, "--"), (0.5, "-"), (0.95, "--")):
         z = stats.norm.ppf(q)
         theo = p0 * np.exp((mu - 0.5 * sigma**2) * horizon + sigma * np.sqrt(horizon) * z)
         ax.plot(days, theo, color="r", ls=style, lw=1.0,
-                label="theoretical GBM" if q == 0.5 else None)
+                label=ref_label if q == 0.5 else None)
     ax.set_xlabel("day")
     ax.set_ylabel("price")
-    ax.set_title(f"S0 fan chart: {n_charts} charts vs theoretical GBM quantiles")
+    ax.set_title(
+        f"{config.stage} fan chart: {n_charts} charts vs "
+        + ("theoretical GBM quantiles" if is_s0 else "constant-vol reference")
+    )
     ax.legend(fontsize=8)
     save(fig, "fan_chart.png")
 
@@ -639,14 +651,36 @@ def make_plots(
         grid,
         stats.norm.pdf(grid, (mu - 0.5 * sigma**2) * horizon_total,
                        sigma * math.sqrt(horizon_total)),
-        "r-", lw=1.3, label="theoretical N",
+        "r-", lw=1.3, label="normal (same variance)" if not is_s0 else "theoretical N",
     )
     axes[0].set_xlabel("terminal log return")
-    axes[0].set_title("terminal log return vs theory")
+    axes[0].set_title(
+        "terminal log return vs theory" if is_s0
+        else "terminal log return vs normal (variance mixture -> fat tails)"
+    )
     axes[0].legend(fontsize=8)
     stats.probplot(terminal, dist="norm", plot=axes[1])
     axes[1].set_title("normal QQ of terminal log return")
     save(fig, "terminal_distribution.png")
+
+    # 5. チャートごとの実現ボラの分布
+    # 定数ボラ段階では σ̄ に一点集中し、確率ボラ段階では大きく散らばる。
+    # データセット水準で S0 と S1 の違いが一目で分かる図。
+    vols = index_df["realized_vol_annualized"].to_numpy()
+    fig, ax = plt.subplots(figsize=(6.4, 3.6))
+    ax.hist(vols, bins=min(60, max(10, n_charts // 15)), alpha=0.75)
+    ax.axvline(sigma, color="r", ls="--", lw=1.2,
+               label=f"sigma_bar = {sigma:.2f}")
+    ax.axvline(float(np.median(vols)), color="k", ls=":", lw=1.2,
+               label=f"median = {np.median(vols):.4f}")
+    ax.set_xlabel("realized volatility per chart (annualized)")
+    ax.set_ylabel("charts")
+    ax.set_title(
+        f"{config.stage}: dispersion of realized volatility across {n_charts} charts"
+        + ("" if is_s0 else "  (wide spread is the point of S1)")
+    )
+    ax.legend(fontsize=8)
+    save(fig, "realized_vol_distribution.png")
 
     # 4. ローソク足 (1 本目の直近 120 日)
     tail = daily[daily["chart_id"] == 0].iloc[-120:]
