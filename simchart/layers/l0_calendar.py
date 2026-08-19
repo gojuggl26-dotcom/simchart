@@ -56,7 +56,11 @@ class ConstantCalendar:
         境界に 2 点を置き、その間に不連続を作ることになる。
         """
         n_points = self._config.total_steps + 1
-        return np.arange(n_points, dtype=np.float64) * self._step_seconds
+        # 本番設定では 1 配列 936MB。`arange(...) * step` は中間配列をもう 1 本
+        # 作るので、in-place で掛ける (値は同一)。
+        grid = np.arange(n_points, dtype=np.float64)
+        grid *= self._step_seconds
+        return grid
 
     def phi(self, t: float | np.ndarray) -> float | np.ndarray:
         """活動度の季節係数。S0 では恒等的に 1。"""

@@ -47,7 +47,7 @@ import pandas as pd
 from scipy import stats
 
 from simchart import Config, run
-from simchart.config import TRADING_DAYS_PER_YEAR
+from simchart.config import IMPLEMENTED_FLAGS, SESSION_SECONDS, TRADING_DAYS_PER_YEAR
 from simchart.report import git_info, results_dir
 from simchart.validation.base import jsonable, num
 
@@ -76,6 +76,18 @@ def ohlc_from_log_price(
     return open_log, high_log, low_log, close_log
 
 
+def _pooled_abs_acf1(returns_2d: np.ndarray) -> float:
+    """|日次リターン| のラグ1 自己相関を、チャート内で測ってプールする。
+
+    チャートをまたぐラグを作らないこと (別の経路をつなぐと偽の相関が入る)。
+    """
+    x = np.abs(returns_2d)
+    x = x - x.mean()
+    num_ = float((x[:, :-1] * x[:, 1:]).sum())
+    den = float((x**2).sum())
+    return num_ / den if den > 0 else float("nan")
+
+
 def max_drawdown(close: np.ndarray) -> float:
     """終値ベースの最大ドローダウン (正の比率)。"""
     peak = np.maximum.accumulate(close)
@@ -83,13 +95,42 @@ def max_drawdown(close: np.ndarray) -> float:
 
 
 # ---------------------------------------------------------------------------
+def build_base_config(args: argparse.Namespace) -> Config:
+    """生成に使う基準 Config を組み立てる。
+
+    **段階の設定ファイルを読むこと。** ``Config(stage="S1")`` を素で組むと
+    ``enable_msm`` / ``enable_slow_ou`` が False のままになり、**S0 と同一の経路を
+    S1 と称して出力する**という最悪の事故になる (フラグの暗黙 no-op と同じ構造)。
+    そのため段階が S0 でないのに実装済みフラグが 1 つも立っていない場合は停止する。
+    """
+    base = Config.load(args.config) if args.config else Config()
+    overrides: dict[str, Any] = {}
+    if args.stage is not None:
+        overrides["stage"] = args.stage
+    if args.base_seed is not None:
+        overrides["seed"] = args.base_seed
+    if args.n_days is not None:
+        overrides["n_days"] = args.n_days
+    if args.steps_per_day is not None:
+        overrides["steps_per_day"] = args.steps_per_day
+    if overrides:
+        base = base.replace(**overrides)
+
+    if base.stage != "S0" and not any(getattr(base, f) for f in IMPLEMENTED_FLAGS):
+        raise ValueError(
+            f"stage={base.stage} なのに実装済みフラグ ({', '.join(IMPLEMENTED_FLAGS)}) が"
+            f" 1 つも有効になっていません。S0 と同一の経路を {base.stage} と称して"
+            f" 出力してしまうため停止します。--config configs/{base.stage.lower()}.yaml"
+            f" を指定してください。"
+        )
+    return base
+
+
 def generate(args: argparse.Namespace) -> int:
-    base = Config(
-        seed=args.base_seed, n_days=args.n_days, steps_per_day=args.steps_per_day,
-        stage=args.stage,
-    )
+    base = build_base_config(args)
+    stage = base.stage
     n_days, steps_per_day = base.n_days, base.steps_per_day
-    session_seconds = 6.5 * 3600.0
+    session_seconds = SESSION_SECONDS
     step_seconds = session_seconds / steps_per_day
     seconds_per_year = TRADING_DAYS_PER_YEAR * session_seconds
 
@@ -98,7 +139,7 @@ def generate(args: argparse.Namespace) -> int:
     steps_per_intraday_bar = int(args.intraday_bar_sec / step_seconds)
     intraday_bars_per_day = steps_per_day // steps_per_intraday_bar
 
-    out_dir = results_dir(args.stage, args.results_dir) / "charts"
+    out_dir = results_dir(stage, args.results_dir) / "charts"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     if args.recompute:
@@ -119,17 +160,24 @@ def generate(args: argparse.Namespace) -> int:
     intraday_frames: list[pd.DataFrame] = []
     started = time.perf_counter()
 
+    base_seed = base.seed
+    flags_on = [f for f in IMPLEMENTED_FLAGS if getattr(base, f)]
     print(f"{n} 本 x {n_days} 日 x {steps_per_day} ステップ を生成します "
-          f"(stage={args.stage}, seed={args.base_seed}..{args.base_seed + n - 1})")
+          f"(stage={stage}, seed={base_seed}..{base_seed + n - 1}, "
+          f"有効フラグ={', '.join(flags_on) if flags_on else 'なし (S0)'})")
 
     for i in range(n):
-        seed = args.base_seed + i
+        seed = base_seed + i
         result = run(base.replace(seed=seed))
         log_price = result.observation.log_price
 
         o, h, l, c = ohlc_from_log_price(log_price, n_days, steps_per_day)
+        # 実現分散。5000 日 x 23400 では 1 本あたり 936MB なので、二乗は in-place で
+        # 行って一時配列を増やさない (値は (x**2) と同一)。
         step_returns = np.diff(log_price)
-        rv_daily = (step_returns.reshape(n_days, steps_per_day) ** 2).sum(axis=1)
+        np.square(step_returns, out=step_returns)
+        rv_daily = step_returns.reshape(n_days, steps_per_day).sum(axis=1)
+        del step_returns
 
         sl = slice(i * n_days, (i + 1) * n_days)
         open_px[sl] = np.exp(o)
@@ -219,7 +267,7 @@ def generate(args: argparse.Namespace) -> int:
     )
     info = git_info()
     payload = {
-        "stage": args.stage,
+        "stage": stage,
         "git_commit": info["commit"],
         "git_dirty": info["dirty"],
         "config": base.to_dict(),
@@ -229,8 +277,9 @@ def generate(args: argparse.Namespace) -> int:
             "n_days": n_days,
             "steps_per_day": steps_per_day,
             "step_seconds": step_seconds,
-            "base_seed": args.base_seed,
-            "seeds": [args.base_seed, args.base_seed + n - 1],
+            "base_seed": base_seed,
+            "seeds": [base_seed, base_seed + n - 1],
+            "enabled_flags": flags_on,
             "intraday_samples": args.intraday_samples,
             "intraday_bar_sec": args.intraday_bar_sec,
             "runtime_sec": time.perf_counter() - started,
@@ -249,7 +298,7 @@ def generate(args: argparse.Namespace) -> int:
         made = make_plots(daily, index_df, base, out_dir / "plots")
         print(f"プロット {len(made)} 枚: {', '.join(p.name for p in made)}")
 
-    report(metrics, daily_path, index_path, intraday_path, out_dir)
+    report(metrics, daily_path, index_path, intraday_path, out_dir, stage)
     return 0
 
 
@@ -286,7 +335,7 @@ def recompute(out_dir: Path, args: argparse.Namespace) -> int:
 
     intraday = out_dir / "intraday_ohlc_sample.parquet"
     report(metrics, out_dir / "daily_ohlc.parquet", out_dir / "charts_index.parquet",
-           intraday if intraday.exists() else None, out_dir)
+           intraday if intraday.exists() else None, out_dir, base.stage)
     return 0
 
 
@@ -300,15 +349,24 @@ def ensemble_metrics(
     seconds_per_year: float,
     runtime_sec: float,
 ) -> dict[str, Any]:
-    """1000 本まとめての検証。
+    """まとめての検証。
 
-    個々のチャートが「それらしく」見えても、集団として幾何ブラウン運動に
-    なっていなければ意味がない。特に確認するのは 4 点:
+    個々のチャートが「それらしく」見えても、集団として意図した過程になっていな
+    ければ意味がない。**検査は段階に依らない不変量と、段階ごとに変わる記述統計に
+    分けてある。** 混ぜると S1 で「尖度が 3 でないから不合格」のような誤った判定に
+    なる (S1 は尖度が 3 でないことこそが目的)。
 
-    1. 実現ボラが全チャートで ``sigma_bar`` に一致すること
-    2. 日次リターンをプールした尖度が 3、自己相関が 0 であること
-    3. 終端の期待値が **1 倍** であること (伊藤補正 −σ²/2 が入っているか)
-    4. チャート同士が独立であること (シードをずらしただけで系列が相関していないか)
+    段階に依らない不変量 (``universal``)
+        1. ``E[Σr²]/T = sigma_bar²`` — 実現**分散**の平均。S1 でボラが変動しても
+           E[σ²] = σ̄² の正規化は保たれる (凸性補正の経路レベルでの検証)
+        2. ``E[exp(終端対数リターン)] = 1`` — マルチンゲール性 (伊藤補正 −σ²/2)
+        3. ``Var(終端対数リターン) = sigma_bar² T`` — 積分分散の期待値
+        4. チャート同士が独立 (シードをずらしただけで相関していないか)
+
+    段階で変わる記述統計 (``descriptive``)
+        尖度・正規性検定・実現ボラの散らばり・値幅/実体比。S0 では理論値 (尖度 3、
+        正規、値幅 σ√(8/π)) が付くが、S1 ではボラ混合により**理論値そのものが
+        変わる**ので、理論との比較は S0 のときだけ載せる。
     """
     returns = daily["log_return"].to_numpy().reshape(n_charts, n_days)
     pooled = returns.ravel()
@@ -344,6 +402,42 @@ def ensemble_metrics(
     tail_prob = 2.0 * stats.norm.sf(max_abs_z)
     max_abs_z_pvalue = float(-np.expm1(n_pairs * np.log1p(-tail_prob)))
 
+    # --- 0. 段階に依らない不変量 ---
+    is_s0 = not any(getattr(config, f) for f in IMPLEMENTED_FLAGS)
+    horizon_years_u = n_days / TRADING_DAYS_PER_YEAR
+    # 実現分散 (年率) = 各チャートの Σr²/T。実現ボラの二乗ではなく分散で平均する
+    # ことが重要 — E[σ] != sqrt(E[σ²]) なので、ボラが変動する段階では実現ボラの
+    # 平均は σ̄ より小さくなる (Jensen)。正規化条件は分散の側にある。
+    realized_var = (index_df["realized_vol_annualized"].to_numpy()) ** 2
+    rv_mean = float(realized_var.mean())
+    rv_se = float(realized_var.std(ddof=1) / math.sqrt(n_charts))
+    gross_u = np.exp(returns.sum(axis=1))
+    terminal_u = returns.sum(axis=1)
+    universal = {
+        "e_realized_var": {
+            "value": num(rv_mean),
+            "expected": num(sigma**2),
+            "se": num(rv_se),
+            "z": num((rv_mean - sigma**2) / rv_se) if rv_se > 0 else None,
+            "note": "E[Σr²]/T = sigma_bar^2。ボラが変動しても保たれる正規化条件",
+        },
+        "martingale": {
+            "value": num(float(gross_u.mean())),
+            "expected": 1.0,
+            "se": num(float(gross_u.std(ddof=1) / math.sqrt(n_charts))),
+            "z": num(
+                (float(gross_u.mean()) - 1.0)
+                / float(gross_u.std(ddof=1) / math.sqrt(n_charts))
+            ),
+            "note": "E[P_T/P_0] = 1。伊藤補正 -sigma^2/2 が入っているかの検査",
+        },
+        "terminal_variance": {
+            "value": num(float(terminal_u.var(ddof=1))),
+            "expected": num(sigma**2 * horizon_years_u),
+            "note": "Var(終端対数リターン) = sigma_bar^2 T (積分分散の期待値)",
+        },
+    }
+
     # --- 5. OHLC の高値・安値が本当に日中経路から来ているか ---
     # ブラウン運動の 1 期間の値幅は E[max - min] = sigma * sqrt(8/pi)、
     # 始値終値の差は E|close - open| = sigma * sqrt(2/pi)。高値・安値は終値だけからは
@@ -358,23 +452,55 @@ def ensemble_metrics(
     discrete_factor = 1.0 - 2.0 * 0.5826 / math.sqrt(steps_per_day) / math.sqrt(8.0 / math.pi)
 
     return {
+        "stage": config.stage,
+        "is_constant_vol": bool(is_s0),
+        "universal": universal,
         "ohlc": {
             "mean_log_range": num(log_range.mean()),
-            "expected_log_range_continuous": num(range_theory),
-            "expected_log_range_discrete": num(range_theory * discrete_factor),
-            "range_ratio_vs_discrete": num(log_range.mean() / (range_theory * discrete_factor)),
             "mean_abs_body": num(abs_body.mean()),
-            "expected_abs_body": num(sigma_day * math.sqrt(2.0 / math.pi)),
-            "body_ratio": num(abs_body.mean() / (sigma_day * math.sqrt(2.0 / math.pi))),
+            "range_to_body_ratio": num(log_range.mean() / abs_body.mean()),
             "steps_per_day": int(steps_per_day),
+            # 理論値は定数ボラのときだけ意味を持つ。ボラが変動すると
+            # E[値幅] = E[sigma_day] sqrt(8/pi) となり、E[sigma] < sqrt(E[sigma^2])
+            # (Jensen) の分だけ σ̄ ベースの理論値より小さくなる。
+            **(
+                {
+                    "expected_log_range_continuous": num(range_theory),
+                    "expected_log_range_discrete": num(range_theory * discrete_factor),
+                    "range_ratio_vs_discrete": num(
+                        log_range.mean() / (range_theory * discrete_factor)
+                    ),
+                    "expected_abs_body": num(sigma_day * math.sqrt(2.0 / math.pi)),
+                    "body_ratio": num(
+                        abs_body.mean() / (sigma_day * math.sqrt(2.0 / math.pi))
+                    ),
+                }
+                if is_s0
+                else {
+                    "theory_not_applicable": (
+                        "ボラが変動するため sigma_bar ベースのブラウン運動理論値は"
+                        "当てはまらない (E[sigma] < sqrt(E[sigma^2]))"
+                    )
+                }
+            ),
         },
         "realized_vol": {
+            # S1 以降はチャートごとに大きく散らばるのが正しい (それがボラ変動の
+            # 実体)。「sigma_bar からの最大乖離」は定数ボラ段階でしか意味を持たない。
             "mean": num(vols.mean()),
             "std": num(vols.std(ddof=1)),
             "min": num(vols.min()),
             "max": num(vols.max()),
-            "target": num(sigma),
-            "max_abs_dev_from_target": num(np.max(np.abs(vols - sigma))),
+            "p05": num(float(np.percentile(vols, 5))),
+            "p50": num(float(np.percentile(vols, 50))),
+            "p95": num(float(np.percentile(vols, 95))),
+            "sd_log": num(float(np.log(vols).std(ddof=1))),
+            "target_if_constant_vol": num(sigma),
+            **(
+                {"max_abs_dev_from_target": num(np.max(np.abs(vols - sigma)))}
+                if is_s0
+                else {}
+            ),
         },
         "pooled_daily_returns": {
             "n": int(n_pooled),
@@ -383,8 +509,13 @@ def ensemble_metrics(
             "std": num(pooled.std(ddof=1)),
             "expected_std": num(sigma / math.sqrt(TRADING_DAYS_PER_YEAR)),
             "skewness": num(stats.skew(pooled, bias=False)),
+            # 尖度 3 は定数ボラ段階の期待値。S1 以降は 3 より大きいのが正しい。
             "kurtosis": num(stats.kurtosis(pooled, fisher=False, bias=False)),
             "kurtosis_se": num(math.sqrt(24.0 / n_pooled)),
+            "kurtosis_expected_if_constant_vol": 3.0,
+            # |r| の自己相関はチャート内で測ってプールする (チャートをまたぐ
+            # ラグを作らない)。S0 では 0、S1 以降は正になる。
+            "abs_acf_lag1": num(_pooled_abs_acf1(returns)),
             "acf_lag1": num(acf1),
             "acf_lag1_z": num(acf1 * math.sqrt(n_pooled)),
         },
@@ -398,7 +529,11 @@ def ensemble_metrics(
             "gross_return_mean": num(gross.mean()),
             "gross_return_mean_expected": 1.0,
             "gross_return_mean_se": num(gross.std(ddof=1) / math.sqrt(n_charts)),
+            # 正規性は定数ボラ段階でのみ期待される。S1 以降の終端は分散混合なので
+            # 棄却されるのが正しい (棄却されなければボラが動いていない疑い)。
             "normality_pvalue": num(stats.jarque_bera(terminal).pvalue),
+            "normality_expected": "正規" if is_s0 else "非正規 (分散混合)",
+            "kurtosis": num(stats.kurtosis(terminal, fisher=False, bias=False)),
         },
         "independence": {
             "n_pairs": int(n_pairs),
@@ -527,7 +662,7 @@ def make_plots(
 # ---------------------------------------------------------------------------
 def report(
     metrics: dict[str, Any], daily_path: Path, index_path: Path,
-    intraday_path: Path | None, out_dir: Path,
+    intraday_path: Path | None, out_dir: Path, stage: str = "S0",
 ) -> None:
     def size(path: Path | None) -> str:
         return "-" if path is None else f"{path.stat().st_size / 1e6:.1f} MB"
@@ -547,36 +682,56 @@ def report(
     term = metrics["terminal"]
     indep = metrics["independence"]
     dd = metrics["drawdown"]
-    rows = [
-        ("実現ボラ (年率) 平均", f"{rv['mean']:.5f}", f"目標 {rv['target']:.3f}"),
-        ("実現ボラ 範囲", f"[{rv['min']:.5f}, {rv['max']:.5f}]", ""),
-        ("日中値幅 log(high/low) 平均", f"{ohlc['mean_log_range']:.6f}",
-         f"理論 {ohlc['expected_log_range_discrete']:.6f} (比 {ohlc['range_ratio_vs_discrete']:.4f})"),
-        ("実体 |log(close/open)| 平均", f"{ohlc['mean_abs_body']:.6f}",
-         f"理論 {ohlc['expected_abs_body']:.6f} (比 {ohlc['body_ratio']:.4f})"),
-        ("日次リターン 標準偏差", f"{pooled['std']:.6f}", f"理論 {pooled['expected_std']:.6f}"),
-        ("日次リターン 平均", f"{pooled['mean']:.3e}", f"理論 {pooled['expected_mean']:.3e}"),
-        ("日次リターン 尖度", f"{pooled['kurtosis']:.4f}", f"3 (s.e. {pooled['kurtosis_se']:.4f})"),
-        ("日次リターン ACF(1)", f"{pooled['acf_lag1']:+.5f}", f"z = {pooled['acf_lag1_z']:+.2f}"),
-        ("終端 対数リターン 平均", f"{term['log_return_mean']:+.5f}",
-         f"理論 {term['log_return_mean_expected']:+.5f} (s.e. {term['log_return_mean_se']:.5f})"),
-        ("終端 対数リターン 標準偏差", f"{term['log_return_std']:.5f}",
-         f"理論 {term['log_return_std_expected']:.5f}"),
-        ("終端 単純リターン 平均", f"{term['gross_return_mean']:.5f}",
-         f"理論 1.00000 (s.e. {term['gross_return_mean_se']:.5f})"),
-        ("チャート間 相関 最大|z|", f"{indep['max_abs_z']:.2f}",
-         f"目安 {indep['expected_max_abs_z']:.2f} / 超過確率 p={indep['max_abs_z_pvalue']:.3f}"),
+    uni = metrics["universal"]
+    is_s0 = bool(metrics.get("is_constant_vol", True))
+
+    universal_rows = [
+        ("E[Σr²]/T (実現分散の平均)", f"{uni['e_realized_var']['value']:.6f}",
+         f"理論 {uni['e_realized_var']['expected']:.6f} (z = {uni['e_realized_var']['z']:+.2f})"),
+        ("E[P_T/P_0] (マルチンゲール)", f"{uni['martingale']['value']:.5f}",
+         f"理論 1.00000 (z = {uni['martingale']['z']:+.2f})"),
+        ("Var(終端対数リターン)", f"{uni['terminal_variance']['value']:.5f}",
+         f"理論 {uni['terminal_variance']['expected']:.5f}"),
         ("チャート間 相関 z の標準偏差", f"{indep['z_std']:.4f}",
          f"独立なら 1 / |z|>1.96 が {indep['frac_abs_z_over_1_96'] * 100:.2f}% (理論 5%)"),
+        ("チャート間 相関 最大|z|", f"{indep['max_abs_z']:.2f}",
+         f"目安 {indep['expected_max_abs_z']:.2f} / 超過確率 p={indep['max_abs_z_pvalue']:.3f}"),
+    ]
+
+    descriptive_rows = [
+        ("実現ボラ (年率) 中央値", f"{rv['p50']:.5f}",
+         f"5-95% [{rv['p05']:.4f}, {rv['p95']:.4f}] / sd(log) {rv['sd_log']:.4f}"),
+        ("日次リターン 標準偏差", f"{pooled['std']:.6f}", f"理論 {pooled['expected_std']:.6f}"),
+        ("日次リターン 尖度", f"{pooled['kurtosis']:.4f}",
+         f"定数ボラなら 3 (s.e. {pooled['kurtosis_se']:.4f})"),
+        ("日次 |r| ACF(1)", f"{pooled['abs_acf_lag1']:+.5f}", "定数ボラなら 0"),
+        ("日次リターン ACF(1)", f"{pooled['acf_lag1']:+.5f}", f"z = {pooled['acf_lag1_z']:+.2f}"),
+        ("日中値幅 log(high/low) 平均", f"{ohlc['mean_log_range']:.6f}",
+         (f"理論 {ohlc['expected_log_range_discrete']:.6f}"
+          f" (比 {ohlc['range_ratio_vs_discrete']:.4f})") if is_s0
+         else f"実体との比 {ohlc['range_to_body_ratio']:.3f}"),
+        ("実体 |log(close/open)| 平均", f"{ohlc['mean_abs_body']:.6f}",
+         (f"理論 {ohlc['expected_abs_body']:.6f} (比 {ohlc['body_ratio']:.4f})") if is_s0
+         else "理論値は定数ボラ限定 (E[σ] < √E[σ²])"),
+        ("終端 対数リターン 標準偏差", f"{term['log_return_std']:.5f}",
+         f"理論 {term['log_return_std_expected']:.5f}"),
+        ("終端 分布の正規性 p (JB)", f"{term['normality_pvalue']:.4f}",
+         f"期待: {term['normality_expected']} / 尖度 {term['kurtosis']:.3f}"),
         ("最大ドローダウン 中央値", f"{dd['median']:.4f}", f"95% 点 {dd['p95']:.4f}"),
     ]
-    width = max(len(r[0]) for r in rows)
+
+    width = max(len(r[0]) for r in universal_rows + descriptive_rows)
     print()
-    print("集団としての検証")
-    print("-" * 72)
-    for label, value, note in rows:
-        print(f"  {label.ljust(width)}  {value:>22}   {note}")
-    print("-" * 72)
+    print(f"段階に依らない不変量 ({stage})")
+    print("-" * 78)
+    for label, value, note in universal_rows:
+        print(f"  {label.ljust(width)}  {value:>18}   {note}")
+    print()
+    print(f"記述統計 ({stage}: {'定数ボラ' if is_s0 else '確率ボラ — 尖度 3・正規性は成り立たないのが正しい'})")
+    print("-" * 78)
+    for label, value, note in descriptive_rows:
+        print(f"  {label.ljust(width)}  {value:>18}   {note}")
+    print("-" * 78)
     print(f"所要 {metrics['runtime_sec']:.0f} 秒")
 
 
@@ -584,10 +739,12 @@ def report(
 def main() -> int:
     parser = argparse.ArgumentParser(description="模擬チャートを大量生成する")
     parser.add_argument("--n-charts", type=int, default=1000)
-    parser.add_argument("--n-days", type=int, default=500)
-    parser.add_argument("--steps-per-day", type=int, default=23400)
-    parser.add_argument("--stage", type=str, default="S0")
-    parser.add_argument("--base-seed", type=int, default=42)
+    parser.add_argument("--config", type=str, default=None,
+                        help="段階の設定ファイル (S0 以外では必須。フラグの取り違えを防ぐ)")
+    parser.add_argument("--n-days", type=int, default=None, help="設定ファイルの値を上書き")
+    parser.add_argument("--steps-per-day", type=int, default=None, help="同上")
+    parser.add_argument("--stage", type=str, default=None, help="同上")
+    parser.add_argument("--base-seed", type=int, default=None, help="同上")
     parser.add_argument("--intraday-samples", type=int, default=10,
                         help="分足も保存するチャート本数 (全部書くと数 GB になる)")
     parser.add_argument("--intraday-bar-sec", type=float, default=60.0)

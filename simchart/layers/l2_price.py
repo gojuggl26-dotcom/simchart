@@ -96,13 +96,28 @@ def compose_log_sigma(
     half_log_msm: np.ndarray | float,
     x_slow: np.ndarray | float,
     var_slow: float,
+    inplace: bool = False,
 ) -> np.ndarray | float:
     """log sigma の合成式。**生成とアンサンブル検証の両方がこの 1 つを使う。**
 
     式を 2 か所に書くと、片方だけ直して乖離する事故が起きる。凸性補正 -Var(X) は
     OU 側のためのもの: E[e^{2X}] = e^{2Var(X)} != 1 なので、引かないと実効ボラが
     e^{Var(X)} 倍に膨らむ。MSM 側は E[prod M_i] = 1 なので補正不要。
+
+    ``inplace=True`` のとき ``half_log_msm`` を書き換えて返す (呼び出し側が所有権を
+    渡す)。本番設定では 1 配列 936MB なので、素直に書くと中間結果だけで 2.8GB を
+    使ってしまうため。**両経路の結果はビット単位で一致する**: IEEE754 の加算は
+    可換なので ``log_sigma_bar + a == a + log_sigma_bar`` であり、それ以外の演算
+    順序は同一だからである (tests/test_s1_vol.py が一致を固定している)。
     """
+    if inplace:
+        if not isinstance(half_log_msm, np.ndarray):
+            raise TypeError("inplace=True には half_log_msm が ndarray である必要があります")
+        out = half_log_msm
+        out += log_sigma_bar
+        out += x_slow
+        out -= var_slow
+        return out
     return log_sigma_bar + half_log_msm + x_slow - var_slow
 
 
@@ -138,13 +153,26 @@ class GBMPriceLayer:
 
         per-step の Bernoulli ループは k*N 回の乱数生成になり 11.7M ステップでは
         非現実的。成分ごとに (1) 切替回数 ~ Poisson(gamma_i * T)、(2) 切替時刻 ~
-        Uniform(0, T) ソート、(3) 各区間の値を等確率で引く、の順で生成し、
-        グリッドへは searchsorted で写像する。**この生成はグリッド解像度に一切
-        依存しない** (t_days の値でしか使わない) ので、同一シードなら
-        steps_per_day を変えても切替過程がビット単位で一致する。
+        Uniform(0, T) ソート、(3) 各区間の値を等確率で引く、の順で生成する。
+        **この生成はグリッド解像度に一切依存しない** (t_days の値でしか使わない)
+        ので、同一シードなら steps_per_day を変えても切替過程がビット単位で一致する。
 
         乱数消費は ``l2.vol_msm`` ストリームから成分 i=1..k の順に固定
         (Poisson 数 -> 時刻 -> 値)。この順序を変えると同一シードの経路が変わる。
+
+        グリッドへの写像 (性能)
+        -----------------------
+        素朴には ``searchsorted(switch_times, t_days)`` で成分ごとに全格子点を
+        引けるが、これは N 回の二分探索を k 回繰り返すことになり、5000 日 x 23400
+        では約 30 秒・一時配列 3.7GB を要した。向きを逆にして**切替時刻の側を
+        グリッドへ引く** (問い合わせ数 = 切替回数、高々数千) と、あとは区間ごとの
+        定数埋めで済む。さらに全成分の切替点を統合すると、区間ごとの合計値を
+        小さい配列の上で計算してから N 要素を 1 回書くだけになる。
+
+        **この経路変更は出力をビット単位で変えない。** 統合区間の値は
+        ``(((0 + v_0) + v_1) + ... ) * 0.5`` を成分順に計算しており、素朴版が
+        格子点ごとに行う浮動小数演算と順序も含めて同一だからである
+        (tests/test_s1_vol.py がリファレンス実装との一致を固定している)。
         """
         cfg = self._config
         rng = self._rng.get("l2.vol_msm")
@@ -153,11 +181,13 @@ class GBMPriceLayer:
         log_hi = math.log(m0)
         log_lo = math.log(2.0 - m0)
         T = float(t_days[-1])
+        n_points = int(t_days.shape[0])
 
-        total = np.zeros(t_days.shape[0], dtype=np.float64)
         switch_hash = hashlib.sha256()
         n_switches: list[int] = []
         occupancy_hi: list[float] = []
+        bounds_per_component: list[np.ndarray] = []
+        values_per_component: list[np.ndarray] = []
 
         for i in range(k):
             gamma_i = cfg.msm_gamma1_per_day * cfg.msm_b**i
@@ -166,17 +196,38 @@ class GBMPriceLayer:
             # 区間は n_switch + 1 個。先頭が初期値で、定常分布 (等確率) から引く。
             states = rng.integers(0, 2, n_switch + 1)
 
-            idx = np.searchsorted(switch_times, t_days, side="right")
-            grid_states = states[idx]
-            total += np.where(grid_states == 1, log_hi, log_lo)
+            # 切替 m 以降の状態を使い始める最初の格子点。
+            # bounds[m] <= j  <=>  switch_times[m] <= t_days[j] なので、
+            # 素朴版の状態番号 (自分以下の切替の個数) と厳密に一致する。
+            bounds = np.searchsorted(t_days, switch_times, side="left")
+            np.clip(bounds, 0, n_points, out=bounds)
+            log_values = np.where(states == 1, log_hi, log_lo)
+            bounds_per_component.append(bounds)
+            values_per_component.append(log_values)
+
+            seg_len = np.diff(np.concatenate((np.zeros(1, dtype=np.int64), bounds,
+                                              np.full(1, n_points, dtype=np.int64))))
+            occupancy_hi.append(float(seg_len[states == 1].sum() / n_points))
 
             switch_hash.update(np.int64(n_switch).tobytes())
             switch_hash.update(np.ascontiguousarray(switch_times).tobytes())
             switch_hash.update(np.ascontiguousarray(states).tobytes())
             n_switches.append(n_switch)
-            occupancy_hi.append(float(grid_states.mean()))
 
-        total *= 0.5
+        # 全成分の切替点を統合。区間数は sum(n_switch) + 1 で、格子点数とは無関係。
+        starts = np.unique(
+            np.concatenate((np.zeros(1, dtype=np.int64), *bounds_per_component))
+        )
+        starts = starts[starts < n_points]
+        ends = np.append(starts[1:], n_points)
+        seg_value = np.zeros(starts.size, dtype=np.float64)
+        for bounds, log_values in zip(bounds_per_component, values_per_component):
+            seg_value += log_values[np.searchsorted(bounds, starts, side="right")]
+        seg_value *= 0.5
+
+        total = np.empty(n_points, dtype=np.float64)
+        for a, b, value in zip(starts, ends, seg_value):
+            total[a:b] = value
         self.last_diagnostics["msm"] = {
             "k": k,
             "b": cfg.msm_b,
@@ -190,6 +241,7 @@ class GBMPriceLayer:
             ],
             "occupancy_hi": occupancy_hi,
             "horizon_days": T,
+            "n_merged_segments": int(starts.size),
             # 切替過程のダイジェスト。解像度を変えても一致することが
             # 「物理時間定義」の直接証拠になる (test_scale_invariance)。
             "switch_digest": switch_hash.hexdigest(),
@@ -232,9 +284,13 @@ class GBMPriceLayer:
         # X_j = a X_{j-1} + s z_j  (j >= 1) を lfilter で。zi = [a * x0] により
         # y[0] = s z[0] + a x0 = X_1 となる。
         y, _ = signal.lfilter([s], [1.0, -a], z, zi=np.array([a * x0]))
+        # z はもう不要。本番では 1 配列 936MB なので、x を確保する前に解放して
+        # 同時に生きる大配列を 3 本から 2 本に減らす (値には影響しない)。
+        del z
         x = np.empty(t_days.shape[0], dtype=np.float64)
         x[0] = x0
         x[1:] = y
+        del y
 
         self.last_diagnostics["slow_ou"] = {
             "theta_per_day": theta,
@@ -279,31 +335,37 @@ class GBMPriceLayer:
             x_slow = self._simulate_slow_ou(t_days)
             var_slow = cfg.vol_var_target_slow
 
-        log_vol = np.asarray(
-            compose_log_sigma(log_sigma_bar, half_log_msm, x_slow, var_slow),
-            dtype=np.float64,
-        )
-
         # 診断用サブサンプル (分単位)。成分内訳を全ステップ保持すると本番設定で
         # 数 GB になるため間引く。検証スイートの path 診断がこれを使う。
+        # **合成の前に採る**: 下の合成は half_log_msm の配列を書き換えるので、
+        # あとから採ると成分内訳ではなく log sigma そのものになってしまう。
         step_seconds = float(t[1] - t[0])
         stride = max(int(round(VOL_SUBSAMPLE_SECONDS / step_seconds)), 1)
-        self.last_diagnostics["vol_subsample"] = {
+        n_sub = t_days[::stride].shape[0]
+        subsample = {
             "stride": stride,
             "step_seconds": step_seconds,
             "t_days": t_days[::stride].copy(),
-            "log_vol": log_vol[::stride].copy(),
             "half_log_msm": (
                 half_log_msm[::stride].copy()
                 if isinstance(half_log_msm, np.ndarray)
-                else np.zeros(t_days[::stride].shape[0])
+                else np.zeros(n_sub)
             ),
             "x_slow": (
-                x_slow[::stride].copy()
-                if isinstance(x_slow, np.ndarray)
-                else np.zeros(t_days[::stride].shape[0])
+                x_slow[::stride].copy() if isinstance(x_slow, np.ndarray) else np.zeros(n_sub)
             ),
         }
+
+        # MSM の配列は自分で確保したものなので、そのまま合成先として使い回す。
+        log_vol = np.asarray(
+            compose_log_sigma(
+                log_sigma_bar, half_log_msm, x_slow, var_slow,
+                inplace=isinstance(half_log_msm, np.ndarray),
+            ),
+            dtype=np.float64,
+        )
+        subsample["log_vol"] = log_vol[::stride].copy()
+        self.last_diagnostics["vol_subsample"] = subsample
         self.last_diagnostics["composition"] = {
             "log_sigma_bar": log_sigma_bar,
             "convexity_correction": -var_slow,

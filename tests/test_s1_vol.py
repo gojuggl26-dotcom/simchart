@@ -76,6 +76,45 @@ def test_missing_convexity_correction_is_detected() -> None:
     )
 
 
+def test_compose_inplace_matches_out_of_place_bitwise() -> None:
+    """合成の in-place 経路が素直な式とビット単位で一致すること。
+
+    本番設定では 1 配列 936MB あり、素直に書くと中間結果だけで 2.8GB 使うため
+    in-place 経路を用意してある。IEEE754 の加算は可換なので順序は同値だが、
+    それを主張するだけでなく実際に固定する。
+    """
+    rng = np.random.default_rng(3)
+    for _ in range(5):
+        msm = rng.normal(0.0, 0.35, 10_000)
+        slow = rng.normal(0.0, 0.22, 10_000)
+        bar, var_slow = math.log(0.2), 0.05
+        expected = compose_log_sigma(bar, msm.copy(), slow, var_slow)
+        got = compose_log_sigma(bar, msm.copy(), slow, var_slow, inplace=True)
+        np.testing.assert_array_equal(expected, got)
+
+
+def test_compose_inplace_rejects_scalar_buffer() -> None:
+    with pytest.raises(TypeError):
+        compose_log_sigma(0.0, 0.0, np.zeros(3), 0.05, inplace=True)
+
+
+def test_vol_subsample_holds_components_not_the_total() -> None:
+    """診断サブサンプルが log sigma ではなく成分内訳であること。
+
+    合成を in-place にしたとき、採取順を間違えると half_log_msm が log sigma に
+    化ける。分散予算の記録が静かに壊れるので、ここで固定する。
+    """
+    result = run(Config(n_days=50, steps_per_day=390, **S1))
+    sub = result.meta["l2"]["vol_subsample"]
+    recomposed = (
+        sub["half_log_msm"] + sub["x_slow"] + math.log(0.2) - 0.05
+    )
+    np.testing.assert_allclose(recomposed, sub["log_vol"], atol=1e-12)
+    # 成分は log sigma (負の大きな値) ではなく 0 の周りに分布する。
+    assert abs(float(sub["half_log_msm"].mean())) < 0.3
+    assert float(sub["log_vol"].mean()) < -1.0
+
+
 def test_variance_budget_shares_in_cross_section() -> None:
     """断面の分散シェアが配分どおり。
 
@@ -110,6 +149,68 @@ def test_composition_coefficient_bug_is_detected() -> None:
     var_broken = float(log_m.var())
     assert var_correct == pytest.approx(0.125, abs=0.01)
     assert var_broken == pytest.approx(0.5, abs=0.04)
+
+
+# ---------------------------------------------------------------------------
+# MSM のグリッド写像 (性能最適化がビット単位で等価であることの固定)
+# ---------------------------------------------------------------------------
+def _msm_reference(config: Config, t_days: np.ndarray, rng) -> np.ndarray:
+    """MSM の素朴なリファレンス実装 (成分ごとに全格子点を searchsorted)。
+
+    本実装は速度のため向きを逆にした区間埋めを使う。両者が**ビット単位で一致**
+    することをここで固定する。一致しなくなったら、それは最適化が経路を変えた
+    ということであり、S1 の基準値 (results/S1/metrics.json) が無効になる。
+    """
+    k = config.msm_k
+    m0 = solve_m0(k, config.vol_var_target_msm)
+    log_hi, log_lo = math.log(m0), math.log(2.0 - m0)
+    T = float(t_days[-1])
+    total = np.zeros(t_days.shape[0], dtype=np.float64)
+    for i in range(k):
+        gamma_i = config.msm_gamma1_per_day * config.msm_b**i
+        n_switch = int(rng.poisson(gamma_i * T))
+        switch_times = np.sort(rng.uniform(0.0, T, n_switch))
+        states = rng.integers(0, 2, n_switch + 1)
+        grid_states = states[np.searchsorted(switch_times, t_days, side="right")]
+        total += np.where(grid_states == 1, log_hi, log_lo)
+    total *= 0.5
+    return total
+
+
+@pytest.mark.parametrize("n_days,steps_per_day", [(200, 390), (50, 2340), (1000, 39)])
+def test_msm_matches_naive_reference_bitwise(n_days: int, steps_per_day: int) -> None:
+    from simchart.layers.l0_calendar import SESSION_SECONDS
+    from simchart.rng import RNGRegistry
+
+    cfg = Config(n_days=n_days, steps_per_day=steps_per_day, **S1)
+    result = run(cfg)
+    sub = result.meta["l2"]["vol_subsample"]
+
+    t = np.arange(cfg.total_steps + 1, dtype=np.float64) * (SESSION_SECONDS / steps_per_day)
+    t_days = t / SESSION_SECONDS
+    reference = _msm_reference(cfg, t_days, RNGRegistry(cfg.seed).get("l2.vol_msm"))
+
+    stride = sub["stride"]
+    np.testing.assert_array_equal(sub["half_log_msm"], reference[::stride])
+
+
+def test_msm_segment_count_scales_with_switches_not_grid_size() -> None:
+    """統合区間の数が格子点数ではなく切替回数で決まること (最適化の要点)。
+
+    格子を 10 倍細かくしても区間数はほぼ変わらない。完全一致しないのは、粗い
+    格子では 2 つの切替時刻が同じ格子点に落ちて区間が併合されるため (粗い側が
+    細かい側以下になる)。上限は sum(n_switch) + 1 で、格子点数とは無関係。
+    """
+    coarse = run(Config(n_days=300, steps_per_day=390, **S1))
+    fine = run(Config(n_days=300, steps_per_day=3900, **S1))
+    c, f = coarse.meta["l2"]["msm"], fine.meta["l2"]["msm"]
+
+    assert c["n_switches"] == f["n_switches"]  # 切替過程そのものは同一
+    upper = sum(c["n_switches"]) + 1
+    assert c["n_merged_segments"] <= f["n_merged_segments"] <= upper
+    # 格子点数 (117,001 vs 1,170,001) に比例していないこと。
+    assert f["n_merged_segments"] < upper + 1
+    assert f["n_merged_segments"] * 100 < fine.price.n_points
 
 
 # ---------------------------------------------------------------------------
