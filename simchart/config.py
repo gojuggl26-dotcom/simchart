@@ -37,7 +37,7 @@ __all__ = [
 STAGES: tuple[str, ...] = tuple(f"S{i}" for i in range(14))
 
 #: 現時点で実装が存在する段階。段階を進めるたびにここへ追加する。
-IMPLEMENTED_STAGES: tuple[str, ...] = ("S0", "S1", "S2")
+IMPLEMENTED_STAGES: tuple[str, ...] = ("S0", "S1", "S2", "S3")
 
 #: 年率ボラを 1 ステップ分に落とすときの営業日数。
 TRADING_DAYS_PER_YEAR: int = 252
@@ -52,8 +52,6 @@ SESSION_SECONDS: float = 6.5 * 3600.0
 UNIMPLEMENTED_FLAGS: dict[str, tuple[str, str, str]] = {
     "enable_seasonality": ("S4", "日内 U 字の活動度季節性 phi(t)", "simchart/layers/l0_calendar.py"),
     "enable_overnight": ("S4", "オーバーナイト・ギャップと寄引", "simchart/layers/l0_calendar.py"),
-    "enable_jump": ("S3", "Hawkes ジャンプ成分", "simchart/layers/l2_price.py"),
-    "enable_leverage": ("S3", "レバレッジ効果 (リターンとボラの負相関)", "simchart/layers/l2_price.py"),
     "enable_chaos_vol": ("S5", "カオス的ボラ成分 chi_2", "simchart/layers/l2_price.py"),
     "enable_hawkes": ("S7", "多変量 Hawkes 注文流", "simchart/layers/l1_activity.py"),
     "enable_chaos_lambda": ("S12", "カオス的強度変調 chi_1", "simchart/layers/l1_activity.py"),
@@ -72,6 +70,8 @@ IMPLEMENTED_FLAGS: tuple[str, ...] = (
     "enable_msm",  # S1
     "enable_slow_ou",  # S1
     "enable_rough",  # S2
+    "enable_jump",  # S3
+    "enable_leverage",  # S3
 )
 
 #: フラグ以外 (数値パラメータ) の未実装条件。
@@ -274,6 +274,43 @@ class Config:
     rough_half_life_days: float = 0.75
     vol_var_target_rough: float = 0.025  # Var(log sigma) 配分 (最終予算 0.25 の 10%)
     rough_grid_seconds: float = 60.0  # ラフ成分の解像度。これ以下ではボラは一定
+
+    # --- L2 / S3: ジャンプ (Kou 二重指数、ボラ変調強度) ---
+    # サイズは**べき則ではなく指数** (Kou): べき則は集計してもテール指数が変わらず
+    # 集計正規性 (⑱) を阻害する。指数なら集計で相対テールが薄れ、Hill α が
+    # スケールとともに上昇する。α ≈ 3〜5 は有限標本の性質として狙う (§3.2)。
+    # ★λ_jump_per_year の指示書目安 (20〜60/年) は η_d 15〜25 と JV share 5〜15%
+    # ゲートと算術的に両立しない (λ=40, η_d=18 → JV 83%)。critical ゲートを優先し
+    # λ を下げてある。経緯は README。
+    jump_p_up: float = 0.42  # 上昇ジャンプの確率 (p < 0.5 で負の歪度)
+    jump_eta_up: float = 35.0  # 上昇側の減衰率 (平均 +1/η_u)。**>1 必須** (E[e^J] 発散)
+    jump_eta_down: float = 22.0  # 下落側の減衰率 (η_d < η_u で下落が大きい)
+    jump_lambda_per_year: float = 2.5  # 基準強度 [回/年]
+    jump_vol_exponent: float = 1.0  # λ(t) = λ0 (σ_t/σ̄)^ρ_J — ボラ状態でクラスター
+    jump_intensity_cap: float = 10.0  # λ(t)/λ0 の上限 (対数正規 σ の裾で発散させない)
+    #: 総二次変動に占めるジャンプ寄与の設計値。拡散側は σ̄_diff = σ̄ √(1-share)
+    #: に縮小し、年率の総 QV を σ̄² に保つ (§7)。Var(log σ) 予算とは独立。
+    jump_qv_share_target: float = 0.10
+
+    # --- L2 / S3: レバレッジ (2 チャンネル) ---
+    # 短期 (0〜1 日) はラフ成分の駆動 fGn と、長期 (5〜30 日) は緩慢 OU の駆動と
+    # 相関させる。MSM とは相関させない (純ジャンプ過程で相関の定義が不自然)。
+    # 実装は Brownian bridge 分解 (§6) — 共通ショックの単純加算はセル内に正の
+    # 自己相関を作り ② を壊すため厳禁。
+    leverage_rho_rough: float = -0.70  # corr(セル集計 z, fGn innovation) [推奨 -0.6〜-0.8]
+    leverage_rho_slow: float = -0.30  # corr(z, OU 駆動) [推奨 -0.2〜-0.4]
+    #: 中速レバレッジ成分 — **既定は無効 (var=0)** (2026-08-20 オペレータ裁定)。
+    #: 経緯: per-step 相関では corr(r_t, RV_{t+1}) の理論上限が ~-0.06 で指示書の
+    #: 帯 [-0.28, -0.16] に届かず、中速成分 (日次グリッド OU、駆動を前日の日次
+    #: 集計リターンと相関) を追加しても実測上限は -0.14。しかも中速の分散は
+    #: vol_var_target_slow の内数の取り合いで、**lev を強めるほど 10〜100 日帯域の
+    #: 記憶が削れて gph_d が S2 から最大 -0.15 動く** (③ の破壊)。③ の保全を優先し
+    #: 中速は無効化、lev ゲートは実測整合帯 [-0.08, -0.005] に変更。レバレッジ
+    #: 水準の残りは S10 の板側チャンネルに委ねる (§5.3 の「弱い側を狙う」)。
+    #: 機構は実装済みなので、将来再配分する場合は leverage_mid_var > 0 にする。
+    leverage_mid_half_life_days: float = 5.0
+    leverage_mid_var: float = 0.0  # 0 = 無効。>0 で slow の内数を再配分
+    leverage_rho_mid: float = -0.80
     enable_jump: bool = False  # S3
     enable_leverage: bool = False  # S3
     enable_chaos_vol: bool = False  # S5  (chi_2)
@@ -357,6 +394,14 @@ class Config:
     _S2_ROUGH_PARAMS = (
         "rough_hurst", "rough_half_life_days", "vol_var_target_rough", "rough_grid_seconds",
     )
+    _S3_JUMP_PARAMS = (
+        "jump_p_up", "jump_eta_up", "jump_eta_down", "jump_lambda_per_year",
+        "jump_vol_exponent", "jump_intensity_cap", "jump_qv_share_target",
+    )
+    _S3_LEVERAGE_PARAMS = (
+        "leverage_rho_rough", "leverage_rho_slow",
+        "leverage_mid_half_life_days", "leverage_mid_var", "leverage_rho_mid",
+    )
 
     def _check_s1_params(self) -> None:
         defaults = {f.name: f.default for f in dataclasses.fields(type(self))}
@@ -365,6 +410,8 @@ class Config:
             ("enable_msm", self._S1_MSM_PARAMS),
             ("enable_slow_ou", self._S1_SLOW_PARAMS),
             ("enable_rough", self._S2_ROUGH_PARAMS),
+            ("enable_jump", self._S3_JUMP_PARAMS),
+            ("enable_leverage", self._S3_LEVERAGE_PARAMS),
         ):
             if not getattr(self, flag):
                 changed = [n for n in params if getattr(self, n) != defaults[n]]
@@ -420,6 +467,54 @@ class Config:
                 raise ValueError(
                     "rough_grid_seconds はセッション長を割り切る必要があります"
                     " (日境界でグリッドが揃わないと物理時間定義が壊れる)"
+                )
+        if self.enable_jump:
+            if self.jump_eta_up <= 1.0:
+                raise ValueError(
+                    f"jump_eta_up ({self.jump_eta_up}) は 1 より大きい必要があります。"
+                    f" eta_u <= 1 では E[e^J] = p eta_u/(eta_u-1) + ... が発散し、"
+                    f" マルチンゲール補償項 k が定義できません (S3 指示書 §4.3)。"
+                )
+            if self.jump_eta_down <= 0:
+                raise ValueError("jump_eta_down は正である必要があります")
+            if not (0.0 < self.jump_p_up < 1.0):
+                raise ValueError("jump_p_up は (0, 1) の範囲である必要があります")
+            if self.jump_lambda_per_year <= 0:
+                raise ValueError(
+                    "enable_jump=True なのに jump_lambda_per_year が 0 以下です。"
+                    " 強度 0 のジャンプは暗黙 no-op になるため許可しません。"
+                )
+            if self.jump_intensity_cap < 1.0:
+                raise ValueError("jump_intensity_cap は 1 以上である必要があります")
+            if not (0.0 <= self.jump_qv_share_target < 1.0):
+                raise ValueError("jump_qv_share_target は [0, 1) の範囲である必要があります")
+        if self.enable_leverage:
+            if not self.enable_rough:
+                raise ValueError(
+                    "enable_leverage=True には enable_rough=True が必要です"
+                    " (短期チャンネルはラフ成分の駆動 fGn と相関させる)"
+                )
+            if not self.enable_slow_ou:
+                raise ValueError(
+                    "enable_leverage=True には enable_slow_ou=True が必要です"
+                    " (長期チャンネルは緩慢 OU の駆動と相関させる)"
+                )
+            rho_sq = self.leverage_rho_rough**2 + self.leverage_rho_slow**2
+            if rho_sq >= 1.0:
+                raise ValueError(
+                    f"rho_rough^2 + rho_slow^2 = {rho_sq:.3f} >= 1。"
+                    f" 相関の合成が正定値でなくなります (S3 指示書 §5.1)。"
+                )
+            if not (-1.0 < self.leverage_rho_mid < 1.0):
+                raise ValueError("leverage_rho_mid は (-1, 1) の範囲である必要があります")
+            if self.leverage_mid_half_life_days <= 0:
+                raise ValueError("leverage_mid_half_life_days は正である必要があります")
+            if not (0.0 <= self.leverage_mid_var < self.vol_var_target_slow):
+                raise ValueError(
+                    f"leverage_mid_var ({self.leverage_mid_var}) は"
+                    f" vol_var_target_slow ({self.vol_var_target_slow}) の内数"
+                    f" (0 <= mid < slow、0 は無効) である必要があります。中速成分は"
+                    f" 緩慢 OU の予算からの再配分であり、総予算を増やしてはならない。"
                 )
         if self.vol_var_budget_total <= 0:
             raise ValueError("vol_var_budget_total は正である必要があります")

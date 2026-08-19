@@ -1,0 +1,158 @@
+# S3: ジャンプ (Kou 二重指数) + レバレッジ効果 (2 チャンネル) を S2 に加算。
+#
+# ここで初めて Hill α ≈ 3〜5 を狙う (日次・上位 5% の有限標本の性質として)。
+# 革新 z は正規のまま — テールはボラ混合とジャンプから内生的に出す。
+#
+# ★MSM / ラフ / 緩慢 OU のパラメータは S2 から一切変更しないこと (α 調整は
+# ジャンプで行う)。ジャンプの自己励起は入れない (S11 の担当)。
+
+# --- 実行 ---
+seed: 42
+n_days: 5000
+steps_per_day: 23400
+stage: S3
+
+# --- L0 カレンダー ---
+enable_seasonality: false   # S4
+enable_overnight: false     # S4
+
+# --- L2 情報価格 ---
+sigma_bar: 0.20
+mu_drift: 0.0
+p0: 100.0
+enable_msm: true            # S1
+enable_slow_ou: true        # S1
+enable_rough: true          # S2
+enable_jump: true           # S3 ★
+enable_leverage: true       # S3 ★
+enable_chaos_vol: false     # S5
+
+# --- L2 / S1: 確率ボラ ---
+# m0 は書かない (分散配分から solve_m0 で逆算される。d も創発量で指定不可)。
+# 分散予算: 最終目標 Var(log sigma) = 0.25 のうち S1 は 0.175 (70%) まで。
+# 残り 0.075 は S2 ラフ (0.025) と S5 chi_2 (0.050) の枠。使い切らない。
+msm_k: 10
+msm_b: 2.0
+msm_gamma1_per_day: 0.002   # 1/500 [1/日] — 物理時間定義。時定数レンジ 1〜500 日
+vol_var_target_msm: 0.125   # 50% (→ m0 ≈ 1.220)
+vol_var_target_slow: 0.050  # 20%
+ou_half_life_days: 30.0
+
+# --- L2 / S2: ラフ成分 (fOU) ---
+# eta_r は書かない (分散配分から solve_eta_rough で逆算)。非定常な fBm/Volterra は
+# 使わない — ドリフトが低周波の見かけの長期記憶として GPH に混入する。
+# 専用の物理グリッド (60 秒) で生成するため steps_per_day と独立で、
+# 時間スケール不変性が構造的に保たれる。
+# H 入力 0.08 の理由: H_latent は合成後の log sigma で測るため MSM の短スケール
+# 混入で +0.05〜0.06 系統的に高く出る (実測)。0.10 入力だと測定がゲート上限
+# (0.15) に乗る。0.08 入力で測定 ~0.13。gph_d はこの選択に依存しない (実測 ±0.01)。
+rough_hurst: 0.08
+rough_half_life_days: 0.75  # 1 日以下厳守 (MSM 最速成分の帯域に食い込ませない)
+vol_var_target_rough: 0.025 # 10% — S2 の到達点は 0.200 (予算の 80%)
+rough_grid_seconds: 60.0
+
+# --- L2 / S3: ジャンプ (Kou 二重指数、ボラ変調強度) ---
+# ★指示書の目安 λ=20〜60/年 は η_d=15〜25・JV share 5〜15% と算術的に両立しない
+# (λ=40, η_d=18 → JV 83%)。critical ゲート (JV/Hill/歪度) を優先して λ を下げた。
+# サイズはべき則でなく指数 (集計正規性のため §3.1)。自己励起は入れない (S11)。
+# パラメータ確定の経緯: (λ, η_d, η_u) の格子探索で hill/JV/skew が同時に安定して
+# 帯に入る点を選んだ。λ=2.5/η_d=22 は歪度がシード間で [-3.5, -0.25] と暴れ
+# (ジャンプ ~50 本に裾が支配される)、λ=8/η_d=50 は歪度が -0.1 を割るシードが出る。
+jump_p_up: 0.42             # p < 0.5 → 負の歪度
+jump_eta_up: 56.0           # 平均上昇ジャンプ +1.8%。>1 必須 (E[e^J] の存在)
+jump_eta_down: 35.0         # 平均下落ジャンプ -2.9% (η_d < η_u で下落が大きい)
+jump_lambda_per_year: 5.0   # 基準強度。実効 ~4.2/年
+jump_vol_exponent: 1.0      # λ(t) = λ0 (σ_t/σ̄)^1 — 高ボラ期にクラスター
+jump_intensity_cap: 10.0
+jump_qv_share_target: 0.12  # → σ̄_diff = 0.20 √0.88 (総 QV ~0.20² を維持、実測 JV 整合)
+
+# --- L2 / S3: レバレッジ (2 チャンネル、Brownian bridge 実装) ---
+# 相関相手は fGn の whitening innovation (fGn 直結は反持続 -0.43 がバーリターンに
+# 乗り移り ② を壊す — 実測 -0.21。経緯は README)。
+# ★水準について (2026-08-20 裁定): per-step 相関構成の corr(r, RV_{+1}) は理論上限
+# ~-0.06 で指示書の帯 [-0.28,-0.16] に届かず、中速成分による強化は gph_d を最大
+# -0.15 動かし ③ を壊す (同じ予算の取り合い)。③ 保全を優先し、レバレッジは
+# 方向性 (負) の確認に留めて水準は S10 の板側に委ねる。leverage_mid_var は既定 0。
+leverage_rho_rough: -0.60
+leverage_rho_slow: -0.35
+
+# --- L1 潜在活動度 ---
+enable_hawkes: false        # S7
+enable_chaos_lambda: false  # S12
+enable_chaos_branching: false  # S12
+
+# --- L3 板 ---
+enable_book: false             # S6
+enable_metaorder: false        # S8
+enable_queue_reactive: false   # S9
+enable_uncertainty_zones: false  # S9
+kappa: 0.0                     # S10
+
+# --- フィードバック ---
+enable_feedback: false      # S11
+feedback_gain: 0.0
+
+# --- 多資産 ---
+n_assets: 1                 # S13
+
+# --- 検証スイートの測定器設定 ---
+# ★既存キーは s0.yaml と同一値のまま (段階間比較の前提)。S1 で追加された
+# 測定器 (daily / ensemble / scale invariance) の設定のみ新規。
+validation:
+  primary_bar_sec: 60
+  scales_sec: [1, 2, 5, 10, 30, 60, 120, 300, 600, 900, 1800, 23400]
+  min_obs_for_gate: 10000
+
+  acf_max_lag: 100
+  acf_abs_max_lag: 1000
+  ljung_box_lags: [1, 5, 10, 20, 50]
+  ljung_box_primary_lag: 20
+
+  gph_bandwidth_exponent: 0.65
+  gph_bandwidth_profile: [0.5, 0.6, 0.65, 0.7, 0.8]
+  lw_bandwidth_exponent: 0.65
+
+  hill_k_fracs: [0.005, 0.01, 0.02, 0.05, 0.10]
+  hill_primary_k_frac: 0.05
+  qq_n_points: 201
+
+  vr_qs: [2, 4, 8, 16, 32, 64]
+  zeta_qs: [0.5, 1.0, 1.5, 2.0, 2.5, 3.0]
+  adf_maxlag: 10
+
+  micro_max_lag: 200
+  micro_fit_lag_range: [5, 200]
+  rng_probe_draws: 1000
+
+  # --- S1 追加: 日次系列の測定器 ---
+  daily_acf_max_lag: 150
+  daily_powerlaw_lag_range: [1, 100]
+  daily_gph_bandwidth_exponent: 0.65
+  daily_scales_days: [1, 2, 5, 10, 20, 50]
+  daily_min_obs_for_gate: 250
+  daily_zeta_qs: [0.5, 1.0, 1.5, 2.0, 2.5, 3.0]
+
+  # --- S1 追加: アンサンブル断面と時間スケール不変性 ---
+  # (si_tol は S1 実測のペア差分布に基づく現行既定値)
+  ensemble_n_paths: 200000
+  scale_invariance_steps_per_day: 390
+  si_tol_kurtosis_rel: 0.25
+  si_tol_gph_d_abs: 0.10
+  si_tol_acf1_abs: 0.07
+  si_tol_var_logvol_abs: 0.025
+
+  # --- S2 追加: 粗さ H の測定器と S1 不変性トレランス ---
+  # ★H の測定窓 (5 分〜4 時間) と GPH の測定窓 (1〜100 日) を重ねない (指示書 §7)
+  rough_h_scales_seconds: [300, 600, 1200, 1800, 3600, 7200, 14400]
+  rough_h_qs: [0.5, 1.0, 1.5, 2.0, 3.0]
+  rv_window_seconds: 1800
+  vol_incr_acf_max_lag: 60
+  # inv_gph_d は S3 では**潜在 log σ の GPH** で判定 (観測 |r| はジャンプ・レバレッジ
+  # の白色混入で下方バイアスされるため)。tol 0.07 は OU 再実現ゆらぎの実測分布
+  # (S2↔S3 ペア差 mean +0.016, max +0.060, 系統シフトなし) の外側。
+  inv_tol_gph_d_abs: 0.07
+  inv_tol_powerlaw_gamma_rel: 0.10
+  # プロファイル tol: ジャンプが |r| ACF に加える希釈の実測 (0.016〜0.028) の外側。
+  inv_tol_acf_profile_mean_abs: 0.035
+  inv_tol_kurtosis_daily_increase: 0.5
+  inv_tol_zeta_c2_abs: 0.005

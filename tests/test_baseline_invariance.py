@@ -63,10 +63,17 @@ def test_invariance_detects_touched_s1_streams(setup) -> None:
 
 
 def test_invariance_detects_moved_gph_d(setup) -> None:
-    """帰無対照: d が 0.05 動いたら inv_gph_d が落ちる (スケール分離失敗の想定)。"""
+    """帰無対照: d が動いたら inv_gph_d が落ちる (スケール分離失敗の想定)。
+
+    S3 から判定は潜在 log sigma の GPH (③ の構造の直接測定) で行うため、
+    壊すのも latent 側。observed 側は記録として併記される。
+    """
     root, c2, m2 = setup
     broken = copy.deepcopy(_jsonable(m2))
-    broken["daily"]["gph_abs_r"]["d"] = broken["daily"]["gph_abs_r"]["d"] + 0.05
+    if broken["daily"].get("latent_gph_d", {}).get("d") is not None:
+        broken["daily"]["latent_gph_d"]["d"] += 0.05
+    else:
+        broken["daily"]["gph_abs_r"]["d"] += 0.05
     report = baseline_invariance_check(c2, broken, "S1", results_root=root)
     assert report["checks"]["gph_d"]["passed"] is False
 

@@ -249,6 +249,22 @@ class GBMPriceLayer:
         self.last_diagnostics: dict[str, Any] = {}
         #: 直近に生成したラフ成分の離散定常分散 (凸性補正に使う)。
         self._rough_var_eff: float = 0.0
+        #: 直近のラフ生成で使った単位分散 fGn (burnin 込み。レバレッジが参照する)。
+        self._last_fgn_unit: np.ndarray | None = None
+        self._last_fgn_burnin: int = 0
+
+    @property
+    def sigma_bar_diffusion(self) -> float:
+        """拡散側の基準ボラ。
+
+        ジャンプ有効時は総 QV (年率 sigma_bar^2) のうちジャンプ分を確保するため
+        ``sigma_bar * sqrt(1 - jump_qv_share_target)`` に縮小する (S3 指示書 §7)。
+        Var(log sigma) の予算 (変動幅) とは独立で、S1/S2 の配分は変わらない。
+        """
+        cfg = self._config
+        if cfg.enable_jump:
+            return cfg.sigma_bar * math.sqrt(1.0 - cfg.jump_qv_share_target)
+        return cfg.sigma_bar
 
     # ------------------------------------------------------------------
     # S1: MSM 成分
@@ -356,7 +372,12 @@ class GBMPriceLayer:
     # ------------------------------------------------------------------
     # S1: 緩慢 OU 成分
     # ------------------------------------------------------------------
-    def _simulate_slow_ou(self, t_days: np.ndarray) -> np.ndarray:
+    def _simulate_slow_ou(
+        self,
+        t_days: np.ndarray,
+        driver: np.ndarray | None = None,
+        var_override: float | None = None,
+    ) -> np.ndarray:
         """X_t (平均 0 の OU) をグリッド上で生成する (厳密離散化)。
 
         遷移はガウスで閉形式なので、Euler-Maruyama ではなく
@@ -368,11 +389,21 @@ class GBMPriceLayer:
         逐次再帰は AR(1) なので scipy.signal.lfilter で O(N)。
 
         乱数消費は ``l2.vol_slow`` から (X_0 -> z 列) の順で固定。
+
+        Parameters
+        ----------
+        driver:
+            S3 のレバレッジ長期チャンネル用の外部駆動列 (N(0,1)、ステップ数本)。
+            与えられた場合、z 列は消費せず driver で駆動する — レバレッジとは
+            「OU の駆動が価格革新と相関を持つ」ことそのものなので、駆動の
+            置き換えが実装である。**x0 は常に ``l2.vol_slow`` から引く** ので、
+            前段階照合の証人 (x0 の厳密一致) はレバレッジ有効時も機能する。
         """
         cfg = self._config
         rng = self._rng.get("l2.vol_slow")
         theta = math.log(2.0) / cfg.ou_half_life_days  # [1/日]
-        var_x = cfg.vol_var_target_slow
+        # S3 の中速成分は slow の予算 (0.05) の内数として再配分される。
+        var_x = var_override if var_override is not None else cfg.vol_var_target_slow
 
         dt = np.diff(t_days)
         if dt.size and abs(dt.min() - dt.max()) > 1e-12 * max(dt.max(), 1.0):
@@ -385,13 +416,19 @@ class GBMPriceLayer:
         s = math.sqrt(var_x * (1.0 - a * a))
 
         x0 = float(rng.normal(0.0, math.sqrt(var_x)))
-        z = rng.standard_normal(t_days.shape[0] - 1)
+        if driver is None:
+            z = rng.standard_normal(t_days.shape[0] - 1)
+        else:
+            if driver.shape[0] != t_days.shape[0] - 1:
+                raise ValueError("OU 駆動列の長さがステップ数と一致しません")
+            z = driver
         # X_j = a X_{j-1} + s z_j  (j >= 1) を lfilter で。zi = [a * x0] により
         # y[0] = s z[0] + a x0 = X_1 となる。
         y, _ = signal.lfilter([s], [1.0, -a], z, zi=np.array([a * x0]))
-        # z はもう不要。本番では 1 配列 936MB なので、x を確保する前に解放して
-        # 同時に生きる大配列を 3 本から 2 本に減らす (値には影響しない)。
-        del z
+        # z はもう不要 (driver は呼び出し側の所有なので触らない)。本番では 1 配列
+        # 936MB なので、x を確保する前に解放して同時に生きる大配列を減らす。
+        if driver is None:
+            del z
         x = np.empty(t_days.shape[0], dtype=np.float64)
         x[0] = x0
         x[1:] = y
@@ -407,6 +444,7 @@ class GBMPriceLayer:
             "x0": x0,
             "sample_var": float(x.var()),
             "sample_mean": float(x.mean()),
+            "driver": "leverage" if driver is not None else "independent",
         }
         return x
 
@@ -455,6 +493,10 @@ class GBMPriceLayer:
         burnin = int(math.ceil(40.0 * cfg.rough_half_life_days / dt_days))
 
         fgn = davies_harte_fgn(burnin + n_steps_rough, hurst, rng)
+        # レバレッジ (S3) 用に、スケール前の単位分散 fGn を **burnin 込みで** 保持
+        # (whitening フィルタの先頭が文脈を必要とするため。~16MB)。
+        self._last_fgn_unit = fgn.copy()
+        self._last_fgn_burnin = burnin
         fgn *= dt_days**hurst  # 物理時間スケール (per-step sd = dt^H)
         a = math.exp(-theta * dt_days)
         filtered, _ = signal.lfilter([eta], [1.0, -a], fgn, zi=np.zeros(1))
@@ -514,21 +556,330 @@ class GBMPriceLayer:
         return expanded
 
     # ------------------------------------------------------------------
+    # S3: レバレッジ (Brownian bridge 分解) とジャンプ
+    # ------------------------------------------------------------------
+    @staticmethod
+    def fgn_whitening_innovations(
+        fgn_unit: np.ndarray, hurst: float, order: int = 96
+    ) -> tuple[np.ndarray, np.ndarray, float]:
+        """fGn を AR(order) で白色化し、innovation 列 (ほぼ iid N(0,1)) を返す。
+
+        ★なぜ fGn そのものと相関させないか (指示書 §6 からの意図的な逸脱)
+        --------------------------------------------------------------------
+        指示書 §6.2 の字義どおり「セル集計を fGn 増分 G_j と相関」させると、
+        fGn の反持続 (lag-1 自己相関 2^{2H-1}-1 ~ -0.43) がセル集計 A_j の系列に
+        rho^2 倍で乗り移り、**60 秒バーのリターン自己相関が -0.21 になる**
+        (実測)。これは指示書 §10 が「最重要」とする ② の不変ゲート
+        (acf_r / ljung_box の S0 基準維持) と両立しない — §6 の検証表はセル内
+        しか確認しておらず、セル間の fGn 継承を見落としている。
+
+        rough Bergomi が価格の dW を W^H そのものではなく**背後の駆動 BM dZ** と
+        相関させるのと同じ構造で、fGn の時間領域 innovation epsilon (iid) を相関
+        相手にすれば、(a) z は全ラグで厳密に無相関 (②維持)、(b) epsilon_j は
+        g_j, g_{j+1}, ... へ因果的に伝播して将来のボラだけを動かす (レバレッジ)、
+        の両方が成立する。
+
+        実装: fGn は正則ガウス過程なので whitening は因果 AR(∞)。位数 order で
+        打ち切り、係数は自己共分散から solve_toeplitz (Levinson 型) で厳密に解く。
+        残差自己相関は order=96 で ~1e-3 未満 (テストで固定)。
+
+        Returns
+        -------
+        (epsilon, ar_coeffs, prediction_sd)
+            epsilon は入力と同じ長さ (先頭 order 個は文脈不足なので、呼び出し側は
+            burnin 内で捨てること)。
+        """
+        two_h = 2.0 * hurst
+        k = np.arange(order + 1, dtype=np.float64)
+        gamma = 0.5 * ((k + 1.0) ** two_h - 2.0 * k**two_h + np.abs(k - 1.0) ** two_h)
+        from scipy.linalg import solve_toeplitz
+
+        phi = solve_toeplitz(gamma[:order], gamma[1 : order + 1])
+        pred_var = float(gamma[0] - np.dot(phi, gamma[1 : order + 1]))
+        # epsilon_j = g_j - sum_m phi_m g_{j-m} = FIR フィルタ [1, -phi]
+        eps = signal.lfilter(np.concatenate(([1.0], -phi)), [1.0], fgn_unit)
+        eps /= math.sqrt(pred_var)
+        return eps, phi, math.sqrt(pred_var)
+
+    def _bridge_innovations(self, b: np.ndarray, t: np.ndarray) -> np.ndarray:
+        """価格革新 z を Brownian bridge 分解で構成する (S3 指示書 §6 — 最重要)。
+
+        ラフセル j に n 個の価格ステップがあるとき:
+
+            S = sum(b),  A = rho sqrt(n) eps_j + sqrt(1-rho^2) sqrt(n) w_j
+            z = b - S/n + A/n
+
+        この構成は厳密に Var(z_i)=1, Cov(z_i,z_k)=0 (i != k), sum z = A,
+        corr(sum z / sqrt(n), eps_j) = rho を満たす。**「共通ショックを足す」実装は
+        セル内に正の自己相関 (+rho^2/n) を作り ② を壊す** — bridge 項の -1/n が
+        集計項の +1/n をちょうど打ち消すのがこの分解の要点。
+
+        相関相手 eps_j は fGn の whitening innovation
+        (:meth:`fgn_whitening_innovations` — fGn 直結が ② を壊す理由もそこに記載)。
+
+        b は ``l2.diffusion`` から引いた列そのもの (in-place で z に変換する) なので、
+        **l2.diffusion の消費列は S0 以来ビット単位で不変のまま** (使い方が変わる
+        だけ)。セル直交成分 w は ``l2.leverage`` から。
+        """
+        cfg = self._config
+        rho = cfg.leverage_rho_rough
+        if self._last_fgn_unit is None:
+            raise RuntimeError("ラフ成分が未生成です (enable_leverage には enable_rough が必要)")
+        eps_full, _phi, _sd = self.fgn_whitening_innovations(
+            self._last_fgn_unit, cfg.rough_hurst
+        )
+        burnin = self._last_fgn_burnin
+        g_unit = eps_full[burnin:]
+        del eps_full
+        # 残差自己相関 (whitening の打ち切り誤差) を記録する。
+        gc = g_unit - g_unit.mean()
+        denom = float(np.dot(gc, gc))
+        eps_resid_acf1 = float(np.dot(gc[:-1], gc[1:]) / denom)
+        del gc
+        step_sec = float(t[1] - t[0])
+        ratio = cfg.rough_grid_seconds / step_sec
+        if not (abs(ratio - round(ratio)) < 1e-9 and round(ratio) >= 1):
+            raise ValueError(
+                f"enable_leverage には価格ステップ ({step_sec}s) がラフグリッド"
+                f" ({cfg.rough_grid_seconds}s) を整数分割することが必要です。"
+                f" 1 ステップが複数セルにまたがると bridge 分解が定義できません。"
+            )
+        k = int(round(ratio))
+        n_steps = b.shape[0]
+        if n_steps % k != 0:
+            raise ValueError(f"ステップ数 {n_steps} がセル幅 {k} で割り切れません")
+        n_cells = n_steps // k
+        if g_unit.shape[0] != n_cells:
+            raise ValueError(
+                f"fGn のセル数 ({g_unit.shape[0]}) が価格側のセル数 ({n_cells}) と一致しません"
+            )
+
+        w = self._rng.get("l2.leverage").standard_normal(n_cells)
+        sqrt_k = math.sqrt(k)
+        a_cells = rho * sqrt_k * g_unit + math.sqrt(1.0 - rho * rho) * sqrt_k * w
+        del w
+
+        b2 = b.reshape(n_cells, k)
+        cell_sums = b2.sum(axis=1)
+        # z = b - S/n + A/n を in-place で (本番 117M 点、余分な 1GB を作らない)。
+        adjust = (a_cells - cell_sums) / k
+        b2 += adjust[:, None]
+        del cell_sums
+
+        # 実測診断 (§6.4 のゲートが参照)。z のセル集計 = A なので相関は A と eps で測る。
+        corr_rough_realized = float(np.corrcoef(a_cells / sqrt_k, g_unit)[0, 1])
+        self.last_diagnostics["leverage"] = {
+            "rho_rough": rho,
+            "rho_slow": cfg.leverage_rho_slow,
+            "steps_per_cell": k,
+            "n_cells": int(n_cells),
+            "corr_rough_realized": corr_rough_realized,
+            "correlation_target": "fgn_whitening_innovation",
+            "eps_residual_acf1": eps_resid_acf1,
+        }
+        del a_cells, adjust
+        return b
+
+    def _simulate_mid_leverage(self, z: np.ndarray, t: np.ndarray) -> np.ndarray:
+        """中速レバレッジ成分 X_mid (日次グリッド OU、2026-08-19 オペレータ承認)。
+
+        なぜ必要か: 緩慢 OU (HL 30 日) は 1 日の駆動が定常 sd の
+        sqrt(1-e^{-2 theta}) ~ 21% しか動かせず、ラフ fOU は反持続でショックの
+        翌日への伝達が相殺されるため、per-step 相関だけでは corr(r_t, RV_{t+1})
+        が理論上限 ~-0.06 でゲート帯 [-0.28, -0.16] に届かない (実測済み)。
+        HL ~5 日なら 1 日の駆動が sd の sqrt(1-e^{-2 ln2/5}) ~ 49% を動かせる。
+
+        構成 (rough の 60 秒グリッドと同型の「専用物理グリッド」— 日次):
+
+            u_d = (日 d の z の和) / sqrt(n_steps_day)          … 厳密 N(0,1)
+            X[d+1] = a X[d] + s (rho_mid u_d + sqrt(1-rho^2) w_d)
+
+        **因果**: 日 d の sigma に入るのは X[d] = 日 d-1 までの u のみ。同日の
+        z と sigma の同時相関は作らない (ルックアヘッドなし、増分の条件付き
+        正規性も保たれる)。分散は vol_var_target_slow の内数
+        (leverage_mid_var) — 総予算は不変。
+
+        乱数消費は ``l2.leverage_mid`` から (x0 -> w 列) の順で固定。
+        """
+        cfg = self._config
+        rng = self._rng.get("l2.leverage_mid")
+        var_mid = cfg.leverage_mid_var
+        theta = math.log(2.0) / cfg.leverage_mid_half_life_days  # [1/日]
+        a = math.exp(-theta)  # 日次刻み
+        s = math.sqrt(var_mid * (1.0 - a * a))
+        rho = cfg.leverage_rho_mid
+
+        n_steps = z.shape[0]
+        n_days = int(round((t[-1] - t[0]) / self._seconds_per_day))
+        if n_steps % n_days != 0:
+            raise ValueError("ステップ数が日数で割り切れません")
+        spd = n_steps // n_days
+        u = z.reshape(n_days, spd).sum(axis=1) / math.sqrt(spd)
+
+        x0 = float(rng.normal(0.0, math.sqrt(var_mid)))
+        w = rng.standard_normal(n_days)
+        driver = rho * u + math.sqrt(1.0 - rho * rho) * w
+        del w
+        y, _ = signal.lfilter([s], [1.0, -a], driver, zi=np.array([a * x0]))
+        x_daily = np.empty(n_days + 1, dtype=np.float64)
+        x_daily[0] = x0
+        x_daily[1:] = y
+        del y
+
+        corr_mid = float(np.corrcoef(u, driver)[0, 1])
+        self.last_diagnostics["leverage_mid"] = {
+            "half_life_days": cfg.leverage_mid_half_life_days,
+            "var_mid": var_mid,
+            "var_slow_remaining": cfg.vol_var_target_slow - var_mid,
+            "rho_mid": rho,
+            "corr_mid_realized": corr_mid,
+            "ar_coeff_daily": a,
+            "x0": x0,
+            "sample_var": float(x_daily.var()),
+            "sample_mean": float(x_daily.mean()),
+            "n_days": n_days,
+        }
+        # 価格グリッドへ日内階段で展開 (点 i の日 = i // spd、最終点は X[n_days])。
+        expanded = np.empty(n_steps + 1, dtype=np.float64)
+        expanded[:-1] = np.repeat(x_daily[:n_days], spd)
+        expanded[-1] = x_daily[n_days]
+        return expanded
+
+    def _z_autocorrelation(self, z: np.ndarray, n_days: int, max_lag: int = 60) -> dict:
+        """価格革新 z の ACF (ラグ 1..max_lag) — bridge 実装の直接テスト (§6.4)。
+
+        セッション行に reshape して FFT でまとめて計算する (117M 点で数秒)。
+        """
+        from ..validation.memory import acf as acf_fn
+
+        steps_per_day = z.shape[0] // n_days
+        usable = n_days * steps_per_day
+        result = acf_fn(z[:usable].reshape(n_days, steps_per_day), max_lag=max_lag)
+        values = result.get("values") or []
+        conf = 2.0 / math.sqrt(z.shape[0])
+        abs_vals = [abs(v) for v in values[1:] if v is not None]
+        return {
+            "max_abs_acf": max(abs_vals) if abs_vals else None,
+            "threshold_2_over_sqrt_n": conf,
+            "all_within": bool(abs_vals and max(abs_vals) < conf),
+            "lag1": values[1] if len(values) > 1 else None,
+            "n": int(z.shape[0]),
+            "max_lag": max_lag,
+        }
+
+    def _simulate_jumps(
+        self, t: np.ndarray, sigma_left: np.ndarray, dt_years: float
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Kou 二重指数ジャンプを生成する (S3 指示書 §4)。
+
+        強度はボラ変調 ``lambda(t) = lambda0 min((sigma_t/sigma_bar_diff)^rho_J, cap)``
+        で、クラスタリングは既存ボラ状態から得る (自己励起 Hawkes は S11 の担当 —
+        S3 では入れない §3.3)。発生は per-step Bernoulli(lambda dt)。
+
+        Returns
+        -------
+        (jump_times, jump_add, compensation_per_step)
+            jump_add はステップ増分に加算する配列 (ジャンプが無いステップは 0)、
+            compensation_per_step は時変の補償 ``-lambda(t) k dt`` (全ステップ)。
+        """
+        cfg = self._config
+        n_steps = sigma_left.shape[0]
+        sig_bar = self.sigma_bar_diffusion
+
+        # 強度 (in-place で構成し一時配列を減らす: ratio -> lambda(t))
+        lam = sigma_left / sig_bar
+        if cfg.jump_vol_exponent != 1.0:
+            np.power(lam, cfg.jump_vol_exponent, out=lam)
+        np.minimum(lam, cfg.jump_intensity_cap, out=lam)
+        lam *= cfg.jump_lambda_per_year  # [1/年]
+
+        u = self._rng.get("l2.jump_time").uniform(size=n_steps)
+        prob = lam * dt_years
+        mask = u < prob
+        del u
+        n_jumps = int(mask.sum())
+
+        rng_size = self._rng.get("l2.jump_size")
+        u_sign = rng_size.uniform(size=n_jumps)
+        e_mag = rng_size.standard_exponential(size=n_jumps)
+        up = u_sign < cfg.jump_p_up
+        sizes = np.where(up, e_mag / cfg.jump_eta_up, -e_mag / cfg.jump_eta_down)
+
+        # マルチンゲール補償 k = E[e^J] - 1 (eta_u > 1 は config が保証)。
+        k_comp = (
+            cfg.jump_p_up * cfg.jump_eta_up / (cfg.jump_eta_up - 1.0)
+            + (1.0 - cfg.jump_p_up) * cfg.jump_eta_down / (cfg.jump_eta_down + 1.0)
+            - 1.0
+        )
+        compensation = lam
+        compensation *= -k_comp * dt_years  # in-place: lam を潰して補償列に転用
+
+        jump_add = np.zeros(n_steps, dtype=np.float64)
+        jump_add[mask] = sizes
+        jump_times = t[1:][mask]  # 増分 i は区間 (t_i, t_{i+1}] — 右端に記録
+
+        e_j2 = (
+            cfg.jump_p_up * 2.0 / cfg.jump_eta_up**2
+            + (1.0 - cfg.jump_p_up) * 2.0 / cfg.jump_eta_down**2
+        )
+        lam_eff = -float(compensation.mean()) / (k_comp * dt_years)  # 実効平均強度
+        diffusion_qv = sig_bar**2
+        jump_qv = lam_eff * e_j2
+        self.last_diagnostics["jump"] = {
+            "p_up": cfg.jump_p_up,
+            "eta_up": cfg.jump_eta_up,
+            "eta_down": cfg.jump_eta_down,
+            "lambda0_per_year": cfg.jump_lambda_per_year,
+            "vol_exponent": cfg.jump_vol_exponent,
+            "intensity_cap": cfg.jump_intensity_cap,
+            "k_compensation": k_comp,
+            "compensation_applied": True,
+            "lambda_effective_per_year": lam_eff,
+            "n_jumps": n_jumps,
+            "n_up": int(up.sum()),
+            "mean_jump": float(sizes.mean()) if n_jumps else None,
+            "min_jump": float(sizes.min()) if n_jumps else None,
+            "max_jump": float(sizes.max()) if n_jumps else None,
+            "e_j2": e_j2,
+            "e_j": cfg.jump_p_up / cfg.jump_eta_up - (1.0 - cfg.jump_p_up) / cfg.jump_eta_down,
+            "sigma_bar_diffusion": sig_bar,
+            "jv_share_theory": jump_qv / (jump_qv + diffusion_qv),
+            "jv_share_target": cfg.jump_qv_share_target,
+        }
+        return jump_times, jump_add, compensation
+
+    # ------------------------------------------------------------------
     # 拡張フック
     # ------------------------------------------------------------------
-    def _log_vol_path(self, t: np.ndarray) -> np.ndarray:
+    def _log_vol_path(
+        self,
+        t: np.ndarray,
+        ou_driver: np.ndarray | None = None,
+        y_rough_pre: np.ndarray | None = None,
+        x_mid: np.ndarray | None = None,
+    ) -> np.ndarray:
         """log (瞬間ボラ) の経路。
 
         すべて対数ボラの**加法**成分として設計する (各成分の寄与を分散分解で
         切り分けられるようにするため。乗法で混ぜると成分の効果が分離できない)。
 
         - S1: MSM ``+ 0.5 sum log M_i`` と緩慢 OU ``+ X_t - Var(X)`` (実装済み)
-        - S2: ラフ成分 ``+ nu * W^H_t`` (H ~ 0.1 の分数ブラウン運動)
+        - S2: ラフ成分 ``+ Y_t - Var(Y)`` (実装済み)
+        - S3: 基準は ``log sigma_diff`` (ジャンプ有効時は sqrt(1-JV) 縮小)
         - S5: カオス成分 chi_2 ``+ c * g(chi_2(t))``
+
+        Parameters
+        ----------
+        ou_driver:
+            レバレッジ有効時の OU 駆動列 (価格革新と相関済み)。
+        y_rough_pre:
+            レバレッジ有効時、bridge が fGn を必要とするためラフ成分は先に生成
+            される。その展開済み配列を受け取り再生成しない (ストリーム消費を
+            二重にしないため)。
         """
         cfg = self._config
         n = t.shape[0]
-        log_sigma_bar = math.log(cfg.sigma_bar)
+        log_sigma_bar = math.log(self.sigma_bar_diffusion)
 
         if not (cfg.enable_msm or cfg.enable_slow_ou or cfg.enable_rough):
             return np.full(n, log_sigma_bar, dtype=np.float64)
@@ -542,10 +893,23 @@ class GBMPriceLayer:
         if cfg.enable_msm:
             half_log_msm = self._simulate_msm(t_days)
         if cfg.enable_slow_ou:
-            x_slow = self._simulate_slow_ou(t_days)
-            var_slow = cfg.vol_var_target_slow
+            # 中速成分 (S3 レバレッジ) がある場合、slow の予算はその残り。
+            slow_var = (
+                cfg.vol_var_target_slow - cfg.leverage_mid_var
+                if x_mid is not None
+                else None
+            )
+            x_slow = self._simulate_slow_ou(t_days, driver=ou_driver, var_override=slow_var)
+            var_slow = cfg.vol_var_target_slow if x_mid is None else slow_var
+        if x_mid is not None:
+            # 合成上は slow チャンネル (OU 族) に合算する。凸性補正も加算。
+            if isinstance(x_slow, np.ndarray):
+                x_slow = x_slow + x_mid
+            else:
+                x_slow = x_mid
+            var_slow += cfg.leverage_mid_var
         if cfg.enable_rough:
-            y_rough = self._simulate_rough(t)
+            y_rough = y_rough_pre if y_rough_pre is not None else self._simulate_rough(t)
             var_rough = self._rough_var_eff
 
         # 診断用サブサンプル (分単位)。成分内訳を全ステップ保持すると本番設定で
@@ -564,8 +928,12 @@ class GBMPriceLayer:
                 if isinstance(half_log_msm, np.ndarray)
                 else np.zeros(n_sub)
             ),
+            # x_slow は OU 族チャンネルの合算 (S3 レバレッジ有効時は HL30 + 中速)。
             "x_slow": (
                 x_slow[::stride].copy() if isinstance(x_slow, np.ndarray) else np.zeros(n_sub)
+            ),
+            "x_mid": (
+                x_mid[::stride].copy() if isinstance(x_mid, np.ndarray) else np.zeros(n_sub)
             ),
             "y_rough": (
                 y_rough[::stride].copy() if isinstance(y_rough, np.ndarray) else np.zeros(n_sub)
@@ -595,43 +963,26 @@ class GBMPriceLayer:
         }
         return log_vol
 
-    def _jump_component(self, t: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """ジャンプの (時刻, 各グリッド区間に加える対数ジャンプ量)。
-
-        S3 で ``l2.jump_time`` / ``l2.jump_size`` ストリームを使って実装する。
-        線形補間がジャンプをなますため、**ジャンプ時刻は必ずグリッド点に載せる**
-        こと (:class:`~simchart.types.PriceProcess` の docstring を参照)。
-        """
-        return np.empty(0, dtype=np.float64), np.zeros(t.shape[0] - 1, dtype=np.float64)
-
-    def _leverage_innovation(self, z: np.ndarray) -> np.ndarray:
-        """レバレッジ効果のためにボラ革新と価格革新を相関させる。
-
-        S3 で実装する。``l2.leverage`` ストリームで直交成分を引き、
-        ``z_vol = rho * z_price + sqrt(1 - rho^2) * z_orth`` の形にする。
-        価格側の系列 ``z`` を書き換えてはならない (書き換えると S2 との比較で
-        拡散経路が変わってしまい、段階間比較が壊れる)。
-        """
-        return z
-
     # ------------------------------------------------------------------
     def simulate(self, t: np.ndarray) -> PriceProcess:
         """時刻グリッド ``t`` (秒) 上で log p* を生成する。
 
         構成は対数価格の増分:
-        ``log_p[i+1] = log_p[i] + (mu - 0.5 sigma_i^2) dt + sigma_i sqrt(dt) z_i``
+        ``log_p[i+1] = log_p[i] + (mu - 0.5 sigma_i^2 - lambda_i k) dt
+        + sigma_i sqrt(dt) z_i + J_i``
 
         ボラは区間の**左端**の値を使う (Euler-Maruyama)。右端や区間平均を使うと
-        S3 でレバレッジを入れたときに未来のボラ情報が当該区間のリターンへ漏れる
-        (ルックアヘッド)。S1 では左端規約が実際に効いている。
+        レバレッジで未来のボラ情報が当該区間のリターンへ漏れる (ルックアヘッド)。
 
-        拡散乱数 ``z`` は ``l2.diffusion`` から**最初に n-1 個を一括で**引く。
-        MSM / OU は別ストリームなので、S1 のフラグを立てても z の系列は S0 と
-        ビット単位で同一になる (rng_diffusion ゲートがこれを検証する)。
+        拡散乱数は ``l2.diffusion`` から**最初に n-1 個を一括で**引く。レバレッジ
+        有効時はその列 b を bridge 分解 (§6) で z に変換するが、**消費列そのものは
+        S0 以来不変** (rng_diffusion ゲートがこれを検証する)。無効時は z = b で
+        S2 までの経路とビット単位同一。
         """
         if t.ndim != 1 or t.shape[0] < 2:
             raise ValueError("時刻グリッドは 1 次元で 2 点以上必要です")
         self.last_diagnostics = {}
+        cfg = self._config
 
         n = int(t.shape[0])
         z = self._rng.get("l2.diffusion").standard_normal(n - 1)
@@ -639,7 +990,44 @@ class GBMPriceLayer:
             np.ascontiguousarray(z).tobytes()
         ).hexdigest()
 
-        log_vol = self._log_vol_path(t)
+        if cfg.enable_leverage:
+            # ラフ成分を先に生成 (bridge が fGn を必要とするため)。順序を変えても
+            # ストリームは名前ごとに独立なので、各ストリームの消費列は不変。
+            y_rough_pre = self._simulate_rough(t)
+            z = self._bridge_innovations(z, t)
+
+            # 長期チャンネル: OU の駆動 xi = rho_slow z + sqrt(1-rho^2) w2。
+            # z を先に構成してから xi を導出する (順序を逆にしない — §6.3)。
+            rho_s = cfg.leverage_rho_slow
+            xi = self._rng.get("l2.leverage_slow").standard_normal(n - 1)
+            xi *= math.sqrt(1.0 - rho_s * rho_s)
+            scaled = z * rho_s
+            xi += scaled
+            del scaled
+            corr_slow = float(
+                (np.dot(z, xi) / z.shape[0] - z.mean() * xi.mean())
+                / (z.std() * xi.std())
+            )
+            # 中速レバレッジ成分 (日次グリッド)。既定は無効 (var=0 — ③ 保全の
+            # 裁定 2026-08-20)。有効時のみ z から前日集計 u_d を作る。
+            x_mid = (
+                self._simulate_mid_leverage(z, t)
+                if cfg.leverage_mid_var > 0.0
+                else None
+            )
+            log_vol = self._log_vol_path(
+                t, ou_driver=xi, y_rough_pre=y_rough_pre, x_mid=x_mid
+            )
+            del xi, y_rough_pre, x_mid
+
+            lev_diag = self.last_diagnostics["leverage"]
+            lev_diag["corr_slow_realized"] = corr_slow
+            # z のセル内無相関の直接テスト (§6.4)。増分構築で z を潰す前に測る。
+            n_days_grid = int(round((t[-1] - t[0]) / self._seconds_per_day))
+            lev_diag["z_acf"] = self._z_autocorrelation(z, max(n_days_grid, 1))
+        else:
+            log_vol = self._log_vol_path(t)
+
         sigma_left = np.exp(log_vol[:-1])
 
         dt_sec = np.diff(t)
@@ -647,6 +1035,19 @@ class GBMPriceLayer:
             raise ValueError("時刻グリッドが単調増加ではありません")
         uniform = dt_sec.min() == dt_sec.max()
         mu = float(self._config.mu_drift)
+
+        # ジャンプは sigma_left に依存するので増分構築の前に生成する
+        # (増分構築は sigma_left を in-place で潰すため)。
+        jump_times = np.empty(0, dtype=np.float64)
+        jump_add: np.ndarray | None = None
+        jump_compensation: np.ndarray | None = None
+        if cfg.enable_jump:
+            if not uniform:
+                raise NotImplementedError("非一様グリッドのジャンプは S4 で対応します")
+            dt_y_scalar = float(dt_sec[0]) / self._seconds_per_year
+            jump_times, jump_add, jump_compensation = self._simulate_jumps(
+                t, sigma_left, dt_y_scalar
+            )
 
         if uniform and np.all(sigma_left == sigma_left[0]):
             # S0 経路: 全部スカラーで済むので中間配列を作らない。
@@ -671,9 +1072,13 @@ class GBMPriceLayer:
             dt_y = dt_sec / self._seconds_per_year
             increments = (mu - 0.5 * sigma_left**2) * dt_y + sigma_left * np.sqrt(dt_y) * z
 
-        jump_times, jump_increments = self._jump_component(t)
-        if jump_increments.any():
-            increments = increments + jump_increments
+        if jump_add is not None:
+            # 補償 -lambda(t) k dt を先に、次にジャンプ本体。忘れると価格に系統
+            # ドリフトが乗る (§4.3) — テストが補償 on/off の終端差 = sum(lambda k dt)
+            # を厳密に検証する。
+            increments += jump_compensation
+            increments += jump_add
+            del jump_add, jump_compensation
 
         log_p = np.empty(n, dtype=np.float64)
         log_p[0] = math.log(self._config.p0)
@@ -695,8 +1100,6 @@ def build_price_layer(
     calendar: ConstantCalendar,
     activity: ConstantActivity,
 ) -> GBMPriceLayer:
-    if config.enable_jump or config.enable_leverage:
-        raise NotImplementedError("ジャンプ / レバレッジは S3 で simchart/layers/l2_price.py に実装します。")
     if config.enable_chaos_vol:
         raise NotImplementedError("カオス的ボラ成分 chi_2 は S5 で実装します。")
     return GBMPriceLayer(config, rng, calendar, activity)

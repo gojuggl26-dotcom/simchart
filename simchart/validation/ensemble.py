@@ -82,7 +82,17 @@ def vol_cross_section(config: Config, n_paths: int | None = None) -> dict:
     var_slow = 0.0
     if config.enable_slow_ou:
         var_slow = config.vol_var_target_slow
-        x_slow = rng.normal(0.0, math.sqrt(var_slow), size=n)
+        if config.enable_leverage and config.leverage_mid_var > 0.0:
+            # S3: slow チャンネルは HL30 (slow - mid) + 中速 (mid) の合算。
+            # 断面では独立サンプルの和 (経路上の弱い相互相関 ~+0.002 は
+            # e_sigma2 に ~0.7% の上振れとして現れる — README に注記)。
+            var_hl30 = config.vol_var_target_slow - config.leverage_mid_var
+            x_slow = rng.normal(0.0, math.sqrt(var_hl30), size=n)
+            x_slow = x_slow + rng.normal(
+                0.0, math.sqrt(config.leverage_mid_var), size=n
+            )
+        else:
+            x_slow = rng.normal(0.0, math.sqrt(var_slow), size=n)
 
     y_rough: np.ndarray | float = 0.0
     var_rough = 0.0

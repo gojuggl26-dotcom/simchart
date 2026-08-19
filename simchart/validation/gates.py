@@ -600,11 +600,217 @@ _S2_NEW_GATES: tuple[Gate, ...] = (
 
 S2_GATES: tuple[Gate, ...] = _S2_INHERITED_GATES + _S2_NEW_GATES
 
-#: 段階ごとのゲート。S3 以降を実装するときはここに追加する。
+
+# ---------------------------------------------------------------------------
+# S3 のゲート
+# ---------------------------------------------------------------------------
+def _z_acf_check(value: Any) -> bool:
+    """z の全ラグ ACF が 3.7/sqrt(N) 以内 (§6.2 の直接テスト)。
+
+    指示書の閾値 2/sqrt(N) は 60 ラグの最大値に対しては多重比較で iid でも
+    E[max] ~ 2.9/sqrt(N) となり純乱数で落ちる (S0 の ±2σ ゲートと同型の問題)。
+    Bonferroni 60 本・両側 5% の 3.66 を丸めた 3.7 を使う。実装欠陥 (共通ショック
+    の単純加算) は +rho^2/n ~ 8e-3 >> 3.7/sqrt(117M) = 3.4e-4 なので検出力は保たれる。
+    """
+    if not isinstance(value, Mapping):
+        return False
+    m = value.get("max_abs_acf")
+    n = value.get("n")
+    if m is None or not n:
+        return False
+    return float(m) < 3.7 / float(n) ** 0.5
+
+
+def _corr_within(target_key: str, tol: float) -> Callable[[Any], bool]:
+    def check(value: Any) -> bool:
+        if not isinstance(value, Mapping):
+            return False
+        realized = value.get("realized")
+        target = value.get(target_key) if target_key in value else value.get("target")
+        if realized is None or target is None:
+            return False
+        return abs(float(realized) - float(target)) <= tol
+
+    return check
+
+
+def _neg_between(lo: float) -> Callable[[Any], bool]:
+    """lo <= value < 0 (負の方向性検定。0 は含まない)。"""
+
+    def check(value: Any) -> bool:
+        return value is not None and lo <= float(value) < 0.0
+
+    return check
+
+
+def _corr_within_or_disabled(target_key: str, tol: float) -> Callable[[Any], bool]:
+    """成分が無効 (target 不在) なら自明成立、有効なら ±tol を要求する。"""
+    inner = _corr_within(target_key, tol)
+
+    def check(value: Any) -> bool:
+        if isinstance(value, Mapping) and value.get("target") is None and value.get(
+            "realized"
+        ) is None:
+            return True
+        return inner(value)
+
+    return check
+
+
+#: S2 の不変チェックのうち S3 では**性質が変わる**もの:
+#: - inv_kurtosis_daily (Δk <= +0.5): ジャンプで尖度が +2〜+13 上がるのが S3 の目的
+#:   (①)。絶対ゲート kurtosis_daily と multiseed の hill/skew が管理する
+#: - inv_absr_powerlaw_gamma (±10%): ジャンプが |r| ACF の推定にノイズを加え
+#:   Δγ/γ が実測 0.02〜0.36 動く。S3 指示書 §10 の要求は R^2 非劣化のみ
+#: 観測 |r| の gph_d 絶対ゲートも S3 では差し替える: ジャンプ・レバレッジが
+#: スペクトルに加える白色成分が d の測定値を系統的に -0.05 下げる (真の記憶構造
+#: は不変 — inv_gph_d が潜在 log sigma で検証する)。帯を下方拡張し、多シード
+#: 中央値で判定する (単一シードの d は SD ~0.04 でばらつくため)。
+_S3_DROPPED_INVARIANCE = {"inv_kurtosis_daily", "inv_absr_powerlaw_gamma", "gph_d"}
+_S3_INHERITED_GATES: tuple[Gate, ...] = tuple(
+    g for g in S2_GATES if g.name not in _S3_DROPPED_INVARIANCE
+)
+
+_S3_NEW_GATES: tuple[Gate, ...] = (
+    Gate(
+        name="gph_d",
+        metric_path="multiseed.gph_d.median",
+        check=_between(0.25, 0.45),
+        threshold="観測 |r| の GPH d ∈ [0.25, 0.45] (10 シード中央値。S1 の [0.30,0.45]"
+        " から下限を拡張 — 白色混入バイアス -0.05 を記録の上で)",
+        description=(
+            "ジャンプとレバレッジは |r| のスペクトルに白色成分を加え、真の記憶が"
+            "不変でも測定 d を平坦化させる (実測: jump -0.03、leverage -0.02〜-0.03)。"
+            "③ の構造の不変性は inv_gph_d が潜在 log sigma で検証する。"
+        ),
+    ),
+    Gate(
+        name="hill_alpha",
+        metric_path="multiseed.hill_alpha.median",
+        check=_between(3.0, 5.0),
+        threshold="Hill α ∈ [3.0, 5.0] (日次リターン・上位 5%、10 シード中央値)",
+        description=(
+            "有限標本の見かけのテール指数 (§3.2 — 漸近べき則ではないのが正しい)。"
+            "測定条件 (日次・上位 5%) を固定して報告する。"
+        ),
+    ),
+    Gate(
+        name="hill_increasing",
+        metric_path="multiseed.hill_scale_slope.median",
+        check=_gt(0.0),
+        threshold="Hill α が集計スケールで上昇 (log スケール回帰傾き > 0、中央値)",
+        description="集計正規性 (⑱)。べき則ジャンプだと α 不変になるので識別でもある。",
+    ),
+    Gate(
+        name="skewness_daily",
+        metric_path="multiseed.skewness_daily.median",
+        check=_between(-1.5, -0.1),
+        threshold="日次歪度 ∈ [-1.5, -0.1] (10 シード中央値)",
+        description="非対称ジャンプ (p<0.5, η_d<η_u) 由来の負の歪度。",
+    ),
+    Gate(
+        name="jv_share",
+        metric_path="multiseed.jv_share.median",
+        check=_between(0.05, 0.15),
+        threshold="BNS の JV share ∈ [5%, 15%] (10 シード中央値)",
+        description="総二次変動に占めるジャンプ寄与 (§7)。σ̄_diff の縮小と対応する。",
+    ),
+    Gate(
+        name="leverage_corr",
+        metric_path="multiseed.leverage_corr.median",
+        check=_neg_between(-0.10),
+        threshold="corr(r_t, RV_{t+1}) ∈ [-0.10, 0) (10 シード中央値。指示書の"
+        " [-0.28, -0.16] から変更 — 2026-08-20 オペレータ裁定)",
+        description=(
+            "指示書の帯は per-step 相関構成の理論上限 (~-0.06) を超えており達成不能。"
+            "中速成分 (実測上限 -0.14) は gph_d を最大 -0.15 動かし ③ を壊すため"
+            "無効化 (同じ予算の取り合いと実測確定)。真値 ~-0.017 に対しシード"
+            "ゆらぎ ±0.02 なので、方向性の検定 (負であること、median の偽陽性 ~2%)"
+            " として判定する。水準は S10 の板側チャンネルが担う。"
+        ),
+    ),
+    Gate(
+        name="leverage_shape",
+        metric_path="leverage.function.shape_ok",
+        check=_is_true,
+        threshold="L(1) < 0 かつ mean L(1..20) < 0 (指示書の「全て負」から変更)",
+        description=(
+            "弱いレバレッジ水準 (裁定後) では個々の L(h) が SE ~0.014 のゼロ近傍に"
+            "あり「20 本全て負」は点推定ノイズで確率的に落ちる。方向と形状の検定と"
+            "して L(1) と平均で判定する (2026-08-20 裁定の帰結)。"
+        ),
+    ),
+    Gate(
+        name="eta_u_valid",
+        metric_path="jumps.generator.eta_up",
+        check=_gt(1.0),
+        threshold="η_u > 1 (E[e^J] の存在条件)",
+        description="config 検証と二重化。",
+    ),
+    Gate(
+        name="martingale_compensation",
+        metric_path="jumps.generator.compensation_applied",
+        check=_is_true,
+        threshold="補償項 -λ(t) k dt が適用されている",
+        description=(
+            "忘れると価格に系統ドリフト (§4.3)。適用量の厳密検証はテスト "
+            "(補償 on/off の終端差 = Σ λ k dt) が行う。"
+        ),
+    ),
+    Gate(
+        name="corr_rough_realized",
+        metric_path="leverage.generator.corr_rough_check",
+        check=_corr_within("target", 0.02),
+        threshold="実測 corr(セル集計 z, ε) = ρ_rough ± 0.02",
+        description="§6.4 の実装検証 (短期チャンネル)。",
+    ),
+    Gate(
+        name="corr_slow_realized",
+        metric_path="leverage.generator.corr_slow_check",
+        check=_corr_within("target", 0.02),
+        threshold="実測 corr(z, ξ) = ρ_slow ± 0.02",
+        description="§6.4 の実装検証 (長期チャンネル)。",
+    ),
+    Gate(
+        name="corr_mid_realized",
+        metric_path="leverage.generator.corr_mid_check",
+        check=_corr_within_or_disabled("target", 0.05),
+        threshold="実測 corr(u_d, 中速駆動) = ρ_mid ± 0.05 (中速無効時は自明成立)",
+        description=(
+            "中速チャンネルの実装検証。既定では無効 (leverage_mid_var=0、"
+            "2026-08-20 裁定) なので target が無ければ通す。"
+        ),
+    ),
+    Gate(
+        name="z_no_autocorr",
+        metric_path="leverage.generator.z_acf",
+        check=_z_acf_check,
+        threshold="z の ACF (ラグ 1..60) が全て 3.7/√N 以内 (Bonferroni 補正)",
+        description=(
+            "§6.2 の bridge を正しく実装したかの直接テスト。共通ショックの単純"
+            "加算 (+ρ²/n ≈ 8e-3) を確実に検出する。"
+        ),
+    ),
+    Gate(
+        name="inv_absr_powerlaw_r2",
+        metric_path="runtime.baseline_invariance.checks.absr_powerlaw_gamma.r2_not_degraded",
+        check=_is_true,
+        threshold="|r| ACF べき則の binned R^2 が S2 から悪化していない (-0.05 まで)",
+        description=(
+            "S3 指示書 §10 の趣旨 (③ の形状維持)。γ の ±10% はジャンプノイズで"
+            "測れないため R^2 非劣化に置き換え (経緯は _S3_DROPPED_INVARIANCE)。"
+        ),
+    ),
+)
+
+S3_GATES: tuple[Gate, ...] = _S3_INHERITED_GATES + _S3_NEW_GATES
+
+#: 段階ごとのゲート。S4 以降を実装するときはここに追加する。
 STAGE_GATES: dict[str, tuple[Gate, ...]] = {
     "S0": S0_GATES,
     "S1": S1_GATES,
     "S2": S2_GATES,
+    "S3": S3_GATES,
 }
 
 

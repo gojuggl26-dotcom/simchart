@@ -171,4 +171,4 @@ def test_compare_needs_two_stages(run_dir: Path) -> None:
 
 
 def test_cli_refuses_an_unimplemented_stage(run_dir: Path) -> None:
-    assert main(["run", "--stage", "S3", "--results-dir", str(run_dir), *SMALL_RUN]) == 3
+    assert main(["run", "--stage", "S4", "--results-dir", str(run_dir), *SMALL_RUN]) == 3

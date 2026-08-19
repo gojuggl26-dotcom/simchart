@@ -46,7 +46,43 @@ __all__ = [
     "roughness_exponent",
     "realized_variance",
     "path_stationarity",
+    "skewness_by_scale",
 ]
+
+
+def skewness_by_scale(r_daily: np.ndarray, scales_days=(1, 2, 5, 10, 20), min_indep: int = 100) -> dict:
+    """歪度の集計スケール依存 (S3)。
+
+    非対称ジャンプ由来の歪度は集計で 1/sqrt(k) より速く減衰する (3 次キュムラント
+    は加法だが分散も増えるため)。日次で負、集計で 0 へ向かうのが期待。
+    """
+    x = np.asarray(r_daily, dtype=np.float64).ravel()
+    x = x[np.isfinite(x)]
+    if x.size < 500:
+        return na(f"日次リターンが足りません (n={x.size})")
+    cs = np.concatenate([[0.0], np.cumsum(x)])
+    rows = []
+    for scale in scales_days:
+        k = int(scale)
+        if x.size // k < min_indep:
+            rows.append({"scale_days": k, "status": "not_applicable", "skewness": None})
+            continue
+        agg = cs[k:] - cs[:-k]
+        rows.append(
+            {"scale_days": k, "status": "ok",
+             "skewness": num(float(stats.skew(agg, bias=False))),
+             "n_independent": int(x.size // k)}
+        )
+    valid = [row for row in rows if row.get("skewness") is not None]
+    if not valid:
+        return na("有効なスケールがありません", table=rows)
+    return ok(
+        valid[0]["skewness"],
+        skewness_daily=valid[0]["skewness"],
+        skewness_coarsest=valid[-1]["skewness"],
+        toward_zero=bool(abs(valid[-1]["skewness"]) <= abs(valid[0]["skewness"]) + 0.1),
+        table=rows,
+    )
 
 
 def _as_2d(x: np.ndarray) -> np.ndarray:

@@ -70,6 +70,71 @@ def _fmt(value: Any) -> str:
     return str(value)
 
 
+def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
+    """ノイズの大きい指標をシードを変えて測り、中央値・IQR を返す (S3 指示書 §8)。
+
+    Hill α は 5000 日でも上位 5% が 250 観測しかなく単一シードで ±0.5 ばらつく。
+    対象は hill_alpha / leverage_corr / jv_share / skewness の 4 つ (経路統計)。
+    分散予算・補償・相関実測・決定性は単一シードで判定できるので対象外。
+    追加シードでは対象指標だけを測る (フル検証スイートは回さない)。
+    """
+    import numpy as np
+    from scipy import stats as sp_stats
+
+    from .validation.memory import leverage_function
+    from .validation.scaling import realized_variance
+    from .validation.tails import bns_jump_test, hill_by_scale, hill_estimator
+
+    per_seed: dict[str, list[float]] = {
+        "hill_alpha": [], "leverage_corr": [], "jv_share": [], "skewness_daily": [],
+        "hill_scale_slope": [], "gph_d": [],
+    }
+    seeds = [config.seed + i for i in range(n_seeds)]
+    for i, seed in enumerate(seeds):
+        result = run_pipeline(config.replace(seed=seed))
+        obs = result.observation
+        r_daily = obs.to_bars(obs.session_seconds).returns()
+        steps_per_day = int(round(obs.session_seconds / obs.step_seconds))
+        step_r = np.diff(obs.log_price)
+        rv_daily = realized_variance(step_r, steps_per_day)
+
+        hill = hill_estimator(r_daily, 0.05, "both")
+        per_seed["hill_alpha"].append(hill.get("alpha"))
+        lev = leverage_function(r_daily, rv_daily, horizons=(0, 1))
+        per_seed["leverage_corr"].append(lev.get("corr_r_rv_h1"))
+        bns = bns_jump_test(step_r, steps_per_day)
+        per_seed["jv_share"].append(bns.get("jv_share"))
+        per_seed["skewness_daily"].append(float(sp_stats.skew(r_daily, bias=False)))
+        hbs = hill_by_scale(r_daily)
+        per_seed["hill_scale_slope"].append(hbs.get("slope_vs_log_scale"))
+        from .validation.memory import gph_estimator
+
+        per_seed["gph_d"].append(
+            gph_estimator(np.abs(r_daily), config.validation.daily_gph_bandwidth_exponent).get("d")
+        )
+        del result, obs, step_r, rv_daily
+        print(f"      シード {seed} ({i + 1}/{n_seeds}) 完了", flush=True)
+
+    out: dict[str, Any] = {"n_seeds": n_seeds, "seeds": seeds}
+    for name, values in per_seed.items():
+        clean = [v for v in values if v is not None]
+        if not clean:
+            out[name] = {"median": None, "values": values}
+            continue
+        arr = np.array(clean, dtype=np.float64)
+        q1, q3 = float(np.percentile(arr, 25)), float(np.percentile(arr, 75))
+        out[name] = {
+            "median": float(np.median(arr)),
+            "iqr": q3 - q1,
+            "q1": q1,
+            "q3": q3,
+            "min": float(arr.min()),
+            "max": float(arr.max()),
+            "values": values,
+        }
+    return out
+
+
 def _print_gates(gate_results, summary: Mapping[str, Any]) -> None:
     name_width = max(len(g.name) for g in gate_results)
     print()
@@ -213,6 +278,16 @@ def cmd_run(args: argparse.Namespace) -> int:
                 if not chk.get("passed"):
                     print(f"        不一致: {name}  {chk}")
 
+    multiseed = None
+    if args.seeds and args.seeds > 1:
+        print(f"[4c/6] 多シード判定 ({args.seeds} シード — hill/leverage/JV/skew)")
+        multiseed = _run_multiseed(config, args.seeds)
+        for name in ("hill_alpha", "leverage_corr", "jv_share", "skewness_daily"):
+            info = multiseed.get(name) or {}
+            if info.get("median") is not None:
+                print(f"      {name}: median={info['median']:+.4f}  IQR={info['iqr']:.4f}")
+        metrics["multiseed"] = multiseed
+
     metrics["runtime"] = {
         "pipeline": {
             "completed": True,
@@ -348,6 +423,10 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--steps-per-day", type=int, default=None)
     run_parser.add_argument("--results-dir", type=str, default=None, help="results/ の位置")
     run_parser.add_argument("--no-plots", action="store_true")
+    run_parser.add_argument(
+        "--seeds", type=int, default=None,
+        help="ノイズの大きい指標 (hill/leverage/JV/skew) を N シードの中央値で判定する (S3+)",
+    )
     run_parser.set_defaults(func=cmd_run)
 
     validate_parser = sub.add_parser("validate", help="保存済み結果のゲート再判定")

@@ -32,6 +32,19 @@ from .base import safe_call
 __all__ = ["run_all", "collect_errors", "flatten", "standardized_returns"]
 
 
+def _latent_gph(result: StageResult, bandwidth_exponent: float) -> dict:
+    """潜在 log sigma の日次平均系列に対する GPH (③ の構造の直接測定)。"""
+    sub = result.meta.get("l2", {}).get("vol_subsample")
+    if sub is None:
+        return {"status": "not_applicable", "reason": "確率ボラが無効です", "value": None}
+    log_vol = np.asarray(sub["log_vol"], dtype=np.float64)
+    t_days = np.asarray(sub["t_days"], dtype=np.float64)
+    n_days = int(round(t_days[-1] - t_days[0])) or 1
+    per_day = log_vol.shape[0] // n_days
+    daily_mean = log_vol[: n_days * per_day].reshape(n_days, per_day).mean(axis=1)
+    return memory.gph_estimator(daily_mean, bandwidth_exponent=bandwidth_exponent)
+
+
 def standardized_returns(result: StageResult, bar_seconds: float) -> np.ndarray:
     """真の瞬間ボラで標準化したバーリターン (条件付きで iid N(0,1))。
 
@@ -225,6 +238,12 @@ def run_all(result: StageResult, config: Config | None = None) -> dict[str, Any]
             v.daily_min_obs_for_gate,
         ),
         "zeta_curvature": safe_call(scaling.zeta_curvature, r_daily),
+        # 潜在 log sigma (日次平均) の GPH d — ③ の**構造**の直接測定 (S3 で追加)。
+        # 観測 |r| の GPH はジャンプ・レバレッジが加える白色成分でスペクトル勾配が
+        # 平坦化し、真の記憶が不変でも d の測定値が下方にバイアスされる
+        # (perturbed fractional process)。log sigma 自体の記憶は MSM/OU/rough の
+        # 法則で決まり、S3 の追加成分はそれを変えないので、こちらで不変性を判定する。
+        "latent_gph_d": safe_call(_latent_gph, result, v.daily_gph_bandwidth_exponent),
     }
 
     # ------------------------------------------------------------------
@@ -325,6 +344,63 @@ def run_all(result: StageResult, config: Config | None = None) -> dict[str, Any]
             if rough_meta
             else {"status": "not_applicable", "reason": "enable_rough=False", "value": None}
         ),
+    }
+
+    # ------------------------------------------------------------------
+    # jumps / leverage: S3 の測定。
+    # ★Hill α は測定条件 (日次リターン・上位 5%) を固定して報告する (§3.2) —
+    # 条件を書かない α の議論は無意味。α ≈ 3〜5 は有限標本の性質として狙う。
+    l2m = result.meta.get("l2", {})
+    steps_per_day_obs = (
+        int(round(obs.session_seconds / obs.step_seconds)) if obs.step_seconds else None
+    )
+    rv_daily = (
+        scaling.realized_variance(np.diff(obs.log_price), steps_per_day_obs)
+        if steps_per_day_obs
+        else None
+    )
+    metrics["jumps"] = {
+        "generator": (
+            {"status": "ok", "value": None, **l2m["jump"]}
+            if l2m.get("jump")
+            else {"status": "not_applicable", "reason": "enable_jump=False", "value": None}
+        ),
+        "bns": (
+            safe_call(tails.bns_jump_test, np.diff(obs.log_price), steps_per_day_obs)
+            if steps_per_day_obs
+            else {"status": "not_applicable", "reason": "等間隔観測ではありません", "value": None}
+        ),
+        "hill_daily_top5": safe_call(tails.hill_estimator, r_daily, 0.05, "both"),
+        "hill_by_scale": safe_call(tails.hill_by_scale, r_daily),
+        "skewness_by_scale": safe_call(scaling.skewness_by_scale, r_daily),
+    }
+    if l2m.get("leverage"):
+        lev_raw = dict(l2m["leverage"])
+        mid_raw = dict(l2m.get("leverage_mid") or {})
+        lev_gen = {
+            "status": "ok",
+            "value": None,
+            **lev_raw,
+            "mid": mid_raw or None,
+            # ゲート (§6.4) が参照する {realized, target} の組。
+            "corr_rough_check": {
+                "realized": lev_raw.get("corr_rough_realized"),
+                "target": lev_raw.get("rho_rough"),
+            },
+            "corr_slow_check": {
+                "realized": lev_raw.get("corr_slow_realized"),
+                "target": lev_raw.get("rho_slow"),
+            },
+            "corr_mid_check": {
+                "realized": mid_raw.get("corr_mid_realized"),
+                "target": mid_raw.get("rho_mid"),
+            },
+        }
+    else:
+        lev_gen = {"status": "not_applicable", "reason": "enable_leverage=False", "value": None}
+    metrics["leverage"] = {
+        "generator": lev_gen,
+        "function": safe_call(memory.leverage_function, r_daily, rv_daily),
     }
 
     # ------------------------------------------------------------------

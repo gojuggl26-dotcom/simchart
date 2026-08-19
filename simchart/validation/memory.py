@@ -31,7 +31,70 @@ __all__ = [
     "acf_power_law",
     "acf_powerlaw_fit",
     "vol_increment_acf",
+    "leverage_function",
 ]
+
+
+def leverage_function(
+    r_daily: np.ndarray,
+    rv_daily: np.ndarray | None = None,
+    horizons=tuple(range(0, 31)),
+) -> dict:
+    """レバレッジ関数 L(h) = corr(r_t, |r_{t+h}|) と corr(r_t, RV_{t+h}) (S3)。
+
+    実証的には h=0〜1 日で強く負、10〜30 日かけて減衰する。h<0 側 (過去の |r| と
+    今日の r) は ~0 が正しい (因果の向きの確認) ので併せて記録する。
+    """
+    r = np.asarray(r_daily, dtype=np.float64).ravel()
+    r = r[np.isfinite(r)]
+    if r.size < 300:
+        return na(f"日次リターンが足りません (n={r.size})")
+    a = np.abs(r)
+    rows = []
+    for h in horizons:
+        h = int(h)
+        if h == 0:
+            c_abs = float(np.corrcoef(r, a)[0, 1])
+            c_rv = (
+                float(np.corrcoef(r, rv_daily)[0, 1]) if rv_daily is not None else None
+            )
+        else:
+            c_abs = float(np.corrcoef(r[:-h], a[h:])[0, 1])
+            c_rv = (
+                float(np.corrcoef(r[:-h], np.asarray(rv_daily)[h:])[0, 1])
+                if rv_daily is not None
+                else None
+            )
+        rows.append({"h": h, "corr_abs": num(c_abs), "corr_rv": num(c_rv) if c_rv is not None else None})
+
+    # 因果の向きの対照: 過去の |r| と今日の r (ほぼ 0 のはず)。
+    reverse = [
+        {"h": -h, "corr_abs": num(float(np.corrcoef(a[:-h], r[h:])[0, 1]))}
+        for h in (1, 5, 10)
+    ]
+    l1 = next((row["corr_rv"] if row["corr_rv"] is not None else row["corr_abs"])
+              for row in rows if row["h"] == 1)
+    neg_range = [row["corr_abs"] for row in rows if 1 <= row["h"] <= 20]
+    all_neg = bool(all(v is not None and v < 0 for v in neg_range))
+    mean_1_20 = float(np.mean([v for v in neg_range if v is not None])) if neg_range else None
+    l1_abs = next(row["corr_abs"] for row in rows if row["h"] == 1)
+    return ok(
+        num(l1),
+        corr_r_rv_h1=num(l1),
+        corr_abs_h1=num(l1_abs),
+        all_negative_h1_20=all_neg,
+        mean_h1_20=num(mean_1_20) if mean_1_20 is not None else None,
+        # 弱いレバレッジ水準では個々の L(h) がゼロ近傍でノイズに埋まるため、
+        # 形状判定は「L(1) 負 かつ 平均負」で行う (2026-08-20 裁定)。
+        shape_ok=bool(
+            l1_abs is not None and l1_abs < 0
+            and mean_1_20 is not None and mean_1_20 < 0
+        ),
+        n=int(r.size),
+        se_iid=num(1.0 / np.sqrt(r.size)),
+        table=rows,
+        reverse_check=reverse,
+    )
 
 
 def _as_2d(x: np.ndarray) -> np.ndarray:

@@ -44,7 +44,7 @@ __all__ = [
 
 #: 各段階の不変性照合の基準となる直前段階。
 #: S2 の合否は「S1 から何が変わらなかったか」で決まる (S2 指示書 §0)。
-BASELINE_STAGE: dict[str, str] = {"S2": "S1"}
+BASELINE_STAGE: dict[str, str] = {"S2": "S1", "S3": "S2"}
 
 
 @dataclass
@@ -366,7 +366,20 @@ def baseline_invariance_check(
         }
 
     # ★最重要: 長スケールの記憶が動いていないこと。
-    add_abs("gph_d", "daily.gph_abs_r.d", v.inv_tol_gph_d_abs)
+    # 両段階に潜在 log sigma の GPH (③ の構造の直接測定) があればそちらで判定する。
+    # 観測 |r| の GPH は S3 のジャンプ・レバレッジが加える白色成分で下方バイアス
+    # されるため、S3 以降は潜在側が本判定で観測側は記録になる。
+    if (
+        get(bm, "daily.latent_gph_d.d") is not None
+        and get(metrics, "daily.latent_gph_d.d") is not None
+    ):
+        add_abs("gph_d", "daily.latent_gph_d.d", v.inv_tol_gph_d_abs)
+        a_obs, b_obs = get(bm, "daily.gph_abs_r.d"), get(metrics, "daily.gph_abs_r.d")
+        checks["gph_d"]["observed_baseline"] = a_obs
+        checks["gph_d"]["observed_current"] = b_obs
+        checks["gph_d"]["basis"] = "latent_log_sigma"
+    else:
+        add_abs("gph_d", "daily.gph_abs_r.d", v.inv_tol_gph_d_abs)
 
     # |r| ACF のべき則指数 (相対 ±10%) と binned R^2 の非劣化。
     g1 = get(bm, "daily.acf_abs_r_powerlaw.gamma")
@@ -426,7 +439,17 @@ def baseline_invariance_check(
         "baseline": c1, "current": c2v, "tol": v.inv_tol_zeta_c2_abs,
     }
 
-    # RNG の証人: S1 のストリームがビット単位で不変であることの実測 (JSON の
+    # H_latent の不変 (S3 指示書 §9: レバレッジ相関は粗さを変えない)。
+    # 両段階に測定があるときだけ (S1 基準には無い)。
+    h1 = get(bm, "rough.h_latent.h")
+    h2 = get(metrics, "rough.h_latent.h")
+    if h1 is not None and h2 is not None:
+        checks["h_latent"] = {
+            "passed": bool(abs(h2 - h1) <= 0.02),
+            "baseline": h1, "current": h2, "diff": h2 - h1, "tol": 0.02,
+        }
+
+    # RNG の証人: 前段階のストリームがビット単位で不変であることの実測 (JSON の
     # float は repr 17 桁で往復するため、厳密一致 = ビット単位一致)。
     table1 = get(bm, "vol.msm.table") or []
     table2 = get(metrics, "vol.msm.table") or []
@@ -438,16 +461,26 @@ def baseline_invariance_check(
             for r1, r2 in zip(table1, table2)
         )
     )
-    ou_fields = ("x0", "sample_var", "sample_mean")
+    # OU の証人: レバレッジ有効時は OU の駆動が価格革新と相関する構成に置き換わる
+    # (それがレバレッジそのもの) ため、経路統計は必然的に変わる。x0 は常に
+    # l2.vol_slow から引く設計なので、x0 の厳密一致がストリーム健全性の証人になる。
+    ou_fields = ("x0",) if config.enable_leverage else ("x0", "sample_var", "sample_mean")
     ou_ok = all(
         get(bm, f"vol.slow_ou.{f}") is not None
         and get(bm, f"vol.slow_ou.{f}") == get(metrics, f"vol.slow_ou.{f}")
         for f in ou_fields
     )
+    # ラフ経路の証人 (S2 以降の基準に存在)。レバレッジは fGn の使い方を変えるだけで
+    # ラフ経路 Y 自体は変えない。
+    y1 = get(bm, "rough.generator.y_digest")
+    y2 = get(metrics, "rough.generator.y_digest")
+    rough_ok = True if y1 is None else (y1 == y2)
     checks["rng_s1_streams"] = {
-        "passed": bool(msm_ok and ou_ok),
+        "passed": bool(msm_ok and ou_ok and rough_ok),
         "msm_witness_equal": bool(msm_ok),
         "ou_witness_equal": bool(ou_ok),
+        "ou_witness_fields": list(ou_fields),
+        "rough_witness_equal": bool(rough_ok),
     }
 
     return {

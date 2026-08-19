@@ -11,12 +11,106 @@ S0 での期待値
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 from scipy import stats
 
 from .base import na, num, ok
 
-__all__ = ["basic_moments", "hill_estimator", "hill_profile", "qq_normal"]
+__all__ = [
+    "basic_moments",
+    "hill_estimator",
+    "hill_profile",
+    "qq_normal",
+    "bns_jump_test",
+    "hill_by_scale",
+]
+
+
+def bns_jump_test(r: np.ndarray, steps_per_window: int) -> dict:
+    """Barndorff-Nielsen & Shephard の bipower variation によるジャンプ検出 (S3)。
+
+    窓 (通常 1 日) ごとに RV = sum r^2 と BV = (pi/2) sum |r_i||r_{i-1}| を計算する。
+    BV は連続部分の QV に一致的でジャンプに頑健なので、JV share は全期間集計の
+    ``max(0, 1 - sum BV / sum RV)`` で推定する。窓別の z 統計
+    (RV-BV)/sqrt(theta TQ / n) の有意窓割合も返す (記録)。
+    """
+    x = np.asarray(r, dtype=np.float64).ravel()
+    k = int(steps_per_window)
+    n_w = x.size // k
+    if n_w < 30:
+        return na(f"窓が足りません (n_windows={n_w})")
+    panel = x[: n_w * k].reshape(n_w, k)
+    rv = (panel**2).sum(axis=1)
+    absr = np.abs(panel)
+    bv = (np.pi / 2.0) * (absr[:, 1:] * absr[:, :-1]).sum(axis=1)
+    # tripower quarticity (z 統計の分母)。mu_{4/3} = 2^{2/3} Gamma(7/6)/Gamma(1/2)
+    mu_43 = 2 ** (2.0 / 3.0) * math.gamma(7.0 / 6.0) / math.gamma(0.5)
+    p43 = absr ** (4.0 / 3.0)
+    tq = k * mu_43**-3 * (p43[:, 2:] * p43[:, 1:-1] * p43[:, :-2]).sum(axis=1)
+    theta = (np.pi**2 / 4.0) + np.pi - 5.0
+    with np.errstate(divide="ignore", invalid="ignore"):
+        z = (1.0 - bv / rv) / np.sqrt(theta * np.maximum(tq / np.maximum(bv, 1e-300) ** 2, 1.0 / k))
+    total_rv = float(rv.sum())
+    total_bv = float(bv.sum())
+    jv_share = max(0.0, 1.0 - total_bv / total_rv) if total_rv > 0 else None
+    sig = float(np.mean(z > 3.09)) if np.all(np.isfinite(z)) else None  # p<0.001 片側
+    return ok(
+        num(jv_share),
+        jv_share=num(jv_share),
+        total_rv=num(total_rv),
+        total_bv=num(total_bv),
+        n_windows=int(n_w),
+        frac_windows_significant=num(sig) if sig is not None else None,
+        mean_z=num(float(np.nanmean(z))),
+    )
+
+
+def hill_by_scale(r_daily: np.ndarray, scales_days=(1, 2, 5, 10, 20), k_frac: float = 0.05) -> dict:
+    """Hill α の集計スケール依存 (S3 — ⑱ の定量化)。
+
+    指数テールのジャンプ + ボラ混合では α がスケールとともに**上昇**する
+    (集計でテールが相対的に薄れる)。べき則ジャンプだと α が不変になるので、
+    その識別でもある。判定は「隣接スケールで非減少 (小さな逆転は許容) かつ
+    最粗 > 最細」ではなく、単調性を回帰傾きで見る (ノイズ耐性)。
+    """
+    x = np.asarray(r_daily, dtype=np.float64).ravel()
+    x = x[np.isfinite(x)]
+    if x.size < 500:
+        return na(f"日次リターンが足りません (n={x.size})")
+    cs = np.concatenate([[0.0], np.cumsum(x)])
+    rows = []
+    alphas = []
+    used = []
+    for scale in scales_days:
+        k = int(scale)
+        agg = cs[k:] - cs[:-k]  # 重なり窓
+        n_indep = x.size // k
+        res = hill_estimator(agg, k_frac=k_frac, tail="both")
+        if res["status"] != "ok" or n_indep < 100:
+            rows.append({"scale_days": k, "status": "not_applicable", "alpha": None})
+            continue
+        rows.append(
+            {"scale_days": k, "status": "ok", "alpha": res["alpha"],
+             "se": res["se_alpha"], "n_independent": int(n_indep)}
+        )
+        alphas.append(float(res["alpha"]))
+        used.append(k)
+    if len(alphas) < 3:
+        return na("有効なスケールが足りません", table=rows)
+    fit = stats.linregress(np.log(used), alphas)
+    increasing = bool(fit.slope > 0 and alphas[-1] > alphas[0])
+    return ok(
+        num(fit.slope),
+        alpha_daily=num(alphas[0]),
+        alpha_coarsest=num(alphas[-1]),
+        slope_vs_log_scale=num(fit.slope),
+        slope_se=num(fit.stderr),
+        increasing=increasing,
+        k_frac=float(k_frac),
+        table=rows,
+    )
 
 
 def _clean(r: np.ndarray) -> np.ndarray:

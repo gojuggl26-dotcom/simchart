@@ -1,7 +1,7 @@
 {
   "stage": "S2",
-  "created_at": "2026-08-19T07:42:35+00:00",
-  "git_commit": "f4b31aac8e685b267650abeb47d9c808b7ab7e29",
+  "created_at": "2026-08-19T15:43:53+00:00",
+  "git_commit": "368ca780e3d5c03ff9d9af553793bb92427733ee",
   "git_branch": "master",
   "git_dirty": true,
   "config": {
@@ -28,6 +28,18 @@
     "rough_half_life_days": 0.75,
     "vol_var_target_rough": 0.025,
     "rough_grid_seconds": 60.0,
+    "jump_p_up": 0.42,
+    "jump_eta_up": 35.0,
+    "jump_eta_down": 22.0,
+    "jump_lambda_per_year": 2.5,
+    "jump_vol_exponent": 1.0,
+    "jump_intensity_cap": 10.0,
+    "jump_qv_share_target": 0.1,
+    "leverage_rho_rough": -0.7,
+    "leverage_rho_slow": -0.3,
+    "leverage_mid_half_life_days": 5.0,
+    "leverage_mid_var": 0.0,
+    "leverage_rho_mid": -0.8,
     "enable_jump": false,
     "enable_leverage": false,
     "enable_chaos_vol": false,
@@ -164,7 +176,7 @@
       "si_tol_var_logvol_abs": 0.025
     }
   },
-  "config_hash": "c99ae21e86417b6eda1f2f20a7b53e3484174386ef4e1cc1e5480f85de567be5",
+  "config_hash": "e7959f4ccff7b2f85976f35ffd895bf346c8136d5efeb641f8ed37e926d3f5ff",
   "metrics": {
     "series": {
       "source": "l3.passthrough(p_star)",
@@ -5233,6 +5245,20 @@
           50,
           100
         ]
+      },
+      "latent_gph_d": {
+        "status": "ok",
+        "value": 0.5988444257175243,
+        "d": 0.5988444257175243,
+        "se_asymptotic": 0.040316608485963946,
+        "se_regression": 0.03599839698449303,
+        "t_stat": 14.853541709144741,
+        "m": 253,
+        "n": 5000,
+        "bandwidth_exponent": 0.65,
+        "intercept": -5.22334634556521,
+        "r2": 0.5243811293516529,
+        "regression_pvalue": 2.1692916885935625e-42
       }
     },
     "vol": {
@@ -5386,7 +5412,8 @@
         "ar_coeff": 0.9999990126113414,
         "x0": 0.10127759107720373,
         "sample_var": 0.05540678840883211,
-        "sample_mean": 0.05557014864244519
+        "sample_mean": 0.05557014864244519,
+        "driver": "independent"
       }
     },
     "rough": {
@@ -5664,6 +5691,310 @@
         "note": "ラフ成分は半減期が短く経路分散が良く推定できる (SD ~2.5%) ため、予算ゲートは経路実測で判定できる (MSM/OU は断面でしか判定できない)"
       }
     },
+    "jumps": {
+      "generator": {
+        "status": "not_applicable",
+        "reason": "enable_jump=False",
+        "value": null
+      },
+      "bns": {
+        "status": "ok",
+        "value": 0.0002472836845717197,
+        "jv_share": 0.0002472836845717197,
+        "total_rv": 0.8179866507997882,
+        "total_bv": 0.817784376046848,
+        "n_windows": 5000,
+        "frac_windows_significant": 0.0,
+        "mean_z": 0.00028349788427643475
+      },
+      "hill_daily_top5": {
+        "status": "ok",
+        "value": 3.389519789801414,
+        "alpha": 3.389519789801414,
+        "xi": 0.2950270427713267,
+        "se_alpha": 0.21437205419975267,
+        "k": 250,
+        "k_frac": 0.05,
+        "n": 5000,
+        "threshold": 0.02626102973131683,
+        "tail": "both"
+      },
+      "hill_by_scale": {
+        "status": "ok",
+        "value": 0.5341473172919916,
+        "alpha_daily": 3.389519789801414,
+        "alpha_coarsest": 5.075576338009659,
+        "slope_vs_log_scale": 0.5341473172919916,
+        "slope_se": 0.1113643126959021,
+        "increasing": true,
+        "k_frac": 0.05,
+        "table": [
+          {
+            "scale_days": 1,
+            "status": "ok",
+            "alpha": 3.389519789801414,
+            "se": 0.21437205419975267,
+            "n_independent": 5000
+          },
+          {
+            "scale_days": 2,
+            "status": "ok",
+            "alpha": 3.4837854540870694,
+            "se": 0.22077593258794062,
+            "n_independent": 2500
+          },
+          {
+            "scale_days": 5,
+            "status": "ok",
+            "alpha": 3.8362768757354817,
+            "se": 0.2431141687879854,
+            "n_independent": 1000
+          },
+          {
+            "scale_days": 10,
+            "status": "ok",
+            "alpha": 4.212837316046578,
+            "se": 0.26697771706931706,
+            "n_independent": 500
+          },
+          {
+            "scale_days": 20,
+            "status": "ok",
+            "alpha": 5.075576338009659,
+            "se": 0.32165158107849456,
+            "n_independent": 250
+          }
+        ]
+      },
+      "skewness_by_scale": {
+        "status": "ok",
+        "value": -0.04394557816774488,
+        "skewness_daily": -0.04394557816774488,
+        "skewness_coarsest": -0.21977255919050465,
+        "toward_zero": false,
+        "table": [
+          {
+            "scale_days": 1,
+            "status": "ok",
+            "skewness": -0.04394557816774488,
+            "n_independent": 5000
+          },
+          {
+            "scale_days": 2,
+            "status": "ok",
+            "skewness": -0.03534159981624077,
+            "n_independent": 2500
+          },
+          {
+            "scale_days": 5,
+            "status": "ok",
+            "skewness": -0.1590793582790836,
+            "n_independent": 1000
+          },
+          {
+            "scale_days": 10,
+            "status": "ok",
+            "skewness": -0.16248631947891737,
+            "n_independent": 500
+          },
+          {
+            "scale_days": 20,
+            "status": "ok",
+            "skewness": -0.21977255919050465,
+            "n_independent": 250
+          }
+        ]
+      }
+    },
+    "leverage": {
+      "generator": {
+        "status": "not_applicable",
+        "reason": "enable_leverage=False",
+        "value": null
+      },
+      "function": {
+        "status": "ok",
+        "value": 0.0022933342995167263,
+        "corr_r_rv_h1": 0.0022933342995167263,
+        "corr_abs_h1": 0.016916856782947378,
+        "all_negative_h1_20": false,
+        "mean_h1_20": -0.0062192150511329635,
+        "shape_ok": false,
+        "n": 5000,
+        "se_iid": 0.01414213562373095,
+        "table": [
+          {
+            "h": 0,
+            "corr_abs": -0.01869930873574401,
+            "corr_rv": -0.016643496513926305
+          },
+          {
+            "h": 1,
+            "corr_abs": 0.016916856782947378,
+            "corr_rv": 0.0022933342995167263
+          },
+          {
+            "h": 2,
+            "corr_abs": -0.012827617762441339,
+            "corr_rv": -0.0005279461506941998
+          },
+          {
+            "h": 3,
+            "corr_abs": -0.021218889506403424,
+            "corr_rv": -0.016856985545718767
+          },
+          {
+            "h": 4,
+            "corr_abs": -0.029813646637488957,
+            "corr_rv": -0.018345252115976002
+          },
+          {
+            "h": 5,
+            "corr_abs": 0.016167364102026367,
+            "corr_rv": -0.033669687001655214
+          },
+          {
+            "h": 6,
+            "corr_abs": -0.00873254917115052,
+            "corr_rv": -0.007186044382875989
+          },
+          {
+            "h": 7,
+            "corr_abs": -0.002511416378603517,
+            "corr_rv": 0.007250656695252673
+          },
+          {
+            "h": 8,
+            "corr_abs": 0.0035328465846874236,
+            "corr_rv": -0.003981093059436675
+          },
+          {
+            "h": 9,
+            "corr_abs": -3.120206305113875e-06,
+            "corr_rv": -0.02042249732868485
+          },
+          {
+            "h": 10,
+            "corr_abs": -0.024492998288340798,
+            "corr_rv": -0.021270816705564015
+          },
+          {
+            "h": 11,
+            "corr_abs": -0.0028495869301923033,
+            "corr_rv": -0.006897065401242765
+          },
+          {
+            "h": 12,
+            "corr_abs": -0.028421493397389325,
+            "corr_rv": -0.0005365643154712304
+          },
+          {
+            "h": 13,
+            "corr_abs": -0.008476651964716352,
+            "corr_rv": -0.02611442558757843
+          },
+          {
+            "h": 14,
+            "corr_abs": 0.0030709488188008405,
+            "corr_rv": -0.01527664965983453
+          },
+          {
+            "h": 15,
+            "corr_abs": 0.007626576094437405,
+            "corr_rv": -0.005131656912479429
+          },
+          {
+            "h": 16,
+            "corr_abs": -0.004818181288819895,
+            "corr_rv": -0.023362162296965895
+          },
+          {
+            "h": 17,
+            "corr_abs": 0.0031657869556543563,
+            "corr_rv": -0.035884510498154096
+          },
+          {
+            "h": 18,
+            "corr_abs": -0.008978883502275143,
+            "corr_rv": -0.02013959457199242
+          },
+          {
+            "h": 19,
+            "corr_abs": 0.010721962961104258,
+            "corr_rv": -0.02381385751631856
+          },
+          {
+            "h": 20,
+            "corr_abs": -0.032441608288190586,
+            "corr_rv": -0.025198354393849633
+          },
+          {
+            "h": 21,
+            "corr_abs": -0.03025941465660821,
+            "corr_rv": -0.03475607491737853
+          },
+          {
+            "h": 22,
+            "corr_abs": -0.012400874057114942,
+            "corr_rv": -0.012668920538970183
+          },
+          {
+            "h": 23,
+            "corr_abs": -0.0024823313741343246,
+            "corr_rv": -0.01636520888057118
+          },
+          {
+            "h": 24,
+            "corr_abs": -0.051606272127489326,
+            "corr_rv": -0.025417151254235732
+          },
+          {
+            "h": 25,
+            "corr_abs": -0.00555989044674224,
+            "corr_rv": -0.003277080922440096
+          },
+          {
+            "h": 26,
+            "corr_abs": -0.022282794096423912,
+            "corr_rv": -0.009616291825295237
+          },
+          {
+            "h": 27,
+            "corr_abs": -0.016652099626267583,
+            "corr_rv": -0.039395609966338695
+          },
+          {
+            "h": 28,
+            "corr_abs": -0.024502671359203337,
+            "corr_rv": -0.02803693806563644
+          },
+          {
+            "h": 29,
+            "corr_abs": -0.014970990878616718,
+            "corr_rv": -0.034046032009657654
+          },
+          {
+            "h": 30,
+            "corr_abs": -0.02788928965652104,
+            "corr_rv": -0.04718776822286974
+          }
+        ],
+        "reverse_check": [
+          {
+            "h": -1,
+            "corr_abs": -0.019311378771109944
+          },
+          {
+            "h": -5,
+            "corr_abs": 0.04115091185909736
+          },
+          {
+            "h": -10,
+            "corr_abs": 0.015425169078809397
+          }
+        ]
+      }
+    },
     "micro": {
       "sign_acf": {
         "status": "not_applicable",
@@ -5711,7 +6042,7 @@
     "runtime": {
       "pipeline": {
         "completed": true,
-        "runtime_sec": 9.544074799996451,
+        "runtime_sec": 9.65144769998733,
         "driver": "grid",
         "layers": {
           "l0": "l0.constant",
@@ -5756,7 +6087,7 @@
       "rng_stability": {
         "unchanged": true,
         "streams_distinct": true,
-        "n_streams": 13,
+        "n_streams": 16,
         "n_draws": 1000,
         "probe_streams": [
           "s3.dummy_probe_a",
@@ -5775,7 +6106,10 @@
           "l3.cancel": true,
           "l3.metaorder": true,
           "l2.vol_slow": true,
-          "validation.ensemble": true
+          "validation.ensemble": true,
+          "l2.leverage": true,
+          "l2.leverage_slow": true,
+          "l2.leverage_mid": true
         }
       },
       "rng_diffusion": {
@@ -5838,17 +6172,20 @@
         }
       },
       "baseline_invariance": {
-        "passed": true,
+        "passed": false,
         "baseline_stage": "S1",
-        "baseline_git_commit": "1dc8e05740a7f94a3b0cd00cbe5bc12acf470cd8",
+        "baseline_git_commit": "368ca780e3d5c03ff9d9af553793bb92427733ee",
         "baseline_seed": 42,
         "checks": {
           "gph_d": {
             "passed": true,
-            "baseline": 0.41507222793074167,
-            "current": 0.43164501732798705,
-            "diff": 0.01657278939724538,
-            "tol": 0.03
+            "baseline": 0.6131884686894832,
+            "current": 0.5988444257175243,
+            "diff": -0.014344042971958904,
+            "tol": 0.03,
+            "observed_baseline": 0.41507222793074167,
+            "observed_current": 0.43164501732798705,
+            "basis": "latent_log_sigma"
           },
           "absr_powerlaw_gamma": {
             "passed": true,
@@ -5882,10 +6219,23 @@
             "current": -0.013690157852088713,
             "tol": 0.005
           },
+          "h_latent": {
+            "passed": false,
+            "baseline": 0.24321488395713883,
+            "current": 0.13400617973799148,
+            "diff": -0.10920870421914736,
+            "tol": 0.02
+          },
           "rng_s1_streams": {
             "passed": true,
             "msm_witness_equal": true,
-            "ou_witness_equal": true
+            "ou_witness_equal": true,
+            "ou_witness_fields": [
+              "x0",
+              "sample_var",
+              "sample_mean"
+            ],
+            "rough_witness_equal": true
           }
         }
       },
@@ -5893,12 +6243,12 @@
         "all_callable": true,
         "n_errors": 0,
         "errors": [],
-        "runtime_sec": 41.48798200000601
+        "runtime_sec": 46.75596770000993
       },
       "artifacts": {
         "metrics_json_ok": true,
         "path": "E:\\模擬チャート生成\\results\\S2\\metrics.json",
-        "size_bytes": 173895,
+        "size_bytes": 184181,
         "missing_top_level_keys": [],
         "missing_metric_groups": [],
         "n_gates": 32
@@ -5916,7 +6266,10 @@
         "l3.cancel": 13234854297587334956,
         "l3.metaorder": 3495245424001971967,
         "l2.vol_slow": 362137924006726110,
-        "validation.ensemble": 2761637375591447923
+        "validation.ensemble": 2761637375591447923,
+        "l2.leverage": 14179477105565413519,
+        "l2.leverage_slow": 12843609210669847297,
+        "l2.leverage_mid": 12373218557819849063
       }
     }
   },
@@ -6225,5 +6578,5 @@
     ]
   },
   "all_critical_passed": true,
-  "runtime_sec": 74.234904500001
+  "runtime_sec": 75.83896400002413
 }
