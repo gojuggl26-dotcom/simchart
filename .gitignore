@@ -20,3 +20,6 @@ results/**/charts/parts/
 
 # S5: カオス系列のディスクキャッシュ (決定論的に再生成可能。ハッシュは metrics.json に残る)
 cache/
+
+# S5: ゴールデン参照のフルパス本体 (1.4GB)。sidecar JSON (SHA256) は追跡し、本体は --verify で再生成照合する。
+results/**/golden/*.npz

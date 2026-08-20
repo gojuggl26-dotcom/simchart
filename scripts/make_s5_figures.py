@@ -82,15 +82,21 @@ def fig_regimes(n_days: int, spd: int) -> None:
     ax.grid(alpha=0.25)
 
     ax = axes[1]
+    # 21 日移動平均で速い成分 (ラフ・高速 MSM) を落とし、共有される緩慢帯域
+    # (chi の注入先) を見えるようにする。生の日次 σ だとシード固有成分 (分散比 4:1)
+    # に埋もれて主張が読めない。
+    win = 21
+    kernel = np.ones(win) / win
     for seed, color in zip(seeds, (BLUE, ORANGE, GREEN)):
-        ax.plot(t, daily_vols[seed][show], color=color, lw=0.9, alpha=0.85,
-                label=f"seed {seed}")
+        smooth = np.convolve(np.log(daily_vols[seed]), kernel, mode="valid")
+        ax.plot(np.arange(smooth.size)[show], np.exp(smooth)[show], color=color,
+                lw=1.3, alpha=0.9, label=f"seed {seed}")
     ax.set_yscale("log")
     ax.set_xlabel("trading day")
-    ax.set_ylabel(r"daily mean $\sigma$ (annualised)")
+    ax.set_ylabel(r"21-day mean $\sigma$ (annualised)")
     ax.set_title(
-        "three independent seeds share the same regime skeleton — "
-        "that is what chaos buys (reproducible scenarios), not statistics",
+        "three independent seeds share the same regime skeleton (21-day smoothing "
+        "reveals the common slow band) — that is what chaos buys, not statistics",
         fontsize=10,
     )
     ax.legend(fontsize=9)
