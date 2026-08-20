@@ -46,14 +46,19 @@ uv sync                                  # 依存の導入 (Python 3.12+)
 
 uv run python -m simchart.cli run --config configs/s0.yaml --stage S0
 uv run python -m simchart.cli run --config configs/s1.yaml --stage S1   # 5000 日 (約 2 分)
+uv run python -m simchart.cli run --config configs/s4.yaml --seeds 10   # S4 (多シード判定つき)
 uv run python -m simchart.cli validate --stage S1          # 保存済み結果の再判定
-uv run python -m simchart.cli compare --stages S0 S1       # 段階間の指標差分
+uv run python -m simchart.cli compare --stages S3 S4       # 段階間の指標差分
 uv run pytest                                              # テスト
 ```
 
 `run` の主なオプション: `--seed` / `--n-days` / `--steps-per-day` /
-`--results-dir` / `--no-plots`。終了コードは critical ゲート全合格で 0、
+`--results-dir` / `--no-plots` / `--seeds N` (ノイズの大きい指標を N シードの
+中央値で判定する)。終了コードは critical ゲート全合格で 0、
 不合格があれば 1、未実装フラグに触れた場合は 3。
+
+段階を進めた直後は `--seeds` つきの `run` を必ず通すこと。単一経路では判定できない
+量 (Hill α・レバレッジ・季節性の GPH 汚染など) のゲートがそこにしか無い。
 
 出力は `results/<stage>/metrics.json` と `results/<stage>/plots/*.png`。
 
@@ -769,7 +774,7 @@ S2 用の不変チェックのうち、S3 では性質が変わるもの (日次
 
 ---
 
-## S4 以降の追加先
+## S5 以降の追加先
 
 S2 で「記録のみ」ゲート (`absr_acf_powerlaw` / `zeta_q_nonlinear`) の昇格可否を
 実測した結果: **S2 では昇格できない** (ラフ成分は日次以上の ACF にほぼ寄与しない)。
@@ -777,8 +782,6 @@ S3 でも同様 (ジャンプはむしろ白色成分で識別を悪化させる
 
 | 段階 | 内容 | 主な追加先 |
 |---|---|---|
-| S3 | Hawkes ジャンプ / レバレッジ | `layers/l2_price.py::_jump_component`, `_leverage_innovation`, ストリーム `l2.jump_time` / `l2.jump_size` / `l2.leverage` |
-| S4 | 日内季節性 / オーバーナイト | `layers/l0_calendar.py` 全体、`simulation_grid()` に境界 2 点を置く |
 | S5 | カオス的ボラ χ₂ | `layers/l2_price.py::_log_vol_path` |
 | S6 | 板層の導入 | `layers/l3_book.py`, `pipeline.py::select_driver` に `EventDriver` を追加 |
 | S7 | 多変量 Hawkes 注文流 | `layers/l1_activity.py::event_times`, ストリーム `l1.hawkes` |
