@@ -890,8 +890,11 @@ class GBMPriceLayer:
         y_rough: np.ndarray | float = 0.0
         var_slow = 0.0
         var_rough = 0.0
-        if cfg.enable_msm:
-            half_log_msm = self._simulate_msm(t_days)
+        # ★生成順は OU -> MSM。ストリームは名前ごとに独立なので消費列は順序に
+        # 依存せず (rng.py の設計、test_stream_order_does_not_matter が固定)、
+        # 出力はビット単位で不変。OU の一時配列 (z/y/x) と MSM の出力配列が同時に
+        # 生きる時間を無くすことで、本番設定 (1 配列 936MB) のピークが 5.6 -> 4.7GB
+        # に下がる。
         if cfg.enable_slow_ou:
             # 中速成分 (S3 レバレッジ) がある場合、slow の予算はその残り。
             slow_var = (
@@ -901,6 +904,8 @@ class GBMPriceLayer:
             )
             x_slow = self._simulate_slow_ou(t_days, driver=ou_driver, var_override=slow_var)
             var_slow = cfg.vol_var_target_slow if x_mid is None else slow_var
+        if cfg.enable_msm:
+            half_log_msm = self._simulate_msm(t_days)
         if x_mid is not None:
             # 合成上は slow チャンネル (OU 族) に合算する。凸性補正も加算。
             if isinstance(x_slow, np.ndarray):
