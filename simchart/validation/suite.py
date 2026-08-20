@@ -107,6 +107,11 @@ def run_all(result: StageResult, config: Config | None = None) -> dict[str, Any]
     r_primary = r_primary_2d.ravel()
     abs_r_primary = np.abs(r_primary)
 
+    # S4: 真の phi をバー粒度で取っておく (季節性が無い段階では None)。
+    # 分散比・粗さ H・GPH はいずれも日内の決定論的な不均一分散に汚染されるので、
+    # 判定はこれで割った系列で行う (詳細は各測定の直前のコメント)。
+    phi_bars = _true_phi_bars_for(result, cfg, r_primary_2d.shape[1])
+
     metrics: dict[str, Any] = {}
 
     metrics["series"] = {
@@ -181,8 +186,28 @@ def run_all(result: StageResult, config: Config | None = None) -> dict[str, Any]
         scaling.adf_test, primary_bars.log_price_flat(), v.adf_maxlag, "c"
     )
     adf_returns = safe_call(scaling.adf_test, r_primary, v.adf_maxlag, "c")
+    # ★S4: 分散比は**脱季節化した**価格で測る。
+    # Lo-MacKinlay の重複窓は、窓に含まれる回数がセッションの端で少なくなる
+    # (バー j は内部なら q 個の窓に入るが、端では 1 個しか入らない)。日内の分散が
+    # 一定ならこれは無害だが、φ² が最大なのは寄付と引け = まさにその端なので、
+    # q 期分散だけが系統的に過小評価される。実測は q=64 で VR 0.847 まで落ち、
+    # **φ だけから (乱数も価格も使わず) 計算した予測 0.852 と一致した** ので、
+    # マルチンゲール性の破れではなく推定量の重み付けの問題と確定している。
+    # 脱季節化して測り直すと max|VR-1| は 0.151 → 0.016 (S3 の 0.021 と同水準)。
+    vr_series = (
+        _deseasonalized_log_price(r_primary_2d, phi_bars)
+        if phi_bars is not None
+        else primary_bars.log_price
+    )
     metrics["scaling"] = {
-        "variance_ratio": safe_call(scaling.variance_ratio, primary_bars.log_price, v.vr_qs),
+        "variance_ratio": safe_call(scaling.variance_ratio, vr_series, v.vr_qs),
+        "variance_ratio_deseasonalized": phi_bars is not None,
+        "variance_ratio_raw": (
+            safe_call(scaling.variance_ratio, primary_bars.log_price, v.vr_qs)
+            if phi_bars is not None
+            else {"status": "not_applicable", "reason": "季節性なし (variance_ratio と同一)",
+                  "value": None}
+        ),
         "kurtosis_by_scale": safe_call(
             scaling.kurtosis_by_scale, r_base_2d, v.scales_sec, step_seconds, v.min_obs_for_gate
         ),
@@ -284,12 +309,25 @@ def run_all(result: StageResult, config: Config | None = None) -> dict[str, Any]
         h_scales_steps = [
             max(int(round(s / sub_dt_sec)), 1) for s in v.rough_h_scales_seconds
         ]
-        log_vol_sub = np.asarray(sub["log_vol"])
+        log_vol_raw = np.asarray(sub["log_vol"])
         y_rough_sub = np.asarray(sub.get("y_rough", np.zeros(0)))
+        # ★S4: 粗さ H は**脱季節化した** log sigma で測る。
+        # phi(u) は日内で滑らかに変化する決定論的成分なので、そのまま H を測ると
+        # 5 分〜4 時間の増分が滑らかになり H が跳ね上がる (本番実測 0.136 -> 0.310)。
+        # これは長期記憶への汚染 (GPH d で +0.017) よりはるかに大きく、S4 を作る
+        # 動機そのもの — 決定論的な時間構造を確率的な構造と取り違える典型例である。
+        # 生成側が log phi を残してくれているので、真値で厳密に差し引ける。
+        log_phi_sub = np.asarray(sub.get("log_phi_sigma", np.zeros(0)))
+        deseasonalized = bool(
+            log_phi_sub.shape == log_vol_raw.shape and np.any(log_phi_sub)
+        )
+        log_vol_sub = log_vol_raw - log_phi_sub if deseasonalized else log_vol_raw
     else:
         h_scales_steps = []
+        log_vol_raw = np.zeros(0)
         log_vol_sub = np.zeros(0)
         y_rough_sub = np.zeros(0)
+        deseasonalized = False
 
     def _h_rv() -> dict:
         if obs.step_seconds is None or v.rv_window_seconds % obs.step_seconds != 0:
@@ -314,8 +352,16 @@ def run_all(result: StageResult, config: Config | None = None) -> dict[str, Any]
             if rough_meta
             else {"status": "not_applicable", "reason": "enable_rough=False", "value": None}
         ),
+        # 判定用 (S4 では脱季節化済み)。S0〜S3 では生と同一。
         "h_latent": safe_call(
             scaling.roughness_exponent, log_vol_sub, h_scales_steps, v.rough_h_qs
+        ),
+        "h_latent_deseasonalized": deseasonalized,
+        # 記録用: 季節性を残したまま測るとどれだけ歪むか (S4 の動機の定量化)。
+        "h_latent_raw": (
+            safe_call(scaling.roughness_exponent, log_vol_raw, h_scales_steps, v.rough_h_qs)
+            if deseasonalized
+            else {"status": "not_applicable", "reason": "季節性なし (h_latent と同一)", "value": None}
         ),
         "h_pure_y": (
             safe_call(scaling.roughness_exponent, y_rough_sub, h_scales_steps, v.rough_h_qs)
@@ -454,6 +500,40 @@ def run_all(result: StageResult, config: Config | None = None) -> dict[str, Any]
     }
 
     return metrics
+
+
+def _true_phi_bars_for(
+    result: StageResult, cfg: Config, n_bars: int
+) -> np.ndarray | None:
+    """真の φ_σ をバー粒度で返す (季節性が無ければ ``None``)。
+
+    カレンダーは ``config`` から組み直す (``SeasonalCalendar`` は乱数を消費しない
+    ので経路には影響しない)。``StageResult.meta`` に生オブジェクトを入れると
+    JSON 化できなくなるため、meta 経由では渡していない。
+    """
+    if not cfg.enable_seasonality:
+        return None
+    from ..layers.l0_calendar import build_calendar
+    from ..rng import RNGRegistry
+
+    obs = result.observation
+    steps_per_day = (
+        int(round(obs.session_seconds / obs.step_seconds)) if obs.step_seconds else None
+    )
+    truth = seasonality.true_phi_bars(
+        build_calendar(cfg, RNGRegistry(cfg.seed)), n_bars, steps_per_day=steps_per_day
+    )
+    return np.asarray(truth["value"], dtype=np.float64) if truth["status"] == "ok" else None
+
+
+def _deseasonalized_log_price(r_2d: np.ndarray, phi_bars: np.ndarray) -> np.ndarray:
+    """φ で割ったリターンから対数価格の行列を組み直す (各セッション 0 始まり)。
+
+    ``variance_ratio`` は価格を入力に取るので、リターンを割ってから積み上げる。
+    水準は任意 (差分しか使われない) なので各日 0 から始めてよい。
+    """
+    d = seasonality.deseasonalize(r_2d, phi_bars)
+    return np.concatenate([np.zeros((d.shape[0], 1)), np.cumsum(d, axis=1)], axis=1)
 
 
 def _seasonality_metrics(

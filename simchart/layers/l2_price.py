@@ -1021,6 +1021,11 @@ class GBMPriceLayer:
             "n_on_jumps": n_on_jumps,
             "sample_var": float(gaps.var()),
             "sample_mean": float(gaps.mean()),
+            # ★分散設計の直接の証人。検証側の variance_share は分母 (日中日次分散)
+            # が右に歪んだ推定量なので系統的に上振れするが、こちらは分子だけを
+            # 設計値と比べるので偏らない (6 シード実測 0.93〜1.19、平均 1.05)。
+            "sample_var_over_target": float(gaps.var() / var_on_target),
+            "phi_at_close": phi_close,
             "corr_sigma_on_close_by_construction": 1.0,
             "corr_abs_gap_sigma_close": corr_obs,
             "sigma_close_mean": float(sigma_close.mean()),

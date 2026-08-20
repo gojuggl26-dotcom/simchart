@@ -432,6 +432,114 @@ def test_daily_integrated_variance_is_unchanged_by_seasonality():
 
 
 # ---------------------------------------------------------------------------
+# ★季節性が汚す 3 つの推定器 (S4 を作る動機の本体)
+#
+# 日内季節性は「決定論的な時間構造」だが、それを除かずに測ると 3 つの推定器が
+# 3 つとも別の方向に壊れる。除去でどれも戻ることを固定する。
+# ---------------------------------------------------------------------------
+def _s4_s3_pair(**extra):
+    kw = dict(**CORE, **SMALL)
+    kw.update(extra)
+    c4 = Config(stage="S4", enable_seasonality=True, **kw)
+    return run(c4), run(Config(stage="S3", **kw)), c4
+
+
+def test_seasonality_inflates_the_roughness_exponent():
+    """H は季節性で大きく上振れし、脱季節化で戻る (本番実測 0.136 → 0.310)。
+
+    φ(u) は日内で滑らかに変わる決定論的成分なので、5 分〜4 時間の増分が滑らかに
+    なって H が跳ね上がる。GPH の汚染 (+0.02) よりはるかに大きい。
+    """
+    from simchart.validation import run_all
+
+    m4 = run_all(run(Config(stage="S4", enable_seasonality=True, **CORE, **SMALL)))
+    assert m4["rough"]["h_latent_deseasonalized"] is True
+    h_clean = m4["rough"]["h_latent"]["h"]
+    h_raw = m4["rough"]["h_latent_raw"]["h"]
+    assert h_raw > h_clean + 0.05, f"季節性による H の上振れが見えません ({h_raw} vs {h_clean})"
+
+    m3 = run_all(run(Config(stage="S3", **CORE, **SMALL)))
+    assert m3["rough"]["h_latent_deseasonalized"] is False
+    assert h_clean == pytest.approx(m3["rough"]["h_latent"]["h"], abs=0.02)
+
+
+def test_seasonality_biases_the_variance_ratio_and_removal_fixes_it():
+    """VR は重複窓の端の重みで系統的に下がる。マルチンゲール性の破れではない。
+
+    セッションの端 (= φ² が最大の寄付・引け) は窓に入る回数が少ないので、
+    q 期分散だけが過小評価される。φ **だけ**から予測できることを併せて確認する
+    (乱数も価格も使わない予測が実測に一致するなら、原因は推定量の重み付け)。
+    """
+    from simchart.validation import run_all
+
+    cfg = Config(stage="S4", enable_seasonality=True, **CORE, **SMALL)
+    m = run_all(run(cfg))
+    assert m["scaling"]["variance_ratio_deseasonalized"] is True
+    clean = m["scaling"]["variance_ratio"]["max_abs_dev"]
+    raw = m["scaling"]["variance_ratio_raw"]["max_abs_dev"]
+
+    # ★絶対閾値ではなく**同じ標本量・同じシードの S3** を対照に使う。200 日では
+    # VR 自体の推定誤差が大きく (本番 5000 日の 0.02 に対しここでは 0.09 前後)、
+    # 絶対値で書くと標本量を変えたときに意味が変わってしまう。
+    m3 = run_all(run(Config(stage="S3", **CORE, **SMALL)))["scaling"]["variance_ratio"]
+    base = m3["max_abs_dev"]
+    assert raw > base * 2, f"季節性による VR の低下が見えません (raw {raw} vs S3 {base})"
+    assert clean <= base * 1.3, f"脱季節化後が S3 水準に戻っていません ({clean} vs {base})"
+
+    # φ だけからの予測が「S4/S3 の比」に一致するか (q = 最大)。
+    # 生の VR をそのまま予測と比べてはならない — S3 自体も 1 ではないので、
+    # 季節性以外の要因 (ボラ変動下での推定バイアス) が混ざる。比を取れば消える。
+    phi = np.asarray(
+        sz.true_phi_bars(_cal(cfg), 390, steps_per_day=SMALL["steps_per_day"])["value"]
+    )
+    phi2 = phi**2
+    csum = np.concatenate([[0.0], np.cumsum(phi2)])
+    q = max(int(x) for x in cfg.validation.vr_qs)
+    predicted = float((csum[q:] - csum[:-q]).mean() / (q * phi2.mean()))
+
+    def _vr_at(table, qq):
+        return next(row["vr"] for row in table if row["q"] == qq)
+
+    ratio = _vr_at(m["scaling"]["variance_ratio_raw"]["table"], q) / _vr_at(m3["table"], q)
+    assert ratio == pytest.approx(predicted, abs=0.04), (
+        f"φ からの予測 {predicted:.4f} が実測比 {ratio:.4f} と合いません — "
+        f"原因が重み付け以外にある可能性"
+    )
+
+
+def test_seasonality_biases_the_intraday_gph_in_either_direction():
+    """GPH の汚染は**符号が固定されない** (高調波が推定バンドのどこに落ちるか次第)。
+
+    符号つきのゲートを書くと、設定を変えたときに正しい実装が落ちる。
+    ここでは大きさだけを固定し、方向は主張しない。
+    """
+    from simchart.validation import run_all
+
+    m = run_all(run(Config(stage="S4", enable_seasonality=True, **CORE, **SMALL)))
+    g = m["seasonality"]["gph_abs_r"]
+    assert g["d_raw"] is not None and g["d_true_phi_removed"] is not None
+    assert abs(g["d_raw_minus_true_phi"]) > 0.003
+    # 推定 φ̂ でもほぼ同じところへ行く (道具として使えるか)
+    assert g["d_est_phi_removed"] == pytest.approx(g["d_true_phi_removed"], abs=0.02)
+
+
+def test_daily_gph_is_immune_to_seasonality():
+    """日次リターンの GPH は汚染されない — φ_σ の二乗正規化で日次分散が不変だから。
+
+    潜在 log σ の日次平均は「日内平均 log φ」という**全日共通の定数**しか受け取らず、
+    GPH は定数シフトに不変なので厳密に一致する。
+    """
+    from simchart.validation import run_all
+
+    kw = dict(**CORE, **SMALL)
+    m4 = run_all(run(Config(stage="S4", enable_seasonality=True, **kw)))
+    m3 = run_all(run(Config(stage="S3", **kw)))
+    assert m4["daily"]["latent_gph_d"]["d"] == pytest.approx(
+        m3["daily"]["latent_gph_d"]["d"], abs=1e-9
+    )
+
+
+# ---------------------------------------------------------------------------
 # S7 への引き渡し
 # ---------------------------------------------------------------------------
 def test_time_change_makes_a_seasonal_poisson_uniform():
