@@ -8,6 +8,7 @@
 
 from . import (
     base,
+    chaos,
     cross,
     ensemble,
     gates,
@@ -24,6 +25,7 @@ from .suite import run_all
 
 __all__ = [
     "base",
+    "chaos",
     "cross",
     "ensemble",
     "gates",

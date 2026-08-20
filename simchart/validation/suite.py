@@ -20,12 +20,14 @@ tails / memory / scaling / micro / cross の 5 群を辞書で返す。個々の
 
 from __future__ import annotations
 
+import math
 from typing import Any, Mapping
 
 import numpy as np
 
 from ..config import TRADING_DAYS_PER_YEAR, Config
 from ..types import StageResult
+from . import chaos as chaos_val
 from . import cross, ensemble, memory, micro, scaling, seasonality, tails
 from .base import na, safe_call
 
@@ -283,6 +285,8 @@ def run_all(result: StageResult, config: Config | None = None) -> dict[str, Any]
         path_components["msm"] = np.asarray(sub["half_log_msm"])
     if sub is not None and cfg.enable_slow_ou:
         path_components["slow_ou"] = np.asarray(sub["x_slow"])
+    if sub is not None and cfg.enable_chaos_vol:
+        path_components["chaos"] = np.asarray(sub["chi_term"])
     metrics["vol"] = {
         "path_budget": safe_call(scaling.vol_variance_budget, path_components or None),
         "ensemble": safe_call(ensemble.vol_cross_section, cfg),
@@ -450,6 +454,10 @@ def run_all(result: StageResult, config: Config | None = None) -> dict[str, Any]
     }
 
     # ------------------------------------------------------------------
+    # chaos: 決定論的カオス成分 chi_2 (S5)。
+    metrics["chaos"] = _chaos_metrics(result, cfg, r_daily)
+
+    # ------------------------------------------------------------------
     # seasonality: 日内季節性とオーバーナイト (S4)。
     # ★S4 の成果物は「季節性を入れたこと」ではなく「除去すれば S1〜S3 の構造が
     # そのまま出てくることを示せる道具」なので、測るのは主に**除去の効き目**。
@@ -534,6 +542,183 @@ def _deseasonalized_log_price(r_2d: np.ndarray, phi_bars: np.ndarray) -> np.ndar
     """
     d = seasonality.deseasonalize(r_2d, phi_bars)
     return np.concatenate([np.zeros((d.shape[0], 1)), np.cumsum(d, axis=1)], axis=1)
+
+
+def _chaos_metrics(result: StageResult, cfg: Config, r_daily: np.ndarray) -> dict[str, Any]:
+    """S5 の測定群。chi_2 が無効なら全枝が ``not_applicable``。
+
+    3 つの対象に**期待の違う**検定を掛ける (S5 指示書 §9):
+    chi_2 単体はカオスの証拠 (critical)、合成 log σ と価格は「検出困難/不能」の
+    記録 — 実データから低次元カオスが検出されないという実証と整合するのが正しい。
+    """
+    if not cfg.enable_chaos_vol:
+        reason = "enable_chaos_vol=False"
+        return {k: na(reason) for k in (
+            "generator", "chi_tests", "spectral", "latent_gph_ablation",
+            "dilution", "marginal_log_vol", "composite_tests", "price_tests",
+            "no_direction",
+        )}
+
+    from ..layers.l2_price import prepare_chaos_component
+
+    l2m = result.meta.get("l2", {})
+    gen = l2m.get("chaos")
+    sub = l2m.get("vol_subsample")
+    out: dict[str, Any] = {
+        "generator": (
+            {"status": "ok", "value": None, **gen} if gen else na("生成側診断がありません")
+        ),
+    }
+
+    # --- chi_2 単体のカオス性 ---
+    # ★注入窓ではなく**固定長 20,000 単位の参照系列**で測る。Lyapunov・相関次元は
+    # 力学系そのもの (パラメータ) の性質で、注入に使う窓の長さに依存しない。
+    # 窓で測ると n_days が短い設定で「点数不足」になり、系の性質という不変の事実が
+    # 設定依存で NA になってしまう。参照系列はキャッシュされ再計算はほぼ無料。
+    # 市場グリッドの補間版で測ってはならない — 分単位グリッドは特徴周期の 500 倍の
+    # オーバーサンプリングで、0-1 test が規則側に偏る (連続系の既知の問題)。
+    from ..chaos import chaos_generate
+
+    ref = chaos_generate(
+        system=cfg.chaos_system,
+        params={
+            "tau": cfg.chaos_tau_delay, "beta": cfg.chaos_beta,
+            "gamma": cfg.chaos_gamma, "n_exponent": cfg.chaos_n_exponent,
+        },
+        length_units=20000.0,
+        dt=cfg.chaos_dt,
+        ic=cfg.chaos_ic,
+        burn_in_units=cfg.chaos_burn_in_units,
+        cache_dir=cfg.chaos_cache_dir or None,
+    )
+    dt_units = cfg.chaos_dt
+    out["chi_tests"] = {
+        "reference_length_units": 20000.0,
+        "lyapunov": safe_call(chaos_val.lyapunov_rosenstein, ref.x, dt_units),
+        "correlation_dimension": safe_call(
+            chaos_val.correlation_dimension, ref.x, dt_units
+        ),
+        # 0-1 test: 特徴周期 (~49.7 単位) の 1/8 に間引く。
+        "zero_one": safe_call(
+            chaos_val.test_0_1_chaos, ref.x, max(int(round(6.0 / dt_units)), 1)
+        ),
+    }
+
+    # --- スペクトル (写像の検証)。参照系列を市場時間に写像して測る — 注入窓だと
+    # 短い設定で分解能が足りず、分単位サブサンプルだと Welch のセグメント長が
+    # ボトルネックで偽ピークが出る (実測 42 日: セグメント長そのもの)。---
+    chaos_t_days, chi_norm, _a, _c, _diag = prepare_chaos_component(
+        cfg, float(cfg.n_days)
+    )
+    ref_std = (ref.x - ref.x.mean()) / ref.x.std()
+    out["spectral"] = safe_call(
+        scaling.spectral_peak, ref_std, _diag["grid_spacing_days"]
+    )
+
+    if sub is None:
+        out["latent_gph_ablation"] = na("vol_subsample がありません")
+        out["dilution"] = na("vol_subsample がありません")
+        out["marginal_log_vol"] = na("vol_subsample がありません")
+        out["composite_tests"] = na("vol_subsample がありません")
+        out["price_tests"] = na("観測が必要です")
+        out["no_direction"] = na("vol_subsample がありません")
+        return out
+
+    log_vol = np.asarray(sub["log_vol"])
+    log_phi = np.asarray(sub["log_phi_sigma"])
+    chi_term = np.asarray(sub["chi_term"])
+    c_chi = float(sub["c_chi"])
+    lv_with = log_vol - log_phi  # 脱季節化した log σ (chi 込み)
+    lv_without = lv_with - chi_term + c_chi  # ≡ S4 の log σ (機械精度で厳密)
+
+    # --- 潜在日次 GPH のアブレーション (S5 の ③ 判定 — 2026-08-21 裁定) ---
+    # 帯域 0.50 の測定帯は周期 >= 70 日で、設計した 30 日線 (と 62 日の副次調波) の
+    # **外側** — ここが動かないことが「長期記憶の構造は不変」の判定。実測の検出力:
+    # ピークを 36〜40 日に誤配置すると副次調波が帯に入り -0.03〜-0.05 で落ちる。
+    # 帯域 0.65 (周期 >= 20 日) は設計線を**含む**ので、そこの変化 (-0.11) は
+    # 汚染ではなく設計の帰結 — 記録として残す。
+    t_days = np.asarray(sub["t_days"])
+    n_days = int(round(t_days[-1] - t_days[0])) or 1
+    per_day = lv_with.shape[0] // n_days
+    abl: dict[str, Any] = {"status": "ok", "value": None}
+    for bwe, tag in ((0.50, "bw050"), (0.65, "bw065")):
+        pair = []
+        for lv in (lv_with, lv_without):
+            daily = lv[: n_days * per_day].reshape(n_days, per_day).mean(axis=1)
+            pair.append(memory.gph_estimator(daily, bandwidth_exponent=bwe))
+        abl[f"d_with_chi_{tag}"] = pair[0].get("value")
+        abl[f"d_without_chi_{tag}"] = pair[1].get("value")
+        abl[f"delta_{tag}"] = (
+            pair[0]["value"] - pair[1]["value"]
+            if pair[0].get("value") is not None and pair[1].get("value") is not None
+            else None
+        )
+    abl["value"] = abl.get("delta_bw050")
+    abl["note"] = (
+        "without_chi 系列は同一シードの S4 潜在 log σ と機械精度で一致する"
+        " (chi は決定論の加算なので厳密に引ける)"
+    )
+    out["latent_gph_ablation"] = abl
+
+    # --- レバレッジ希釈の SD 比 (2026-08-21 裁定の計器) ---
+    # sqrt(Var_S4/Var_S5) — 希釈式が**厳密に**成り立つ量で、推定ノイズがない。
+    # 相関ベースの比は |L| ~ 0.02 (S3 裁定の水準) では SE が信号の 30-40% になり
+    # 判定不能 — multiseed が 3 計器の実測スプレッドを記録する。
+    v_with = float(lv_with.var())
+    v_without = float(lv_without.var())
+    out["dilution"] = {
+        "status": "ok",
+        "value": math.sqrt(v_without / v_with) if v_with > 0 else None,
+        "sd_ratio": math.sqrt(v_without / v_with) if v_with > 0 else None,
+        "theory": math.sqrt(v_without / (v_without + cfg.vol_var_target_chaos)),
+        "theory_nominal": 0.894,
+        "var_path_with_chi": v_with,
+        "var_path_without_chi": v_without,
+    }
+
+    # --- 合成 log σ の周辺分布 (§3.2 のゲート対象は合成後) ---
+    out["marginal_log_vol"] = safe_call(scaling.marginal_normality, lv_with)
+
+    # --- 合成 log σ / 価格でのカオス検出 (記録のみ — 検出困難/不能が期待) ---
+    stride_days = float(t_days[1] - t_days[0])
+    out["composite_tests"] = {
+        "lyapunov": safe_call(
+            chaos_val.lyapunov_rosenstein, lv_with, stride_days,
+        ),
+        "correlation_dimension": safe_call(
+            chaos_val.correlation_dimension, lv_with, stride_days
+        ),
+        "zero_one": safe_call(
+            chaos_val.test_0_1_chaos, lv_with, max(int(round(4.0 / stride_days)), 1)
+        ),
+        "note": "検出困難が期待値 (確率成分 4:1 に埋もれる)。カオスの価値は識別可能性ではない",
+    }
+    out["price_tests"] = {
+        "bds_daily_returns": safe_call(chaos_val.bds_test, r_daily),
+        "zero_one_daily_abs": safe_call(chaos_val.test_0_1_chaos, np.abs(r_daily), 1),
+        "note": (
+            "BDS の棄却は確率ボラだけで説明でき、カオスの証拠ではない。"
+            "検出不能が実証 (実データから低次元カオスは検出されない) と整合"
+        ),
+    }
+
+    # --- 帰無対照: chi は方向を持たない (§15 の第一禁止事項の検証) ---
+    # chi_2 は σ にのみ入るので、リターンの**方向**とは無相関のはず。
+    chi_daily = chi_term[: n_days * per_day].reshape(n_days, per_day).mean(axis=1)
+    nd = min(r_daily.shape[0], chi_daily.shape[0])
+    if nd > 30 and np.std(chi_daily[:nd]) > 0:
+        c = float(np.corrcoef(r_daily[:nd], chi_daily[:nd])[0, 1])
+        out["no_direction"] = {
+            "status": "ok",
+            "value": c,
+            "corr_r_chi": c,
+            "se": 1.0 / math.sqrt(nd),
+            "abs_z": abs(c) * math.sqrt(nd),
+            "n": nd,
+        }
+    else:
+        out["no_direction"] = na("日数が足りません")
+    return out
 
 
 def _seasonality_metrics(

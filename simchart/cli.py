@@ -111,6 +111,48 @@ def _intraday_gph_pair(result, config: Config) -> tuple[float | None, float | No
     return raw, dsn
 
 
+def _dilution_correlations(r5, r4) -> dict[str, float]:
+    """レバレッジ希釈の相関ベース 3 計器 (S5 — **記録のみ**)。
+
+    A. corr(r_t, RV_{t+1})     — 現行 multiseed の計器 (レベル領域、RV ノイズ入り)
+    B. corr(r_t, IV_{t+1})     — 真値積分分散 (レベル領域)
+    C. corr(r_t, log IV_{t+1}) — log 領域 (希釈式が形式的に当てはまる)
+
+    ★ゲートには使わない (2026-08-21 裁定)。|L| ~ 0.02〜0.05 (S3 裁定の水準) に
+    対し相関推定の SE ~0.014 が信号の 30〜40% あり、シード別の比は [−0.13, +3.04]
+    と無統制になる。判定は log σ の経路 SD 比 (推定ノイズなし) が行い、こちらは
+    「指示書の字義の計器ではどう見えるか」の記録。
+    """
+    import numpy as np
+
+    out = {}
+    for tag, r in (("5", r5), ("4", r4)):
+        obs = r.observation
+        rd = obs.to_bars(obs.session_seconds).returns()
+        spd = int(round(obs.session_seconds / obs.step_seconds))
+        n_days = rd.shape[0]
+        dt_y = 1.0 / (252.0 * spd)
+        # 本番グリッドは 1 配列 936MB。exp/diff の一時配列を丸ごと作らず
+        # 日ブロックで畳む (250 日 ≈ 47MB/チャンク)。
+        rv = np.empty(n_days, dtype=np.float64)
+        iv = np.empty(n_days, dtype=np.float64)
+        lp = obs.log_price
+        lv = r.price.log_vol
+        for d0 in range(0, n_days, 250):
+            d1 = min(d0 + 250, n_days)
+            seg = lp[d0 * spd : d1 * spd + 1]
+            rv[d0:d1] = (np.diff(seg) ** 2).reshape(d1 - d0, spd).sum(axis=1)
+            block = lv[d0 * spd : d1 * spd]
+            iv[d0:d1] = (np.exp(2.0 * block) * dt_y).reshape(d1 - d0, spd).sum(axis=1)
+        out[f"rv{tag}"] = float(np.corrcoef(rd[:-1], rv[1:])[0, 1])
+        out[f"iv{tag}"] = float(np.corrcoef(rd[:-1], iv[1:])[0, 1])
+        out[f"logiv{tag}"] = float(np.corrcoef(rd[:-1], np.log(iv[1:]))[0, 1])
+    return {
+        key: (out[f"{key}5"] / out[f"{key}4"] if out[f"{key}4"] != 0 else float("nan"))
+        for key in ("rv", "iv", "logiv")
+    }
+
+
 def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
     """ノイズの大きい指標をシードを変えて測り、中央値・IQR を返す (S3 指示書 §8)。
 
@@ -133,7 +175,15 @@ def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
         # SE 0.013 に埋もれる (実測バイアス +0.017) ため中央値で判定する。
         # 日次 gph_d は φ_σ の二乗正規化により汚染を受けない (別枝で確認)。
         "gph_d_intraday_raw": [], "gph_d_intraday_deseason": [], "gph_bias_intraday": [],
+        # S5: レバレッジ希釈の SD 比 (2026-08-21 裁定の判定計器) と、
+        # 相関ベース 3 計器の比 (記録 — |L| ~ 0.02 の水準では判定不能)。
+        "dilution_sd_ratio": [],
+        "dilution_corr_rv": [], "dilution_corr_iv": [], "dilution_corr_logiv": [],
     }
+    # S5: シード横断相関 (指示書 §8 — S5 の中核ゲート) 用に φ 除去済み log σ の
+    # サブサンプルを保持する。1 分間引きで 1 シード ~16MB、10 シードで 156MB。
+    cross_seed_paths: list[np.ndarray] = []
+    chi_hashes: list[str] = []
     seeds = [config.seed + i for i in range(n_seeds)]
     for i, seed in enumerate(seeds):
         seed_config = config.replace(seed=seed)
@@ -165,10 +215,37 @@ def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
             per_seed["gph_bias_intraday"].append(
                 raw - dsn if raw is not None and dsn is not None else None
             )
+        if config.enable_chaos_vol:
+            sub = result.meta["l2"]["vol_subsample"]
+            lv_with = np.asarray(sub["log_vol"]) - np.asarray(sub["log_phi_sigma"])
+            lv_without = lv_with - np.asarray(sub["chi_term"]) + float(sub["c_chi"])
+            v_with, v_without = float(lv_with.var()), float(lv_without.var())
+            per_seed["dilution_sd_ratio"].append(
+                float(np.sqrt(v_without / v_with)) if v_with > 0 else None
+            )
+            # 相関ベース 3 計器: 同一シードで chi を厳密に除いた S4 相当ペアを回す。
+            # (log σ は引き算で厳密復元できるが、価格はジャンプ抽選が λ(σ) 経由で
+            # 変わるため再実行が必要。)
+            r4 = run_pipeline(seed_config.replace(enable_chaos_vol=False))
+            dil = _dilution_correlations(result, r4)
+            for key_ in ("rv", "iv", "logiv"):
+                per_seed[f"dilution_corr_{key_}"].append(dil[key_])
+            del r4
+            # シード横断相関 (5 分に間引いてメモリを 1/5 に)。
+            cross_seed_paths.append(lv_with[::5].astype(np.float64))
+            chi_hashes.append(result.meta["l2"]["chaos"]["sha256"])
+            del lv_with, lv_without
         del result, obs, step_r, rv_daily
         print(f"      シード {seed} ({i + 1}/{n_seeds}) 完了", flush=True)
 
     out: dict[str, Any] = {"n_seeds": n_seeds, "seeds": seeds}
+    if config.enable_chaos_vol and cross_seed_paths:
+        from .validation.scaling import cross_seed_correlation
+
+        out["cross_seed_corr"] = cross_seed_correlation(cross_seed_paths)
+        out["chi_hash_all_equal"] = bool(len(set(chi_hashes)) == 1)
+        out["chi_hashes"] = chi_hashes
+        del cross_seed_paths
     for name, values in per_seed.items():
         clean = [v for v in values if v is not None]
         if not clean:
@@ -335,10 +412,19 @@ def cmd_run(args: argparse.Namespace) -> int:
     if args.seeds and args.seeds > 1:
         print(f"[4c/6] 多シード判定 ({args.seeds} シード — hill/leverage/JV/skew)")
         multiseed = _run_multiseed(config, args.seeds)
-        for name in ("hill_alpha", "leverage_corr", "jv_share", "skewness_daily"):
+        for name in (
+            "hill_alpha", "leverage_corr", "jv_share", "skewness_daily",
+            "dilution_sd_ratio", "dilution_corr_logiv",
+        ):
             info = multiseed.get(name) or {}
             if info.get("median") is not None:
                 print(f"      {name}: median={info['median']:+.4f}  IQR={info['iqr']:.4f}")
+        csc = multiseed.get("cross_seed_corr")
+        if isinstance(csc, dict) and csc.get("mean") is not None:
+            print(
+                f"      cross_seed_corr: mean={csc['mean']:.4f} "
+                f"[{csc['min']:.4f}, {csc['max']:.4f}] ({csc['n_pairs']} 対)"
+            )
         metrics["multiseed"] = multiseed
 
     metrics["runtime"] = {

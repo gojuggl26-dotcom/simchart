@@ -17,3 +17,6 @@ results/**/plots/
 results/**/charts/*.parquet
 results/**/charts/*.csv
 results/**/charts/parts/
+
+# S5: カオス系列のディスクキャッシュ (決定論的に再生成可能。ハッシュは metrics.json に残る)
+cache/

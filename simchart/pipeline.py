@@ -44,7 +44,7 @@ __all__ = [
 
 #: 各段階の不変性照合の基準となる直前段階。
 #: S2 の合否は「S1 から何が変わらなかったか」で決まる (S2 指示書 §0)。
-BASELINE_STAGE: dict[str, str] = {"S2": "S1", "S3": "S2", "S4": "S3"}
+BASELINE_STAGE: dict[str, str] = {"S2": "S1", "S3": "S2", "S4": "S3", "S5": "S4"}
 
 
 @dataclass
@@ -369,7 +369,32 @@ def baseline_invariance_check(
     # 両段階に潜在 log sigma の GPH (③ の構造の直接測定) があればそちらで判定する。
     # 観測 |r| の GPH は S3 のジャンプ・レバレッジが加える白色成分で下方バイアス
     # されるため、S3 以降は潜在側が本判定で観測側は記録になる。
-    if (
+    #
+    # ★S5 (chi_2 有効) では判定の帯域を 0.65 → 0.50 に移す (2026-08-21 裁定)。
+    # 指示書は「ピークを 20〜40 日に置け」と「gph_d ±0.03」を同時に要求するが、
+    # 帯域 0.65 の測定帯は周期 >= 20 日で**設計した 30 日線を必ず含む** — 実測で
+    # どの配置でも Δd = -0.08〜-0.11 となり両立不能。帯域 0.50 (周期 >= 70 日 =
+    # ゲートが守る長期記憶の帯) では Δd 中央値 +0.0006 で、かつ誤配置 (36〜40 日)
+    # は副次調波が帯に入り -0.03〜-0.05 で正しく落ちる (検出力あり)。
+    # 測定は同一 run 内のアブレーション (chi は決定論なので厳密に引ける —
+    # without_chi 系列は同一シードの S4 潜在 log σ と機械精度で一致する)。
+    abl = get(metrics, "chaos.latent_gph_ablation")
+    if isinstance(abl, dict) and abl.get("delta_bw050") is not None:
+        delta = float(abl["delta_bw050"])
+        tol = min(float(v.inv_tol_gph_d_abs), 0.03)
+        checks["gph_d"] = {
+            "passed": bool(abs(delta) <= tol),
+            "basis": "latent_chaos_ablation_bw050",
+            "delta_bw050": delta,
+            "tol": tol,
+            "d_with_chi_bw050": abl.get("d_with_chi_bw050"),
+            "d_without_chi_bw050": abl.get("d_without_chi_bw050"),
+            # 帯域 0.65 は設計線を含むため記録のみ (汚染ではなく設計の帰結)。
+            "delta_bw065_recorded": abl.get("delta_bw065"),
+            "baseline_latent_bw065": get(bm, "daily.latent_gph_d.d"),
+            "current_latent_bw065": get(metrics, "daily.latent_gph_d.d"),
+        }
+    elif (
         get(bm, "daily.latent_gph_d.d") is not None
         and get(metrics, "daily.latent_gph_d.d") is not None
     ):

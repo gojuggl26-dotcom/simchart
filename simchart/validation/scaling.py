@@ -47,6 +47,9 @@ __all__ = [
     "realized_variance",
     "path_stationarity",
     "skewness_by_scale",
+    "spectral_peak",
+    "marginal_normality",
+    "cross_seed_correlation",
 ]
 
 
@@ -848,6 +851,126 @@ def daily_invariance_stats(result) -> dict:
         "var_log_vol": var_log_vol,
         "n_days": int(r_daily.size),
     }
+
+
+def spectral_peak(
+    x: np.ndarray,
+    sample_spacing_days: float,
+    period_range_days: tuple[float, float] = (2.0, 1000.0),
+    daily_band: tuple[float, float] = (0.8, 1.2),
+    nperseg: int | None = None,
+) -> dict:
+    """スペクトルの主要ピーク位置 (市場日単位) と日周期帯のパワー比 (S5 §4.2)。
+
+    χ₂ の写像先の検証に使う: 主要ピークが 20〜40 日にあり、S4 で苦労して除去した
+    日内季節性の帯域 (0.8〜1.2 日) に**新規のピークを立てていない**こと。
+    後者は「日周期帯のパワーシェア」で測る — MG は 30〜40 日スケールの滑らかな
+    振動なので、正しく写像されていれば日周期帯のパワーは実質ゼロになる。
+    """
+    from scipy import signal as sp_signal
+
+    y = np.asarray(x, dtype=np.float64).ravel()
+    if y.shape[0] < 256:
+        return na(f"系列が短すぎます (n={y.shape[0]})")
+    fs = 1.0 / float(sample_spacing_days)  # サンプル/日
+    seg = nperseg if nperseg is not None else min(1 << 14, y.shape[0])
+    freqs, psd = sp_signal.welch(y - y.mean(), fs=fs, nperseg=seg)
+
+    lo_f = 1.0 / period_range_days[1]
+    hi_f = min(1.0 / period_range_days[0], fs / 2)
+    mask = (freqs >= lo_f) & (freqs <= hi_f) & (freqs > 0)
+    if mask.sum() < 8:
+        return na("探索帯域に周波数点が足りません")
+    fpk = float(freqs[mask][np.argmax(psd[mask])])
+    total = float(psd[freqs > 0].sum())
+    band = (freqs >= 1.0 / daily_band[1]) & (freqs <= 1.0 / daily_band[0])
+    daily_share = float(psd[band].sum()) / total if total > 0 and band.any() else 0.0
+    # ピーク近傍への集中度 (±40%)
+    near = (freqs >= fpk * 0.7) & (freqs <= fpk * 1.4)
+    concentration = float(psd[near].sum()) / total if total > 0 else float("nan")
+
+    return ok(
+        num(1.0 / fpk),
+        peak_period_days=num(1.0 / fpk),
+        peak_frequency_per_day=num(fpk),
+        daily_band_power_share=num(daily_share),
+        concentration_pm40pct=num(concentration),
+        resolvable_period_max_days=num(seg / fs),
+        n_used=int(y.shape[0]),
+    )
+
+
+def marginal_normality(x: np.ndarray, mode_prominence: float = 0.05) -> dict:
+    """周辺分布の形 (S5 §3.2 のチェック)。
+
+    カオスアトラクタの周辺分布は有界でしばしば多峰。log σ に双峰成分を足すと
+    log RV の分布が双峰化し、実証 (log RV はおおむね正規) と乖離する。ゲートは
+    **合成後の log σ** に対して |超過尖度| < 1 かつ単峰を要求する (χ₂ 単体は
+    多峰でもよい — 分散比 1:4 のガウス成分との合成で滑らかになるため)。
+
+    山の数は KDE の局所最大 (最大密度の ``mode_prominence`` 倍を超えるもの) で
+    数える。厳密な多峰性検定 (dip test) ではないが、ゲートの目的 (双峰化の検出)
+    には十分で、閾値が明示されている分だけ再現しやすい。
+    """
+    y = np.asarray(x, dtype=np.float64).ravel()
+    y = y[np.isfinite(y)]
+    if y.shape[0] < 500:
+        return na(f"標本が足りません (n={y.shape[0]})")
+    z = (y - y.mean()) / y.std()
+    sub = z[:: max(y.shape[0] // 20000, 1)]
+    kde = stats.gaussian_kde(sub)
+    grid = np.linspace(float(z.min()), float(z.max()), 512)
+    dens = kde(grid)
+    peaks = (
+        (dens[1:-1] > dens[:-2])
+        & (dens[1:-1] > dens[2:])
+        & (dens[1:-1] > dens.max() * mode_prominence)
+    )
+    return ok(
+        num(float(stats.kurtosis(y, fisher=True, bias=False))),
+        excess_kurtosis=num(float(stats.kurtosis(y, fisher=True, bias=False))),
+        skewness=num(float(stats.skew(y, bias=False))),
+        n_modes=int(peaks.sum()),
+        unimodal=bool(int(peaks.sum()) == 1),
+        mode_prominence=float(mode_prominence),
+        n=int(y.shape[0]),
+    )
+
+
+def cross_seed_correlation(paths: list[np.ndarray]) -> dict:
+    """シード横断相関 (S5 §8 — S5 の中核ゲート)。
+
+    χ₂ は決定論的なので全シードで同一。log σ = D(t) [決定論] + S_i(t) [シード固有]
+    と書けるから、シード i≠j の同時刻相関は
+
+        corr(log σ_i, log σ_j) = Var(D) / sqrt((Var(D)+Var(S_i))(Var(D)+Var(S_j)))
+
+    となり、**内部状態に一切アクセスせずに** χ₂ の分散シェアを推定できる。
+    呼び出し側は φ_σ (これも決定論成分) を**除去してから**渡すこと — 残すと
+    φ の分散が分子に混ざり、シェアが過大に見える。
+
+    45 対 (10 シード) の平均・範囲を返す。ペアは独立でない (シードごとの経路分散が
+    複数ペアに共有される) ので、範囲も見て 1 ペアの外れに引きずられていないかを
+    確認できるようにする。
+    """
+    if len(paths) < 2:
+        return na(f"シードが足りません (n={len(paths)})")
+    n = min(p.shape[0] for p in paths)
+    mat = np.stack([np.asarray(p[:n], dtype=np.float64) for p in paths])
+    c = np.corrcoef(mat)
+    iu = np.triu_indices(len(paths), k=1)
+    vals = c[iu]
+    return ok(
+        num(float(vals.mean())),
+        mean=num(float(vals.mean())),
+        median=num(float(np.median(vals))),
+        min=num(float(vals.min())),
+        max=num(float(vals.max())),
+        n_pairs=int(vals.size),
+        n_seeds=int(len(paths)),
+        n_time_points=int(n),
+        per_seed_variance=[num(float(v)) for v in mat.var(axis=1)],
+    )
 
 
 def adf_combined(log_price_result: dict, returns_result: dict, alpha: float = 0.01) -> dict:

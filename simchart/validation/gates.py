@@ -1110,13 +1110,192 @@ _S4_NEW_GATES: tuple[Gate, ...] = (
 
 S4_GATES: tuple[Gate, ...] = _S4_INHERITED_GATES + _S4_NEW_GATES
 
-#: 段階ごとのゲート。S5 以降を実装するときはここに追加する。
+
+# ---------------------------------------------------------------------------
+# S5 のゲート
+# ---------------------------------------------------------------------------
+def _marginal_unimodal_check(value: Any) -> bool:
+    """合成 log σ の周辺分布: |超過尖度| < 1 かつ単峰 (§3.2)。
+
+    ゲート対象は**合成後** — chi_2 単体 (MG の周辺は 4 峰) ではない。分散比 1:4 の
+    ガウス的成分との合成で滑らかになることを要求している。双峰化すると log RV の
+    分布が双峰になり、実証 (log RV はおおむね正規) と乖離する。
+    """
+    if not isinstance(value, Mapping):
+        return False
+    k = value.get("excess_kurtosis")
+    return k is not None and abs(float(k)) < 1.0 and bool(value.get("unimodal"))
+
+
+def _spectral_peak_check(value: Any) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    p = value.get("peak_period_days")
+    return p is not None and 20.0 <= float(p) <= 40.0
+
+
+def _no_daily_peak_check(value: Any) -> bool:
+    """日周期帯 (0.8〜1.2 日) のパワーシェア < 1%。
+
+    §4.1 の訂正の検証: 特徴時間を日次にすると決定論的な準周期成分が日周期近傍に
+    立ち、S4 で除去した季節性と区別がつかなくなる。正しい写像 (30 日) なら
+    この帯のパワーは実質ゼロ (実測 ~1e-15)。
+    """
+    if not isinstance(value, Mapping):
+        return False
+    share = value.get("daily_band_power_share")
+    return share is not None and float(share) < 0.01
+
+
+def _hash_recorded_check(value: Any) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    h = value.get("sha256")
+    return isinstance(h, str) and len(h) == 64
+
+
+#: S4 の絶対ゲートのうち S5 で**範囲だけ変わる**もの。
+#: - var_total: chi_2 の 0.050 が加わり 0.200 → 0.250 (予約枠の消化 — 指示書 §5.2)
+_S5_INHERITED_GATES: tuple[Gate, ...] = tuple(
+    g for g in S4_GATES if g.name != "var_total"
+)
+
+_S5_NEW_GATES: tuple[Gate, ...] = (
+    Gate(
+        name="var_total",
+        metric_path="vol.ensemble.var_log_sigma",
+        check=_between(0.235, 0.265),
+        threshold="Var(log sigma) ∈ [0.235, 0.265] (アンサンブル断面 + chi 周辺分布)",
+        description="S5 で最終予算 0.25 を使い切る (MSM 0.125 + OU 0.050 + ラフ 0.025 + chi 0.050)。",
+    ),
+    # --- chi_2 単体のカオス性 ---
+    Gate(
+        name="chi2_lyapunov",
+        metric_path="chaos.chi_tests.lyapunov.lyapunov_per_unit",
+        check=_gt(0.0),
+        threshold="chi_2 の最大 Lyapunov 指数 > 0 (Rosenstein 法)",
+        description=(
+            "決定論的カオスであることの検証。MG(17) の実測 +0.0071/単位 "
+            "(文献値 ~0.006)。帰無対照: 正弦波は +0.00006。"
+        ),
+    ),
+    Gate(
+        name="chi2_dimension",
+        metric_path="chaos.chi_tests.correlation_dimension.d2",
+        check=_between(1.5, 5.0),
+        threshold="Grassberger-Procaccia 相関次元 ∈ [1.5, 5.0]",
+        description="低次元アトラクタであること。MG(17) の実測 1.85 (文献 ~2.1)。",
+    ),
+    # --- 時間写像 ---
+    Gate(
+        name="chi2_spectral_peak",
+        metric_path="chaos.spectral",
+        check=_spectral_peak_check,
+        threshold="主要スペクトルピークが 20〜40 日 (§4.2)",
+        description=(
+            "写像係数 s = 30/49.65 でピークを 30 日に置く。MSM 帯域 (1〜500 日) の"
+            "内側、日周期から十分遠く、かつ**副次調波 (2 倍周期 = 62 日) も"
+            "潜在 GPH の判定帯 (周期 >= 70 日) の外側**に収まる唯一の配置 "
+            "(36〜40 日だと副次調波が帯に入り inv_gph_d が -0.03〜-0.05 動く — 実測)。"
+        ),
+    ),
+    Gate(
+        name="chi2_no_daily_peak",
+        metric_path="chaos.spectral",
+        check=_no_daily_peak_check,
+        threshold="日周期帯 (0.8〜1.2 日) のパワーシェア < 1%",
+        description="季節性 (S4) と区別がつかなくなる配置の検出 (§4.1 の訂正)。実測 ~1e-15。",
+    ),
+    # --- 分散予算 ---
+    Gate(
+        name="var_budget_chi2",
+        metric_path="vol.ensemble.shares_of_budget.chaos",
+        check=_between(0.18, 0.22),
+        threshold="chi_2 の分散シェア ∈ [18%, 22%] (分母 = 最終予算 0.25)",
+        description=(
+            "窓正規化により構成上 0.200 ちょうどになる — この行は予算算術の文書化で、"
+            "経路からの実証は cross_seed_corr が担う (両者の一致が §8 の要求)。"
+        ),
+    ),
+    Gate(
+        name="cross_seed_corr",
+        metric_path="multiseed.cross_seed_corr.mean",
+        check=_between(0.17, 0.23),
+        threshold="シード間の corr(log σ_i, log σ_j) ∈ [0.17, 0.23] (φ 除去後、45 対の平均)",
+        description=(
+            "★S5 の中核ゲート (§8)。chi は全シード共通なので、シード横断相関 = "
+            "Var(chi)/Var(log σ) の直接推定になる — 内部状態に触れない実証。"
+            "対の値は遅い成分の偶然相関で ±0.09 ばらつく (実測 [0.02, 0.33]) が、"
+            "45 対の平均は SE ~0.02 (5 シード予備測定で 0.188)。"
+        ),
+    ),
+    # --- 水準の保存 (数値凸性補正の検証) ---
+    Gate(
+        name="logvol_marginal",
+        metric_path="chaos.marginal_log_vol",
+        check=_marginal_unimodal_check,
+        threshold="合成 log σ の |超過尖度| < 1 かつ単峰 (§3.2)",
+        description=(
+            "MG の周辺は 4 峰だが、分散比 1:4 の合成で滑らかになる (実測: 尖度 "
+            "-0.09、単峰)。双峰化したら chaos_normalization='ecdf_normal' (案 B) へ。"
+        ),
+    ),
+    # --- 再現性 ---
+    Gate(
+        name="chi2_hash",
+        metric_path="chaos.generator",
+        check=_hash_recorded_check,
+        threshold="chi_2 の SHA256 が記録されている (再実行一致は determinism が担保)",
+        description=(
+            "環境間の再現性の証拠。determinism ゲートが同一シード 2 回実行の"
+            "ビット単位一致を検証し、その経路には chi が含まれる。"
+        ),
+    ),
+    Gate(
+        name="determinism_across_seeds",
+        metric_path="multiseed.chi_hash_all_equal",
+        check=_is_true,
+        threshold="chi_2 の SHA256 が全シードで一致 (決定論成分はシードに依存しない)",
+        description="chi が乱数を消費していないことの多シード実証。",
+    ),
+    # --- 予測一致 (§6) ---
+    Gate(
+        name="leverage_dilution",
+        metric_path="multiseed.dilution_sd_ratio.median",
+        check=_between(0.85, 0.95),
+        threshold="sd(log σ_S4)/sd(log σ_S5) ∈ [0.85, 0.95] (10 シード中央値、理論 0.894)",
+        description=(
+            "chi は r と無相関なのでレバレッジ相関は sqrt(Var_S4/Var_S5) 倍に薄まる"
+            " (§6)。判定は希釈式が**厳密に**成り立つ log σ の経路 SD 比で行う"
+            " (2026-08-21 裁定)。指示書の字義 (相関の比) は |L| ~ 0.02 の水準"
+            " (S3 裁定) では SE が信号の 30〜40% あり判定不能 — 3 計器の実測は"
+            " multiseed.dilution_corr_* に記録される。シェア過大は検出できる"
+            " (25% → 0.87、30% → 0.82)。"
+        ),
+    ),
+    Gate(
+        name="chi2_no_direction",
+        metric_path="chaos.no_direction.abs_z",
+        check=_lt(4.0),
+        threshold="|corr(r_daily, chi_daily)| < 4 SE (帰無対照)",
+        description=(
+            "★§15 の第一禁止事項の検証: chi を価格・リターンの**方向**に入れると"
+            "予測可能性 = 裁定機会になり ②⑦⑮ が同時に壊れる。chi は σ にのみ"
+            "入るので方向とは無相関のはず。有意なら実装が方向へ漏らしている。"
+        ),
+    ),
+)
+
+S5_GATES: tuple[Gate, ...] = _S5_INHERITED_GATES + _S5_NEW_GATES
+
+#: 段階ごとのゲート。S6 以降を実装するときはここに追加する。
 STAGE_GATES: dict[str, tuple[Gate, ...]] = {
     "S0": S0_GATES,
     "S1": S1_GATES,
     "S2": S2_GATES,
     "S3": S3_GATES,
     "S4": S4_GATES,
+    "S5": S5_GATES,
 }
 
 

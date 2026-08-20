@@ -37,7 +37,7 @@ __all__ = [
 STAGES: tuple[str, ...] = tuple(f"S{i}" for i in range(14))
 
 #: 現時点で実装が存在する段階。段階を進めるたびにここへ追加する。
-IMPLEMENTED_STAGES: tuple[str, ...] = ("S0", "S1", "S2", "S3", "S4")
+IMPLEMENTED_STAGES: tuple[str, ...] = ("S0", "S1", "S2", "S3", "S4", "S5")
 
 #: 年率ボラを 1 ステップ分に落とすときの営業日数。
 TRADING_DAYS_PER_YEAR: int = 252
@@ -50,7 +50,6 @@ SESSION_SECONDS: float = 6.5 * 3600.0
 # 未実装フラグの表: フラグ名 -> (実装段階, 内容, 追加先)
 # ---------------------------------------------------------------------------
 UNIMPLEMENTED_FLAGS: dict[str, tuple[str, str, str]] = {
-    "enable_chaos_vol": ("S5", "カオス的ボラ成分 chi_2", "simchart/layers/l2_price.py"),
     "enable_hawkes": ("S7", "多変量 Hawkes 注文流", "simchart/layers/l1_activity.py"),
     "enable_chaos_lambda": ("S12", "カオス的強度変調 chi_1", "simchart/layers/l1_activity.py"),
     "enable_chaos_branching": ("S12", "カオス的分岐比変調 chi_3", "simchart/layers/l1_activity.py"),
@@ -72,6 +71,7 @@ IMPLEMENTED_FLAGS: tuple[str, ...] = (
     "enable_leverage",  # S3
     "enable_seasonality",  # S4
     "enable_overnight",  # S4
+    "enable_chaos_vol",  # S5
 )
 
 #: フラグ以外 (数値パラメータ) の未実装条件。
@@ -360,7 +360,41 @@ class Config:
     overnight_jump_variance_share: float = 0.35
     enable_jump: bool = False  # S3
     enable_leverage: bool = False  # S3
+
+    # --- L2 / S5: 決定論的カオス成分 chi_2 (Mackey-Glass) ---
+    # ★目的は統計的リアリズムではなく**ボラ・レジームの決定論的な再現性と制御** —
+    # 同一のカオス初期値なら、シード (確率成分) が違っても同じレジーム構造が現れる。
+    # 乱数を一切消費しない (RNG ストリームは S4 から不変)。
     enable_chaos_vol: bool = False  # S5  (chi_2)
+    chaos_system: str = "mackey_glass"
+    #: 遅延 tau。17 で相関次元 ~2.1 の低次元カオス (実測: Lyapunov +0.0071/単位、
+    #: D2 1.85、0-1 test K 0.97)。滑らかな不規則振動 = 緩慢成分の搬送波という
+    #: 役割に合う (指示書 §3.1 の推奨既定)。
+    chaos_tau_delay: float = 17.0
+    chaos_beta: float = 0.2
+    chaos_gamma: float = 0.1
+    chaos_n_exponent: float = 10.0
+    #: RK4 の固定ステップ (系固有単位)。tau/dt は整数必須 (遅延値を履歴グリッドに
+    #: 載せるため)。適応ステップは禁止 — 局所誤差推定が軌道を環境依存にする (§7)。
+    chaos_dt: float = 0.1
+    #: 初期条件 = t<=0 の**定数履歴**。遅延方程式の初期値は関数 (履歴全体) なので、
+    #: スカラー 1 つで完全に指定できる形にしてある (§7: config に明示)。
+    chaos_ic: float = 1.2
+    chaos_burn_in_units: float = 1000.0
+    #: ★時間スケール写像: 1 系固有単位 = 何市場日か。MG(17) のスペクトルピークは
+    #: 実測 49.65 単位なので、ピークを P 日に置くには s = P/49.65。値はアブレーション
+    #: (同一シードで chi on/off の gph_d 差) で確定する — 指示書 §4.1 の訂正どおり
+    #: 日次スケールは厳禁 (S4 の季節性と区別がつかなくなる)。
+    chaos_days_per_unit: float = 0.6042
+    #: chi_2 の分散配分。S1 から予約されていた枠 (最終予算 0.25 のうち 0.050 = 20%)。
+    #: ★既存成分 (0.125/0.050/0.025) は変更しない — S5 は加算であって再配分ではない。
+    vol_var_target_chaos: float = 0.050
+    #: 周辺分布の扱い (§3.2)。"standardize" = 平均 0 分散 1 のみ (案 A、軌道保持)。
+    #: "ecdf_normal" = 経験 CDF で正規に写像 (案 B、A が周辺分布ゲートで落ちたら)。
+    #: どちらも決定論的で再現性を損なわない。
+    chaos_normalization: str = "standardize"
+    #: 生成物キャッシュの置き場 (再現性の証拠。ロード時に必ずハッシュ照合される)。
+    chaos_cache_dir: str = "cache"
 
     # --- L1 ---
     enable_hawkes: bool = False  # S7
@@ -457,6 +491,11 @@ class Config:
         "overnight_variance_share", "overnight_jump_prob",
         "overnight_jump_variance_share",
     )
+    _S5_CHAOS_PARAMS = (
+        "chaos_system", "chaos_tau_delay", "chaos_beta", "chaos_gamma",
+        "chaos_n_exponent", "chaos_dt", "chaos_ic", "chaos_burn_in_units",
+        "chaos_days_per_unit", "vol_var_target_chaos", "chaos_normalization",
+    )
 
     def _check_s1_params(self) -> None:
         defaults = {f.name: f.default for f in dataclasses.fields(type(self))}
@@ -469,6 +508,7 @@ class Config:
             ("enable_leverage", self._S3_LEVERAGE_PARAMS),
             ("enable_seasonality", self._S4_SEASONALITY_PARAMS),
             ("enable_overnight", self._S4_OVERNIGHT_PARAMS),
+            ("enable_chaos_vol", self._S5_CHAOS_PARAMS),
         ):
             if not getattr(self, flag):
                 changed = [n for n in params if getattr(self, n) != defaults[n]]
@@ -599,18 +639,53 @@ class Config:
                 raise ValueError(
                     "overnight_jump_variance_share は [0, 1) の範囲である必要があります"
                 )
+        if self.enable_chaos_vol:
+            if self.chaos_system != "mackey_glass":
+                raise NotImplementedError(
+                    f"chaos_system={self.chaos_system!r} は未実装です (S5 は Mackey-Glass のみ)"
+                )
+            if self.vol_var_target_chaos <= 0:
+                raise ValueError(
+                    "enable_chaos_vol=True なのに vol_var_target_chaos が 0 以下です。"
+                    " 分散配分 0 の chi_2 は暗黙 no-op になるため許可しません。"
+                )
+            if self.chaos_days_per_unit <= 0 or self.chaos_dt <= 0:
+                raise ValueError("chaos_days_per_unit と chaos_dt は正である必要があります")
+            ratio = self.chaos_tau_delay / self.chaos_dt
+            if abs(ratio - round(ratio)) > 1e-9:
+                raise ValueError(
+                    f"chaos_tau_delay/chaos_dt = {ratio} が整数ではありません。"
+                    f" 遅延値が履歴グリッドに載らず、補間の曖昧さが再現性を壊します。"
+                )
+            grid_days = self.chaos_dt * self.chaos_days_per_unit
+            if grid_days > 0.5:
+                raise ValueError(
+                    f"カオス格子の間隔 ({grid_days:.3f} 日) が粗すぎます。"
+                    f" 20〜40 日の振動を線形補間で運ぶには 0.5 日以下が必要です。"
+                )
+            if self.chaos_normalization not in ("standardize", "ecdf_normal"):
+                raise ValueError(
+                    "chaos_normalization は standardize / ecdf_normal のいずれかです"
+                )
+            if self.chaos_burn_in_units < 10 * self.chaos_tau_delay:
+                raise ValueError(
+                    f"chaos_burn_in_units ({self.chaos_burn_in_units}) が短すぎます。"
+                    f" 過渡が残ると初期の数百日に非定常な水準トレンドが乗ります"
+                    f" (tau の 10 倍以上を要求)。"
+                )
         if self.vol_var_budget_total <= 0:
             raise ValueError("vol_var_budget_total は正である必要があります")
         allocated = (
             (self.vol_var_target_msm if self.enable_msm else 0.0)
             + (self.vol_var_target_slow if self.enable_slow_ou else 0.0)
             + (self.vol_var_target_rough if self.enable_rough else 0.0)
+            + (self.vol_var_target_chaos if self.enable_chaos_vol else 0.0)
         )
         if allocated > self.vol_var_budget_total + 1e-12:
             raise ValueError(
                 f"分散配分の合計 ({allocated:.4f}) が最終予算"
-                f" ({self.vol_var_budget_total}) を超えています。予算を使い切ると"
-                f" 後段 (S5 chi_2 など) が入らなくなります (指示書 §6)。"
+                f" ({self.vol_var_budget_total}) を超えています (指示書 §5.2:"
+                f" chi_2 の 25% 超は ③⑱ を薄めるため禁止)。"
             )
 
     # ------------------------------------------------------------------

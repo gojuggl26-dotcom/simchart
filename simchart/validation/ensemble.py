@@ -37,6 +37,7 @@ from ..config import SESSION_SECONDS, Config
 from ..layers.l2_price import (
     compose_log_sigma,
     msm_theoretical_var_log_sigma,
+    prepare_chaos_component,
     rough_discrete_stationary_variance,
     solve_eta_rough,
     solve_m0,
@@ -60,7 +61,12 @@ def vol_cross_section(config: Config, n_paths: int | None = None) -> dict:
     甘くなる。乱数の消費順は (MSM, OU, rough) で固定 — 末尾に足したので、
     S1 設定での断面はビット単位で以前と同一のまま。
     """
-    if not (config.enable_msm or config.enable_slow_ou or config.enable_rough):
+    if not (
+        config.enable_msm
+        or config.enable_slow_ou
+        or config.enable_rough
+        or config.enable_chaos_vol
+    ):
         return na("確率ボラが無効です (enable_msm / enable_slow_ou / enable_rough とも False)")
 
     n = int(n_paths if n_paths is not None else config.validation.ensemble_n_paths)
@@ -111,6 +117,23 @@ def vol_cross_section(config: Config, n_paths: int | None = None) -> dict:
         ),
         dtype=np.float64,
     )
+    if log_sigma.ndim == 0:
+        log_sigma = np.full(n, float(log_sigma), dtype=np.float64)
+
+    # S5: chi_2 は決定論なので「断面」は**時間周辺分布**からの再標本になる。
+    # 生成側と同じ prepare_chaos_component (窓正規化 + 数値 c_chi) を使い、
+    # 窓の実サンプルをアンサンブル乱数で引く。乱数消費は末尾に足したので、
+    # S0〜S4 設定での断面はビット単位で以前と同一のまま。
+    chi_var_actual = 0.0
+    chi_term: np.ndarray | None = None
+    if config.enable_chaos_vol:
+        _, chi_norm, a_chi, c_chi, _diag = prepare_chaos_component(
+            config, float(config.n_days)
+        )
+        idx = rng.integers(0, chi_norm.shape[0], size=n)
+        chi_term = a_chi * chi_norm[idx] - c_chi
+        log_sigma = log_sigma + chi_term
+        chi_var_actual = a_chi * a_chi  # 窓正規化により厳密
 
     sigma2_ratio = np.exp(2.0 * (log_sigma - log_sigma_bar))
     mean_ratio = float(sigma2_ratio.mean())
@@ -124,9 +147,11 @@ def vol_cross_section(config: Config, n_paths: int | None = None) -> dict:
         var_components["slow_ou"] = float(np.asarray(x_slow).var(ddof=1))
     if config.enable_rough:
         var_components["rough"] = float(np.asarray(y_rough).var(ddof=1))
+    if chi_term is not None:
+        var_components["chaos"] = float(np.asarray(chi_term).var(ddof=1))
     shares = {k_: v / var_log_sigma for k_, v in var_components.items()}
 
-    var_total_theory = var_msm_theory + var_slow + var_rough
+    var_total_theory = var_msm_theory + var_slow + var_rough + chi_var_actual
     budget = config.vol_var_budget_total
     return ok(
         num(mean_ratio),
@@ -150,6 +175,7 @@ def vol_cross_section(config: Config, n_paths: int | None = None) -> dict:
             **({"msm": num(var_msm_theory / budget)} if config.enable_msm else {}),
             **({"slow_ou": num(var_slow / budget)} if config.enable_slow_ou else {}),
             **({"rough": num(var_rough / budget)} if config.enable_rough else {}),
+            **({"chaos": num(chi_var_actual / budget)} if config.enable_chaos_vol else {}),
         },
         m0=num(m0) if m0 is not None else None,
         sd_log_sigma=num(math.sqrt(var_log_sigma)),

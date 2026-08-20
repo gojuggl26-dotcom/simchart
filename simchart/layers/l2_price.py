@@ -61,6 +61,7 @@ __all__ = [
     "rough_discrete_stationary_variance",
     "davies_harte_fgn",
     "compose_log_sigma",
+    "prepare_chaos_component",
     "VOL_SUBSAMPLE_SECONDS",
 ]
 
@@ -176,6 +177,96 @@ def davies_harte_fgn(n: int, hurst: float, rng: np.random.Generator) -> np.ndarr
 
     x = np.fft.fft(v) / math.sqrt(2.0 * m)
     return np.ascontiguousarray(x.real[:n])
+
+
+def prepare_chaos_component(
+    config, n_days: float
+) -> tuple[np.ndarray, np.ndarray, float, float, dict]:
+    """chi_2 の窓を用意する (S5)。**生成とアンサンブル検証の両方がこれを使う。**
+
+    Returns
+    -------
+    (chaos_t_days, chi_norm, a, c_chi, diagnostics)
+        ``chaos_t_days`` は市場日単位の格子、``chi_norm`` は正規化済み系列。
+        注入は ``a * interp(t_days, chaos_t_days, chi_norm) - c_chi``。
+
+    正規化は**使用する窓の上で**行う (平均 0・分散 1)。これにより経路上の chi
+    分散寄与が厳密に ``a^2 = vol_var_target_chaos`` になり、シード横断相関ゲート
+    (指示書 §8) の目標値 0.20 = 0.05/0.25 が構成から導ける。
+
+    ★凸性補正 c_chi は数値で求める (指示書 §5.3)。S1 の -Var(X) は X がガウス
+    だから成立した式で、chi はガウスでない (MG の周辺分布は有界・歪み・多峰)。
+    ガウスの公式を流用すると E[sigma^2] の水準がずれ、「なんとなくボラが高い」と
+    しか見えない壊れ方をする (S1・S4 と同型の事故)。
+    c_chi = 0.5 log(mean(exp(2 a chi))) で時間平均の意味で
+    E[sigma_t^2] = sigma_bar^2 が厳密に保たれる。
+    """
+    from ..chaos import chaos_generate
+
+    s = config.chaos_days_per_unit
+    length_units = n_days / s + 2.0 * config.chaos_dt  # 端の補間分の余白
+    series = chaos_generate(
+        system=config.chaos_system,
+        params={
+            "tau": config.chaos_tau_delay,
+            "beta": config.chaos_beta,
+            "gamma": config.chaos_gamma,
+            "n_exponent": config.chaos_n_exponent,
+        },
+        length_units=length_units,
+        dt=config.chaos_dt,
+        ic=config.chaos_ic,
+        burn_in_units=config.chaos_burn_in_units,
+        cache_dir=config.chaos_cache_dir or None,
+    )
+    x = series.x
+    if config.chaos_normalization == "ecdf_normal":
+        # 案 B (§3.2): 経験 CDF で周辺分布を正規に写像する。時間順序 (順位の
+        # 動力学) は保たれ、写像も決定論的なので再現性を損なわない。
+        from scipy.stats import norm as _norm
+
+        ranks = np.argsort(np.argsort(x, kind="stable"), kind="stable")
+        x = _norm.ppf((ranks + 0.5) / x.shape[0])
+    mu = float(x.mean())
+    sd = float(x.std())
+    if sd <= 0:
+        raise ValueError("chi_2 の分散が 0 です (窓が短すぎるか系が退化しています)")
+    chi_norm = (x - mu) / sd
+    a = math.sqrt(config.vol_var_target_chaos)
+    c_chi = 0.5 * math.log(float(np.mean(np.exp(2.0 * a * chi_norm))))
+    chaos_t_days = series.t * s
+
+    # ジャンプ強度の Jensen 係数 (S4 の φ 補正と同じ理屈)。
+    # λ(t) = λ0 (σ/σ̄)^ρ の σ に e^{aχ−c_χ} が掛かると平均強度が
+    # time-mean(e^{ρ(aχ−c_χ)}) 倍になる。c_χ が補正するのは E[e^{2aχ}] であって
+    # E[e^{ρaχ}] ではない (ρ=1 では Cauchy-Schwarz により必ず 1 未満 → JV シェアが
+    # 黙って動く)。jump_intensity_scale がこの係数で割って打ち消す。
+    jensen = (
+        float(np.mean(np.exp(config.jump_vol_exponent * (a * chi_norm - c_chi))))
+        if config.enable_jump
+        else 1.0
+    )
+
+    diagnostics = {
+        "system": config.chaos_system,
+        "sha256": series.sha256,
+        "cache_path": series.cache_path,
+        "params": dict(series.params),
+        "normalization": config.chaos_normalization,
+        "days_per_unit": s,
+        "grid_spacing_days": config.chaos_dt * s,
+        "n_grid_points": int(chi_norm.shape[0]),
+        "a": a,
+        "c_chi_numerical": c_chi,
+        # ガウス公式 (Var = a^2) との差 — 数値補正が「効いている」ことの証拠。
+        "c_chi_gaussian_formula": config.vol_var_target_chaos,
+        "c_chi_difference": c_chi - config.vol_var_target_chaos,
+        "window_mean": mu,
+        "window_sd": sd,
+        "var_contribution": a * a,
+        "jensen_intensity_factor": jensen,
+    }
+    return chaos_t_days, chi_norm, a, c_chi, diagnostics
 
 
 def compose_log_sigma(
@@ -308,6 +399,15 @@ class GBMPriceLayer:
             if mean_phi_rho <= 0:
                 raise ValueError("phi^rho の平均が 0 以下です")
             scale /= mean_phi_rho
+        if cfg.enable_chaos_vol:
+            # S5: chi の Jensen 係数 (φ と同じ理屈、数値は _simulate_chaos が計算)。
+            # ジャンプは log_vol の後に生成されるので diagnostics に値がある。
+            jf = (self.last_diagnostics.get("chaos") or {}).get("jensen_intensity_factor")
+            if jf is None:
+                raise RuntimeError(
+                    "chi_2 の Jensen 係数が未計算です (_log_vol_path が先に走る必要があります)"
+                )
+            scale /= jf
         return scale
 
     # ------------------------------------------------------------------
@@ -1033,6 +1133,22 @@ class GBMPriceLayer:
         return gaps
 
     # ------------------------------------------------------------------
+    # S5: 決定論的カオス成分 chi_2
+    # ------------------------------------------------------------------
+    def _simulate_chaos(self, n_days: float) -> tuple[np.ndarray, np.ndarray, float, float]:
+        """chi_2 を系固有グリッドで用意し、診断を残す (乱数を一切消費しない)。
+
+        実体は :func:`prepare_chaos_component` — **生成とアンサンブル検証の両方が
+        同じ関数を使う** (compose_log_sigma と同じ理由: 式を 2 か所に書くと片方だけ
+        直して乖離する事故が起きる)。
+        """
+        chaos_t_days, chi_norm, a, c_chi, diag = prepare_chaos_component(
+            self._config, n_days
+        )
+        self.last_diagnostics["chaos"] = diag
+        return chaos_t_days, chi_norm, a, c_chi
+
+    # ------------------------------------------------------------------
     # 拡張フック
     # ------------------------------------------------------------------
     def _log_vol_path(
@@ -1065,7 +1181,16 @@ class GBMPriceLayer:
         n = t.shape[0]
         log_sigma_bar = math.log(self.sigma_bar_diffusion)
 
-        if not (cfg.enable_msm or cfg.enable_slow_ou or cfg.enable_rough):
+        # ★早期リターンは「log σ に何も足さない」場合のみ。カオス (S5) と季節性
+        # (S4) は確率成分が無くても log σ を変えるので、ここを通ってはならない
+        # (通すと有効フラグが暗黙 no-op になる — このプロジェクトの禁止事項)。
+        if not (
+            cfg.enable_msm
+            or cfg.enable_slow_ou
+            or cfg.enable_rough
+            or cfg.enable_chaos_vol
+            or (cfg.enable_seasonality and hasattr(self._calendar, "phi_sigma_of_u"))
+        ):
             return np.full(n, log_sigma_bar, dtype=np.float64)
 
         t_days = t / self._seconds_per_day
@@ -1138,9 +1263,35 @@ class GBMPriceLayer:
             ),
             dtype=np.float64,
         )
+        if log_vol.ndim == 0:
+            # 確率成分が全て無効 (カオス/季節性のみ) の場合、compose はスカラーを
+            # 返すので配列に展開する。
+            log_vol = np.full(n, float(log_vol), dtype=np.float64)
         # 展開済みラフ配列 (本番で 936MB) はもう不要。
         if isinstance(y_rough, np.ndarray):
             del y_rough
+
+        # S5: 決定論的カオス成分 chi_2。確率成分と同じ log 加算だが、凸性補正は
+        # ガウス公式ではなく**数値** (c_chi) — 詳細は _simulate_chaos。φ の前に足す
+        # (指示書 §5.1 の式: chi は log σ_stoch の一部で、φ はその全体に掛かる)。
+        # 本番では 1 配列 936MB なので、補間はチャンクで in-place 加算する。
+        if cfg.enable_chaos_vol:
+            chaos_t_days, chi_norm, a_chi, c_chi = self._simulate_chaos(float(t_days[-1]))
+            chunk = 8_000_000
+            for i0 in range(0, n, chunk):
+                i1 = min(i0 + chunk, n)
+                log_vol[i0:i1] += a_chi * np.interp(
+                    t_days[i0:i1], chaos_t_days, chi_norm
+                )
+            log_vol -= c_chi
+            subsample["chi_term"] = a_chi * np.interp(
+                t_days[::stride], chaos_t_days, chi_norm
+            )
+            subsample["c_chi"] = c_chi
+            del chaos_t_days, chi_norm
+        else:
+            subsample["chi_term"] = np.zeros(n_sub)
+            subsample["c_chi"] = 0.0
         # S4: 日内季節性を**観測ボラへの乗法変調**として掛ける。
         # log sigma_obs = log phi_sigma(u) + log sigma_stoch。
         # 確率ボラ成分そのものには掛けない (§3) — phi で割れば S3 の系列が
@@ -1159,11 +1310,13 @@ class GBMPriceLayer:
         self.last_diagnostics["vol_subsample"] = subsample
         self.last_diagnostics["composition"] = {
             "log_sigma_bar": log_sigma_bar,
-            "convexity_correction": -var_slow - var_rough,
+            "convexity_correction": -var_slow - var_rough - float(subsample["c_chi"]),
+            "c_chi": float(subsample["c_chi"]),
             "enable_msm": cfg.enable_msm,
             "enable_slow_ou": cfg.enable_slow_ou,
             "enable_rough": cfg.enable_rough,
             "enable_seasonality": cfg.enable_seasonality,
+            "enable_chaos_vol": cfg.enable_chaos_vol,
         }
         return log_vol
 
@@ -1318,6 +1471,4 @@ def build_price_layer(
             "enable_overnight=True には enable_jump=True が必要です"
             " (ON ジャンプは S3 の Kou パラメータを ON 用倍率で使うため)"
         )
-    if config.enable_chaos_vol:
-        raise NotImplementedError("カオス的ボラ成分 chi_2 は S5 で実装します。")
     return GBMPriceLayer(config, rng, calendar, activity)
