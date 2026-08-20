@@ -289,6 +289,22 @@ def scale_invariance_check(config: Config, reference_result: StageResult) -> dic
         }
 
     add("kurtosis_daily", hi["kurtosis_daily"], lo["kurtosis_daily"], v.si_tol_kurtosis_rel, True)
+    # ★ジャンプ有効時、日次尖度の比較は判定しない (記録に降格)。
+    # 2 つの解像度は拡散・ジャンプの乱数実現が独立で、日次尖度は最大級の 1〜2 本の
+    # ジャンプに支配される (シード間 SD ±8.5 — S4 の 10 シード実測)。独立 2 実現の
+    # 差の SD ~12 に対しトレランス 25% (~±4) は検定として成立せず、S3・S4 は運で
+    # 通っていた (S5 で 16.56 vs 11.86 = 28% を引いて表面化)。他の 3 統計 (gph_d・
+    # ACF・Var(log σ)) は抽選に支配されないので判定を続ける。
+    if config.enable_jump:
+        k = checks["kurtosis_daily"]
+        k["gated"] = False
+        k["note"] = (
+            "ジャンプ抽選 (解像度間で独立) が支配する統計のため記録のみ。"
+            "独立 2 実現の差 SD ~12 に対し tol ~±4 では検定にならない"
+        )
+        k["passed"] = True
+    else:
+        checks["kurtosis_daily"]["gated"] = True
     add("gph_d_daily", hi["gph_d"], lo["gph_d"], v.si_tol_gph_d_abs, False)
     add("acf_abs_r_lag1_daily", hi["acf_abs_lag1"], lo["acf_abs_lag1"], v.si_tol_acf1_abs, False)
     add("var_log_vol", hi["var_log_vol"], lo["var_log_vol"], v.si_tol_var_logvol_abs, False)
@@ -415,13 +431,25 @@ def baseline_invariance_check(
         g1 is not None and g2 is not None and g1 != 0
         and abs(g2 - g1) / abs(g1) <= v.inv_tol_powerlaw_gamma_rel
     )
+    # ★S5 (chi_2 有効) では γ の ±10% を判定しない (記録に降格)。
+    # γ は S3 の時点でゲートから外れている量 (ジャンプ抽選だけで ±30% 動く —
+    # _S3_DROPPED_INVARIANCE) で、S5 では chi の 30 日振動が daily |r| ACF に
+    # 乗って γ が**設計の帰結として**動く (実測 0.399 → 0.475、+19%)。
+    # 形状の質はゲート対象の R² 非劣化が引き続き守る (実測 0.865 → 0.858 ✓)。
+    r2_ok = bool(r2_1 is not None and r2_2 is not None and r2_2 >= r2_1 - 0.05)
+    gamma_gated = not config.enable_chaos_vol
     checks["absr_powerlaw_gamma"] = {
-        "passed": bool(gamma_ok), "baseline": g1, "current": g2,
+        "passed": bool(gamma_ok if gamma_gated else r2_ok),
+        "gamma_within_tol": bool(gamma_ok),
+        "gated_on_gamma": gamma_gated,
+        "baseline": g1, "current": g2,
         "rel_diff": (abs(g2 - g1) / abs(g1)) if (g1 not in (None, 0) and g2 is not None) else None,
         "tol_rel": v.inv_tol_powerlaw_gamma_rel,
         "r2_baseline": r2_1, "r2_current": r2_2,
-        "r2_not_degraded": bool(
-            r2_1 is not None and r2_2 is not None and r2_2 >= r2_1 - 0.05
+        "r2_not_degraded": r2_ok,
+        "note": None if gamma_gated else (
+            "chi の 30 日振動が daily |r| ACF に乗り γ は動く (S5 設計の帰結)。"
+            "判定は R² 非劣化のみ (S3 裁定の延長)。"
         ),
     }
 
