@@ -374,25 +374,61 @@ def profile_flatness(r_2d: np.ndarray, method: str = "median_abs") -> dict[str, 
 
     季節性があれば ``log`` プロファイルの標準偏差は大きく、除去できていれば
     標本誤差の水準まで落ちる。ACF の周期ピーク (:func:`acf_periodicity_test`) より
-    解釈が容易で検定力も高いので、ゲートの主判定はこちらを使う。
+    解釈が容易で、バー粒度に依らず検出力があるので、ゲートの主判定はこちらを使う。
+
+    標本誤差はデータから推定する (理論値を使わない)
+    ----------------------------------------------
+    「平坦になった」の基準は標本誤差なので、その見積りが甘いと判定が意味を失う。
+    当初は正規分布を仮定した ``sqrt(pi/2)/sqrt(n)`` を使ったが、これは 2 つの点で
+    正しくない:
+
+    1. 定数が違う。``|x|`` の中央値の漸近 SE は ``sqrt(pi/2)`` ではなく
+       ``1/(2 f(m) sqrt(n))`` で、標準正規なら 0.787、対数にすると 1.166
+    2. そもそも iid 正規ではない。確率ボラで日ごとに σ が変わるぶん SE は膨らむ
+
+    そこで**分割標本**で直接推定する: 日を前半・後半に分けて別々にプロファイルを
+    作り、その差の散らばりから全標本の SE を逆算する
+    (``Var(log p_A - log p_B) = 4 Var(log p_full)``)。日ごとのボラ水準の違いは
+    プロファイルを平均で割る時点で消えるので、遅い成分による前半後半の相関は
+    形の推定にはほとんど効かない。
     """
     prof = intraday_profile(r_2d, method=method)
     if prof["status"] != "ok":
         return prof
+    r = np.asarray(r_2d, dtype=np.float64)
     disp = np.asarray(prof["value"], dtype=np.float64)
     log_disp = np.log(disp / disp.mean())
+    sd = float(log_disp.std(ddof=1))
     n_days = int(prof["n_days"])
-    # 中央値の標準誤差 ~ 1.2533/sqrt(n) (正規の場合)。log をとった散らばりの
-    # 「標本誤差だけならこの程度」という目安として併記する。
-    se_hint = 1.2533 / math.sqrt(max(n_days, 1)) if method == "median_abs" else 1.0 / math.sqrt(
-        max(2 * n_days, 1)
+
+    half = n_days // 2
+    se_split: float | None = None
+    if half >= 20:
+        pa = intraday_profile(r[:half], method=method, min_days=10)
+        pb = intraday_profile(r[half : 2 * half], method=method, min_days=10)
+        if pa["status"] == "ok" and pb["status"] == "ok":
+            a = np.asarray(pa["value"], dtype=np.float64)
+            b = np.asarray(pb["value"], dtype=np.float64)
+            d = np.log(a / a.mean()) - np.log(b / b.mean())
+            se_split = float(d.std(ddof=1) / 2.0)
+
+    # 参考値 (iid 正規を仮定した理論 SE)。分割標本が取れないときの後退先でもある。
+    se_analytic = (
+        1.1664 / math.sqrt(max(n_days, 1))
+        if method == "median_abs"
+        else 1.0 / math.sqrt(max(2 * n_days, 1))
     )
+    se = se_split if se_split and se_split > 0 else se_analytic
+
     return ok(
-        float(log_disp.std(ddof=1)),
-        sd_log_profile=float(log_disp.std(ddof=1)),
+        sd,
+        sd_log_profile=sd,
         max_min_ratio=float(disp.max() / disp.min()),
-        sampling_se_hint=float(se_hint),
-        excess_over_se=float(log_disp.std(ddof=1) / se_hint) if se_hint > 0 else float("nan"),
+        sampling_se=float(se),
+        sampling_se_source="split_half" if se is se_split else "analytic_iid_normal",
+        sampling_se_split_half=se_split,
+        sampling_se_analytic=float(se_analytic),
+        excess_over_se=float(sd / se) if se > 0 else float("nan"),
         n_days=n_days,
         n_bars=int(prof["n_bars"]),
     )
