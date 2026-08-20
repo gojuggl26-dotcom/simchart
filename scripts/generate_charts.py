@@ -150,27 +150,90 @@ def generate(args: argparse.Namespace) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     n = args.n_charts
-    total_days = n * n_days
-    chart_id = np.repeat(np.arange(n, dtype=np.int32), n_days)
-    day_index = np.tile(np.arange(n_days, dtype=np.int32), n)
+    chunk = max(int(args.chunk_size), 1)
+    parts_dir = out_dir / "parts"
+    parts_dir.mkdir(parents=True, exist_ok=True)
+
+    started = time.perf_counter()
+    base_seed = base.seed
+    flags_on = [f for f in IMPLEMENTED_FLAGS if getattr(base, f)]
+    n_chunks = (n + chunk - 1) // chunk
+    print(f"{n} 本 x {n_days} 日 x {steps_per_day} ステップ を生成します "
+          f"(stage={stage}, seed={base_seed}..{base_seed + n - 1}, "
+          f"有効フラグ={', '.join(flags_on) if flags_on else 'なし (S0)'}, "
+          f"{chunk} 本ごとに {n_chunks} チャンクへ逐次書き出し)")
+
+    # ★チャンク単位で逐次書き出す。3 時間の生成が中断されても完了分は残り、
+    # 同じコマンドで再開すれば未完了のチャンクだけを作る (実際に 2 度中断された)。
+    n_done_before = 0
+    for c_idx in range(n_chunks):
+        lo = c_idx * chunk
+        hi = min(lo + chunk, n)
+        daily_part = parts_dir / f"daily_{c_idx:04d}.parquet"
+        index_part = parts_dir / f"index_{c_idx:04d}.parquet"
+        if daily_part.exists() and index_part.exists():
+            n_done_before += hi - lo
+            continue
+        _generate_chunk(
+            base, lo, hi, n_days, steps_per_day, intraday_bars_per_day,
+            steps_per_intraday_bar, args, parts_dir, c_idx,
+        )
+        elapsed = time.perf_counter() - started
+        made = hi - n_done_before if hi > n_done_before else 0
+        eta = (elapsed / made * (n - hi)) if made > 0 else 0.0
+        print(f"  チャンク {c_idx + 1}/{n_chunks} (〜{hi}/{n} 本)  "
+              f"経過 {elapsed:.0f} 秒 / 残り約 {eta:.0f} 秒", flush=True)
+
+    if n_done_before:
+        print(f"  (既存のチャンクから {n_done_before} 本を再利用)")
+
+    # ------------------------------------------------------------------
+    # 全チャンクを結合して最終成果物にする。
+    daily = pd.concat(
+        [pd.read_parquet(parts_dir / f"daily_{k:04d}.parquet") for k in range(n_chunks)],
+        ignore_index=True,
+    )
+    index_df = pd.concat(
+        [pd.read_parquet(parts_dir / f"index_{k:04d}.parquet") for k in range(n_chunks)],
+        ignore_index=True,
+    )
+    intraday_parts = sorted(parts_dir.glob("intraday_*.parquet"))
+    intraday_frames = [pd.read_parquet(p) for p in intraday_parts]
+    return _finalize(
+        base, stage, args, out_dir, daily, index_df, intraday_frames,
+        n, n_days, steps_per_day, step_seconds, seconds_per_year,
+        base_seed, flags_on, started,
+    )
+
+
+def _generate_chunk(
+    base: Config,
+    lo: int,
+    hi: int,
+    n_days: int,
+    steps_per_day: int,
+    intraday_bars_per_day: int,
+    steps_per_intraday_bar: int,
+    args: argparse.Namespace,
+    parts_dir: Path,
+    c_idx: int,
+) -> None:
+    """チャート ``lo..hi-1`` を生成し、チャンクの parquet を書き出す。"""
+    base_seed = base.seed
+    n_local = hi - lo
+    total_days = n_local * n_days
+    chart_id = np.repeat(np.arange(lo, hi, dtype=np.int32), n_days)
+    day_index = np.tile(np.arange(n_days, dtype=np.int32), n_local)
     open_px = np.empty(total_days, dtype=np.float64)
     high_px = np.empty(total_days, dtype=np.float64)
     low_px = np.empty(total_days, dtype=np.float64)
     close_px = np.empty(total_days, dtype=np.float64)
     log_return = np.empty(total_days, dtype=np.float64)
     realized_vol = np.empty(total_days, dtype=np.float64)
-
     index_rows: list[dict[str, Any]] = []
     intraday_frames: list[pd.DataFrame] = []
-    started = time.perf_counter()
 
-    base_seed = base.seed
-    flags_on = [f for f in IMPLEMENTED_FLAGS if getattr(base, f)]
-    print(f"{n} 本 x {n_days} 日 x {steps_per_day} ステップ を生成します "
-          f"(stage={stage}, seed={base_seed}..{base_seed + n - 1}, "
-          f"有効フラグ={', '.join(flags_on) if flags_on else 'なし (S0)'})")
-
-    for i in range(n):
+    for i in range(lo, hi):
         seed = base_seed + i
         result = run(base.replace(seed=seed))
         log_price = result.observation.log_price
@@ -183,7 +246,7 @@ def generate(args: argparse.Namespace) -> int:
         rv_daily = step_returns.reshape(n_days, steps_per_day).sum(axis=1)
         del step_returns
 
-        sl = slice(i * n_days, (i + 1) * n_days)
+        sl = slice((i - lo) * n_days, (i - lo + 1) * n_days)
         open_px[sl] = np.exp(o)
         high_px[sl] = np.exp(h)
         low_px[sl] = np.exp(l)
@@ -240,13 +303,13 @@ def generate(args: argparse.Namespace) -> int:
         # 実測でピーク 9.4GB・空き 1.8GB まで落ちた (15.3GB 機で危険水準)。
         del result, log_price, o, h, l, c, rv_daily, daily_ret
 
-        if (i + 1) % args.progress_every == 0 or i + 1 == n:
-            elapsed = time.perf_counter() - started
-            eta = elapsed / (i + 1) * (n - i - 1)
-            print(f"  {i + 1}/{n}  経過 {elapsed:.0f} 秒 / 残り約 {eta:.0f} 秒", flush=True)
+        if (i + 1) % args.progress_every == 0:
+            print(f"    {i + 1}/{args.n_charts} 本目まで完了", flush=True)
 
-    # ------------------------------------------------------------------
-    daily = pd.DataFrame(
+    # チャンクの成果物を書き出す。**先に daily を書き、最後に index を書く** —
+    # index の存在が「このチャンクは完了」の印なので、途中で落ちても不完全な
+    # チャンクが「完了済み」と誤認されない (再開時に作り直される)。
+    pd.DataFrame(
         {
             "chart_id": chart_id,
             "day": day_index,
@@ -257,11 +320,37 @@ def generate(args: argparse.Namespace) -> int:
             "log_return": log_return,
             "realized_vol_annualized": realized_vol,
         }
+    ).to_parquet(parts_dir / f"daily_{c_idx:04d}.parquet", index=False, compression="zstd")
+    if intraday_frames:
+        pd.concat(intraday_frames, ignore_index=True).to_parquet(
+            parts_dir / f"intraday_{c_idx:04d}.parquet", index=False, compression="zstd"
+        )
+    pd.DataFrame(index_rows).to_parquet(
+        parts_dir / f"index_{c_idx:04d}.parquet", index=False, compression="zstd"
     )
+
+
+def _finalize(
+    base: Config,
+    stage: str,
+    args: argparse.Namespace,
+    out_dir: Path,
+    daily: pd.DataFrame,
+    index_df: pd.DataFrame,
+    intraday_frames: list[pd.DataFrame],
+    n: int,
+    n_days: int,
+    steps_per_day: int,
+    step_seconds: float,
+    seconds_per_year: float,
+    base_seed: int,
+    flags_on: list[str],
+    started: float,
+) -> int:
+    """結合済みのデータから最終成果物 (parquet / metrics / plots) を作る。"""
     daily_path = out_dir / "daily_ohlc.parquet"
     daily.to_parquet(daily_path, index=False, compression="zstd")
 
-    index_df = pd.DataFrame(index_rows)
     index_path = out_dir / "charts_index.parquet"
     index_df.to_parquet(index_path, index=False, compression="zstd")
     index_df.to_csv(out_dir / "charts_index.csv", index=False)
@@ -791,6 +880,11 @@ def main() -> int:
     parser.add_argument("--intraday-bar-sec", type=float, default=60.0)
     parser.add_argument("--results-dir", type=str, default=None)
     parser.add_argument("--progress-every", type=int, default=50)
+    parser.add_argument(
+        "--chunk-size", type=int, default=100,
+        help="この本数ごとに parts/ へ逐次書き出す。中断しても完了分は残り、"
+             "同じコマンドで再開すると未完了のチャンクだけを作る",
+    )
     parser.add_argument("--no-plots", action="store_true")
     parser.add_argument("--recompute", action="store_true",
                         help="経路を作り直さず、既存の出力から集団検証とプロットだけ更新する")

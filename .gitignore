@@ -16,3 +16,4 @@ results/**/plots/
 # 何をどう生成したかは charts/ensemble_metrics.json に残る (これは追跡する)。
 results/**/charts/*.parquet
 results/**/charts/*.csv
+results/**/charts/parts/
