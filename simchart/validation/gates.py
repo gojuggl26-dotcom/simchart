@@ -1288,7 +1288,265 @@ _S5_NEW_GATES: tuple[Gate, ...] = (
 
 S5_GATES: tuple[Gate, ...] = _S5_INHERITED_GATES + _S5_NEW_GATES
 
-#: 段階ごとのゲート。S6 以降を実装するときはここに追加する。
+
+# ---------------------------------------------------------------------------
+# S6 のゲート
+# ---------------------------------------------------------------------------
+def _book_bool(key: str) -> Callable[[Any], bool]:
+    def check(value: Any) -> bool:
+        return isinstance(value, Mapping) and bool(value.get(key))
+
+    return check
+
+
+def _sign_acf_zero_check(value: Any) -> bool:
+    """符号 ACF が全ラグ (1..200) で Bonferroni 閾値 3.7/√N 以内。
+
+    指示書の字義「2/√N」は 200 ラグの最大値に対しては iid でもほぼ確実に破れる
+    (P ≈ 1 − 0.9545^200)。S0 の ±2σ ゲート・S3 の z_no_autocorr と同型の問題で、
+    同じ解決 (Bonferroni 200 本・両側 5% → 3.66 ≈ 3.7) を適用する。
+    """
+    if not isinstance(value, Mapping):
+        return False
+    z = value.get("max_abs_z")
+    return z is not None and float(z) < 3.7
+
+
+def _interevent_check(value: Any) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    cv2 = value.get("cv2")
+    fano = value.get("fano_factor")
+    if cv2 is None:
+        return False
+    okc = 0.9 <= float(cv2) <= 1.1
+    if fano is not None:
+        okc = okc and 0.85 <= float(fano) <= 1.15
+    return okc
+
+
+def _spread_positive_check(value: Any) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    npos = value.get("n_nonpositive")
+    mn = value.get("min")
+    return npos is not None and int(npos) == 0 and mn is not None and float(mn) >= 1.0
+
+
+def _placement_within(value: Any) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    d = value.get("difference")
+    return d is not None and abs(float(d)) <= 0.2
+
+
+def _corr_zero_check(value: Any) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    z = value.get("abs_z")
+    return z is not None and float(z) < 4.0
+
+
+#: ★S6 で **L2 の観測性質のゲートを全て落とす** (指示書 §11)。κ=0 なので観測価格は
+#: ZI 板のミッドであり、①③④⑧⑯⑱ は存在しない — **それが正しい状態**。落とした
+#: 量は「純マイクロ構造ベースライン」として記録され、S10 の結合で L2 の水準まで
+#: 戻るかの比較対象になる。**潜在側 (L2 内部) のゲートは全て残す** — L2 は凍結
+#: されており、板の追加で 1 bit も動いてはならない (それ自体が回帰検定)。
+_S6_DROPPED_OBSERVATION_GATES = {
+    # S0/S1 の観測ゲート
+    "acf_r_lag1", "ljung_box", "kurtosis", "qq_r2", "acf_abs_r",
+    "kurtosis_daily", "kurtosis_decreasing", "zeta_q_nonlinear",
+    "absr_acf_powerlaw", "absr_acf_lag1", "gph_d_observed", "gph_d",
+    # 分単位 VR: ZI 板は 1/δ (94 分) 以下で subdiffusive (実測 VR(64min)=0.19、
+    # Smith et al. の既知の物理)。「長スケールで拡散的」は日次 VR ゲートが判定。
+    "variance_ratio",
+    # S3 の観測・多シード観測ゲート
+    "hill_alpha", "hill_increasing", "skewness_daily", "jv_share",
+    "leverage_corr", "leverage_shape",
+    "inv_absr_powerlaw_r2",
+    # S4 の観測 (季節性は L2 側にしか無い — ZI ミッドは φ を持たない)
+    "seasonality_present", "deseason_flatness_true", "deseason_spectral_true",
+    "phi_estimation_accuracy", "deseason_flatness_est", "seasonality_bias_gph",
+    "gph_d_intraday_deseason", "overnight_share", "overnight_kurtosis",
+    "overnight_vol_link", "overnight_no_lookahead",
+    # ★視野の違いによる降格 (観測ではなく規模の問題): S6 の検証規模は 500 日
+    # (指示書 §4 — 板統計は速く収束する)。5000 日で較正された帯はそのままでは
+    # 使えない: cross_seed_corr は確率成分の経路分散が未発達で系統的に上振れし
+    # (500 日実測 ~0.25-0.34)、logvol_marginal は chi が 8 周期しか入らず周辺が
+    # 小刻みになる。どちらも **L2 は凍結済みで S5 の 5000 日本番が判定済み** —
+    # S6 での保証は inv_l2_frozen (ビット単位直接照合) が担う。
+    "cross_seed_corr", "logvol_marginal",
+}
+
+_S6_INHERITED_GATES: tuple[Gate, ...] = tuple(
+    g for g in S5_GATES if g.name not in _S6_DROPPED_OBSERVATION_GATES
+)
+
+_S6_NEW_GATES: tuple[Gate, ...] = (
+    # --- エンジン正当性 (critical) ---
+    Gate(
+        name="invariant_no_cross",
+        metric_path="book.engine_invariants",
+        check=_book_bool("no_cross"),
+        threshold="best_bid < best_ask の違反 0 件",
+        description="毎イベントの軽量チェック。クロスした板は全下流を汚染する。",
+    ),
+    Gate(
+        name="invariant_order_conservation",
+        metric_path="book.engine_invariants",
+        check=_book_bool("order_conservation"),
+        threshold="発注 = 板上 + 取消 + 受動約定 + 入口約定 (件数)",
+        description="注文の保存則 (台帳照合)。",
+    ),
+    Gate(
+        name="invariant_volume_conservation",
+        metric_path="book.engine_invariants",
+        check=_book_bool("volume_conservation"),
+        threshold="攻撃側の約定量合計 = 受動側の約定量合計 (別経路で集計)",
+        description=(
+            "数量保存。★「攻撃側の買い量 = 売り量」と読むのは誤り (どちらが攻撃"
+            "するかは確率的) — 初版で実際に間違え、正しい形に直した。"
+        ),
+    ),
+    Gate(
+        name="invariant_priority",
+        metric_path="book.engine_invariants",
+        check=lambda v: (
+            isinstance(v, Mapping)
+            and bool(v.get("fifo_priority"))
+            and bool(v.get("level_volume_consistency"))
+            and bool(v.get("monotone_time"))
+            and bool(v.get("lo_volume_ledger"))
+        ),
+        threshold="FIFO 順序・レベル総量・時刻単調・指値量台帳の違反 0 件",
+        description="時間優先 (同一レベル内で先着が先に約定) と内部整合の抜き取り検証。",
+    ),
+    Gate(
+        name="throughput",
+        metric_path="book.throughput.events_per_sec",
+        check=_gt(50_000.0),
+        threshold=">= 50,000 events/sec (JIT ウォーム後、指示書 §4)",
+        description=(
+            "S10 (5000 日 × 10 シード ≈ 5,000 万イベント/シード) の性能予算。"
+            "実測 ~10M ev/s (numba)。ウォームアップ無しの初回はコンパイル込みで"
+            " ~30k に見える — 測るものを間違えるとゲートの意味が変わる。"
+        ),
+    ),
+    # --- 板の性質 (critical) ---
+    Gate(
+        name="book_liveness",
+        metric_path="book.liveness.empty_side_time_fraction",
+        check=_lt(0.001),
+        threshold="片側枯渇の時間比率 < 0.1% (指示書 §8.2)",
+        description="頻発するなら α_LO/δ 比の不足 (デプス不足)。実測 0。",
+    ),
+    Gate(
+        name="spread_median",
+        metric_path="book.spread.median",
+        check=_between(2.0, 5.0),
+        threshold="スプレッド中央値 ∈ [2, 5] ティック (small tick レジーム §7)",
+        description=(
+            "μ900/α1500/δ5/place0.9 で中央値 3。レートの相転移に注意 — μ/α や δ を"
+            "上げすぎると板が崩壊する (μ/α=1, δ=10 でスプレッド 43,000 tick を実測)。"
+        ),
+    ),
+    Gate(
+        name="spread_positive",
+        metric_path="book.spread",
+        check=_spread_positive_check,
+        threshold="負・ゼロのスプレッドが 0 件",
+        description="非クロス不変条件の分布側からの確認。",
+    ),
+    Gate(
+        name="depth_front_depletion",
+        metric_path="book.depth.peak_is_best",
+        check=lambda v: v is False,
+        threshold="デプスのピークが best (Δ=0) でない",
+        description=(
+            "best は成行に最初に食われるので前方が消耗する。ピークが best にあるなら"
+            "約定の前方消耗が働いていない (μ_MO 不足か配置の過集中)。実測 lvl 3〜5。"
+        ),
+    ),
+    Gate(
+        name="size_distribution",
+        metric_path="book.order_size.max_abs_z",
+        check=_lt(4.0),
+        threshold="各ロット点の観測質量が仕様の期待値 ±4σ (二項 z)",
+        description=(
+            "指示書の字義は KS だが、離散原子 (ロット) があると KS の帰無分布が"
+            "成り立たない。各原子の二項 z + 裾の Hill α で置き換えた (README 記録)。"
+        ),
+    ),
+    Gate(
+        name="placement_distribution",
+        metric_path="book.placement",
+        check=_placement_within,
+        threshold="配置べき指数の推定が仕様 ±0.2 (対数ビン回帰、発注直前 best 基準)",
+        description="実測 μ̂ = 1.03 vs 仕様 0.9 (差 +0.13)。",
+    ),
+    # --- 後続段階のベースライン (critical) ---
+    Gate(
+        name="interevent_exponential",
+        metric_path="book.interevent",
+        check=_interevent_check,
+        threshold="到着間隔 CV² ∈ [0.9, 1.1] かつ Fano ∈ [0.85, 1.15] (S7 の比較基準)",
+        description=(
+            "定数レート到着 (MO+LO) で測る — 取消はレートが N(t) 比例なので混ぜない。"
+            "S7 の Hawkes はここを大きく 1 超えに動かす (それが自己励起の検定になる)。"
+        ),
+    ),
+    Gate(
+        name="sign_acf_zero",
+        metric_path="book.sign_acf_zero",
+        check=_sign_acf_zero_check,
+        threshold="攻撃注文符号の ACF が全ラグ (1..200) で 3.7/√N 以内 (S8 の比較基準)",
+        description=(
+            "ZI は iid 符号。★約定**行**のまま測ると複数レベルを掃いた成行が同符号の"
+            "行を連続させ +0.38 の偽相関が出る (実測) — 攻撃注文単位に集約して測る。"
+            "S8 のメタオーダー分割がここをべき則減衰に変える。"
+        ),
+    ),
+    Gate(
+        name="corr_mid_pstar",
+        metric_path="book.corr_mid_pstar",
+        check=_corr_zero_check,
+        threshold="|corr(Δmid, Δp*)| < 4 SE (κ=0 の確認、S10 の比較基準)",
+        description=(
+            "★リターンで測る。水準同士 (mid と p*) の標本相関は独立ランダムウォーク"
+            "でも 0 に集中しない (arcsine 分布) — S5 の教訓と同じ。p* は κ=0 でも"
+            "毎イベント参照して記録している (§10 の配線)。"
+        ),
+    ),
+    Gate(
+        name="mid_vr",
+        metric_path="book.mid_vr_daily.max_abs_z",
+        check=_lt(3.5),
+        threshold="ミッドの**日次** VR が全 q (2..64 日) で |z| < 3.5 (Lo-MacKinlay 漸近分散)",
+        description=(
+            "「長スケールで拡散的」の判定。分単位 (q<=64 分) は注文の平均寿命 1/δ"
+            " (94 分) より下で ZI 板が subdiffusive になる既知の物理 (実測 VR(64min)"
+            "=0.19) — そちらは記録で、クロスオーバーの上の日次で判定する。"
+            "★指示書の帯 0.9〜1.1 は日次 495 点では検定にならない (VR(64日) の SE が"
+            " ±0.64) — 標本誤差を織り込んだ z 判定に置き換えた (中間スケールの残存"
+            "回帰 VR(8日)=0.44 級なら z≈-4.3 で検出できる)。"
+        ),
+    ),
+    Gate(
+        name="inv_l2_frozen",
+        metric_path="runtime.baseline_invariance.checks.l2_frozen_bitwise.passed",
+        check=_is_true,
+        threshold="L2 の全ダイジェスト (拡散/MSM/ラフ/chi/log σ) が板 off 基準ランとビット単位一致",
+        description=(
+            "★L2 凍結の直接検証。同一シード・同一視野で板だけを外したランと比べる"
+            " — 板は l3.* ストリームしか消費しないので、1 bit の差も凍結違反。"
+            "5000 日基準との証人照合は視野が違うため置き換えた (500 日 vs 5000 日)。"
+        ),
+    ),
+)
+
+S6_GATES: tuple[Gate, ...] = _S6_INHERITED_GATES + _S6_NEW_GATES
+
+#: 段階ごとのゲート。S7 以降を実装するときはここに追加する。
 STAGE_GATES: dict[str, tuple[Gate, ...]] = {
     "S0": S0_GATES,
     "S1": S1_GATES,
@@ -1296,6 +1554,7 @@ STAGE_GATES: dict[str, tuple[Gate, ...]] = {
     "S3": S3_GATES,
     "S4": S4_GATES,
     "S5": S5_GATES,
+    "S6": S6_GATES,
 }
 
 

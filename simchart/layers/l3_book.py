@@ -14,13 +14,17 @@ S0 での実装
 
 from __future__ import annotations
 
+import time
+
+import numpy as np
+
 from ..config import Config
 from ..rng import RNGRegistry
-from ..types import BookSnapshot, EventLog, Observation, PriceProcess
+from ..types import BookSnapshot, EventLog, EventType, Observation, PriceProcess
 from .l0_calendar import ConstantCalendar
 from .l1_activity import ConstantActivity
 
-__all__ = ["PassThroughBook", "build_book_layer"]
+__all__ = ["PassThroughBook", "ZIBook", "build_book_layer"]
 
 
 class PassThroughBook:
@@ -62,19 +66,254 @@ class PassThroughBook:
         return observation, events, book
 
 
+class ZIBook:
+    """S6: zero-intelligence 板 (Smith et al. 2003 ベースライン、κ=0)。
+
+    観測価格は**板のミッド**になり、L2 の p* は κ=0 で切り離されている。
+    この段階の価格に ①③④⑧⑯⑱ は現れない — それが正しい状態 (指示書 §0)。
+    p* は各イベントで参照して記録だけする (§10: S10 の結合が 1 行の変更で済み、
+    補間参照の性能をここで実測でき、corr(Δmid, Δp*) ≈ 0 が結合判定のベースラインになる)。
+    """
+
+    name = "l3.zi_book"
+
+    def __init__(self, config: Config, rng: RNGRegistry, calendar: ConstantCalendar) -> None:
+        self._config = config
+        self._rng = rng
+        self._calendar = calendar
+        self.last_diagnostics: dict = {}
+
+    # ------------------------------------------------------------------
+    def _placement_tables(self) -> tuple[np.ndarray, np.ndarray]:
+        """配置べき則の累積表 (板内 Δ>=0) と in-spread 重み (d=1..cap)。
+
+        P(Δ) ∝ (Δ + Δ0)^-(1+μ)。**最大距離で打ち切る** (裾を切らないと遠方に
+        無駄な注文が溜まる — 指示書 §6.2)。in-spread 側は同じ式の距離 |Δ| を使い、
+        実際の許容幅 (spread-1 と cap の小さい方) はイベント時にカーネル側で絞る。
+        """
+        cfg = self._config
+        delta = np.arange(cfg.book_max_place_ticks + 1, dtype=np.float64)
+        w = (delta + cfg.book_place_offset) ** (-(1.0 + cfg.book_mu_place))
+        place_cum = np.cumsum(w)
+        d = np.arange(1, cfg.book_inspread_cap + 1, dtype=np.float64)
+        wneg = (d + cfg.book_place_offset) ** (-(1.0 + cfg.book_mu_place))
+        return place_cum, wneg
+
+    def observe(
+        self,
+        price: PriceProcess,
+        calendar: ConstantCalendar | None = None,
+        activity: ConstantActivity | None = None,
+    ) -> tuple[Observation, EventLog, BookSnapshot]:
+        from .book_engine import (
+            C_LOG_FULL,
+            C_ORDER_POOL_FULL,
+            C_WINDOW_OVERFLOW,
+            EV_BA,
+            EV_BB,
+            EV_DASK,
+            EV_DBID,
+            EV_EXEC,
+            EV_OID,
+            EV_PRICE,
+            EV_PSTAR,
+            EV_SIDE,
+            EV_SIZE,
+            EV_T,
+            EV_TYPE,
+            run_zi_book,
+        )
+
+        del activity
+        cfg = self._config
+        cal = calendar or self._calendar
+        session = cal.session_seconds()
+        step_sec = cal.step_seconds()
+
+        place_cum, wneg = self._placement_tables()
+        lot_probs = np.asarray(cfg.book_lot_probs, dtype=np.float64)
+        lot_cum = np.cumsum(lot_probs)
+        lot_vals = np.asarray(cfg.book_lot_values, dtype=np.float64)
+
+        p0_tick = cfg.book_window_half_ticks  # 窓の中心 = p0
+        # 容量見積: 到着 (MO+LO) + 取消 (定常 N ~ 2α/δ) + TRADE 行 + 余白。
+        n_res = 2.0 * cfg.book_alpha_lo / cfg.book_delta_cancel
+        rate_per_day = (
+            2.0 * (cfg.book_mu_mo + cfg.book_alpha_lo)
+            + cfg.book_delta_cancel * n_res
+            + 2.5 * cfg.book_mu_mo  # TRADE 行 (1 約定 = 平均 ~2 レベル強)
+        )
+        ev_capacity = int(cfg.n_days * rate_per_day * 1.5) + 100_000
+        max_orders = int(n_res * 20) + 50_000
+
+        # JIT ウォームアップ (コンパイル / キャッシュロードを計測から外す)。
+        # ★使い捨ての Generator を使う — レジストリのストリームを消費すると
+        # 決定論が壊れる。出力は捨てる。
+        _warm = [np.random.default_rng(i) for i in range(4)]
+        run_zi_book(
+            _warm[0], _warm[1], _warm[2], _warm[3],
+            0.2, float(session),
+            float(cfg.book_mu_mo), float(cfg.book_alpha_lo), float(cfg.book_delta_cancel),
+            place_cum, wneg, bool(cfg.book_allow_inspread),
+            float(cfg.book_size_round_weight), lot_cum, lot_vals,
+            float(cfg.book_size_pareto_alpha),
+            int(p0_tick), int(cfg.book_init_levels), float(cfg.book_init_size),
+            int(cfg.book_window_half_ticks),
+            price.log_p_star[:2].copy(), float(step_sec),
+            int(cfg.book_depth_ticks), float(cfg.book_snapshot_interval_sec),
+            int(cfg.book_snapshot_levels),
+            float(step_sec),
+            100_000, 100_000,
+            False, 50_000,
+        )
+
+        started = time.perf_counter()
+        ev, n_events, mid_grid, snap_t, snap_px, snap_sz, n_snaps, counters = run_zi_book(
+            self._rng.get("l3.order_type"),
+            self._rng.get("l3.order_size"),
+            self._rng.get("l3.order_price"),
+            self._rng.get("l3.cancel"),
+            float(cfg.n_days), float(session),
+            float(cfg.book_mu_mo), float(cfg.book_alpha_lo), float(cfg.book_delta_cancel),
+            place_cum, wneg, bool(cfg.book_allow_inspread),
+            float(cfg.book_size_round_weight), lot_cum, lot_vals,
+            float(cfg.book_size_pareto_alpha),
+            int(p0_tick), int(cfg.book_init_levels), float(cfg.book_init_size),
+            int(cfg.book_window_half_ticks),
+            price.log_p_star, float(step_sec),
+            int(cfg.book_depth_ticks), float(cfg.book_snapshot_interval_sec),
+            int(cfg.book_snapshot_levels),
+            float(step_sec),
+            int(max_orders), int(ev_capacity),
+            bool(cfg.book_debug_invariants), 50_000,
+        )
+        engine_runtime = time.perf_counter() - started
+
+        # 容量系の失敗は黙って続けない (結果が静かに欠損する)。
+        if counters[C_LOG_FULL] > 0 or counters[C_ORDER_POOL_FULL] > 0:
+            raise RuntimeError(
+                f"板エンジンの容量が不足しました (log_full={counters[C_LOG_FULL]:.0f},"
+                f" pool_full={counters[C_ORDER_POOL_FULL]:.0f})。容量見積を見直すこと。"
+            )
+        if counters[C_WINDOW_OVERFLOW] > 0:
+            raise RuntimeError(
+                "ZI ミッドが板の絶対ティック窓から逸脱しました。"
+                " book_window_half_ticks を広げるか期間を見直すこと。"
+            )
+
+        tick = cfg.tick_size
+        base_price = cfg.p0 - p0_tick * tick  # 絶対ティック → 価格
+
+        # --- Observation: グリッド上のミッド (対数価格) ---
+        mid_px = base_price + mid_grid * tick
+        t_grid = np.arange(mid_px.shape[0], dtype=np.float64) * step_sec
+        observation = Observation(
+            t=t_grid,
+            log_price=np.log(mid_px),
+            session_seconds=session,
+            step_seconds=step_sec,
+            source="l3.zi_book(mid)",
+        )
+
+        # --- EventLog ---
+        t_arr = ev[EV_T, :n_events].copy()
+        etype = ev[EV_TYPE, :n_events].astype(np.int8)
+        # エンジン: 0=LO,1=CX,2=MO,4=TRADE — EventType と同じ値に揃えてある。
+        side = ev[EV_SIDE, :n_events].astype(np.int8)
+        px_ticks = ev[EV_PRICE, :n_events]
+        px = np.where(px_ticks >= 0, base_price + px_ticks * tick, np.nan)
+        events = EventLog(
+            t=t_arr,
+            event_type=etype,
+            side=side,
+            price=px,
+            size=ev[EV_SIZE, :n_events].copy(),
+            order_id=ev[EV_OID, :n_events].astype(np.int64),
+            agent_id=np.full(n_events, -1, dtype=np.int64),
+            meta={
+                "exec_size": ev[EV_EXEC, :n_events].copy(),
+                "best_bid_tick": ev[EV_BB, :n_events].astype(np.int64),
+                "best_ask_tick": ev[EV_BA, :n_events].astype(np.int64),
+                "depth_bid": ev[EV_DBID, :n_events].copy(),
+                "depth_ask": ev[EV_DASK, :n_events].copy(),
+                "log_pstar": ev[EV_PSTAR, :n_events].copy(),
+                "tick_size": tick,
+                "base_price": base_price,
+            },
+        )
+
+        # --- BookSnapshot (top-K レベル、-1 = 空)。★n_snaps で必ず切る —
+        # 容量いっぱいの配列をそのまま渡すと末尾のゼロ行が「価格 = 窓下端」の
+        # 偽スナップショットとして混入する (実際にテストで検出した)。---
+        k = cfg.book_snapshot_levels
+        snap_px_v = snap_px[:n_snaps]
+        snap_sz_v = snap_sz[:n_snaps]
+        bid_px_t = snap_px_v[:, :k].astype(np.float64)
+        ask_px_t = snap_px_v[:, k:].astype(np.float64)
+        book = BookSnapshot(
+            t=snap_t[:n_snaps].copy(),
+            bid_px=np.where(bid_px_t >= 0, base_price + bid_px_t * tick, np.nan),
+            bid_sz=snap_sz_v[:, :k].copy(),
+            ask_px=np.where(ask_px_t >= 0, base_price + ask_px_t * tick, np.nan),
+            ask_sz=snap_sz_v[:, k:].copy(),
+            meta={"tick_size": tick, "levels": k},
+        )
+
+        # --- 攻撃注文単位に集約した約定系列 ---
+        # ★TRADE 行のまま符号 ACF を測ってはならない: 1 本の成行が複数レベルを
+        # 掃くと同符号の行が連続し、機械的な正の自己相関 (実測 +0.38) が出る。
+        # これは注文流の性質ではなく記録粒度の人工物。⑪ (符号 ACF) と propagator は
+        # **攻撃注文 1 本 = 1 観測** の系列で測る (同一攻撃注文の約定は同時刻なので
+        # 時刻の変化で束ねられる)。
+        tr_mask = etype == int(EventType.TRADE)
+        tr_t = t_arr[tr_mask]
+        if tr_t.size:
+            starts = np.flatnonzero(np.concatenate([[True], np.diff(tr_t) > 0]))
+            tr_sz = events.size[tr_mask]
+            tr_px = px[tr_mask]
+            agg_size = np.add.reduceat(tr_sz, starts)
+            events.meta["agg_trade_t"] = tr_t[starts]
+            events.meta["agg_trade_side"] = events.side[tr_mask][starts].astype(np.int8)
+            events.meta["agg_trade_size"] = agg_size
+            events.meta["agg_trade_log_vwap"] = np.log(
+                np.add.reduceat(tr_sz * tr_px, starts) / agg_size
+            )
+        else:
+            for key in ("agg_trade_t", "agg_trade_side", "agg_trade_size",
+                        "agg_trade_log_vwap"):
+                events.meta[key] = np.empty(0)
+
+        n_trades = int((etype == int(EventType.TRADE)).sum())
+        self.last_diagnostics = {
+            "n_events": int(n_events),
+            "n_trades": n_trades,
+            "engine_runtime_sec": engine_runtime,
+            "throughput_events_per_sec": (
+                n_events / engine_runtime if engine_runtime > 0 else None
+            ),
+            "counters": counters.copy(),
+            "p0_tick": int(p0_tick),
+            "base_price": base_price,
+            "ev_capacity": int(ev_capacity),
+            "max_orders": int(max_orders),
+        }
+        return observation, events, book
+
+
 def build_book_layer(
     config: Config,
     rng: RNGRegistry,
     calendar: ConstantCalendar,
     activity: ConstantActivity,
-) -> PassThroughBook:
-    if config.enable_book:
-        raise NotImplementedError("板層は S6 で simchart/layers/l3_book.py に実装します。")
+) -> PassThroughBook | ZIBook:
     if config.enable_metaorder:
         raise NotImplementedError("メタオーダー分割は S8 で実装します。")
     if config.enable_queue_reactive or config.enable_uncertainty_zones:
         raise NotImplementedError("queue-reactive 板 / uncertainty zones は S9 で実装します。")
     if config.kappa != 0.0:
         raise NotImplementedError("p* との結合 (kappa) は S10 で実装します。")
-    del rng, activity  # S0 の L3 は乱数も活動度も使わない
+    if config.enable_book:
+        del activity
+        return ZIBook(config, rng, calendar)
+    del rng, activity  # S0〜S5 の L3 は乱数も活動度も使わない
     return PassThroughBook(config, calendar)

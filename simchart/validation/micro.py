@@ -33,6 +33,14 @@ __all__ = [
     "impact_consistency",
     "sqrt_law_check",
     "branching_ratio_reestimate",
+    "spread_distribution",
+    "depth_profile",
+    "queue_length_distribution",
+    "order_size_check",
+    "placement_check",
+    "book_liveness",
+    "interevent_times",
+    "obi",
 ]
 
 _NO_FLOW = (
@@ -344,3 +352,264 @@ def branching_ratio_reestimate(
         out["target"] = float(target)
         out["difference"] = num(best["branching_ratio"] - float(target))
     return out
+
+
+# ---------------------------------------------------------------------------
+# S6: ZI 板の測定 (指示書 §12)
+# ---------------------------------------------------------------------------
+def _burned(t: np.ndarray, burn_in_sec: float) -> np.ndarray:
+    return np.asarray(t, dtype=np.float64) >= burn_in_sec
+
+
+def spread_distribution(
+    best_bid_tick: np.ndarray, best_ask_tick: np.ndarray, t: np.ndarray,
+    burn_in_sec: float = 0.0,
+) -> dict:
+    """スプレッド (ティック単位) の分布。イベント時点で測る。"""
+    bb = np.asarray(best_bid_tick)
+    ba = np.asarray(best_ask_tick)
+    mask = _burned(t, burn_in_sec) & (bb >= 0) & (ba >= 0)
+    if mask.sum() < 100:
+        return na(f"有効なイベントが足りません (n={int(mask.sum())})")
+    s = (ba[mask] - bb[mask]).astype(np.float64)
+    qs = np.percentile(s, [5, 25, 50, 75, 95, 99])
+    return ok(
+        num(float(np.median(s))),
+        median=num(float(np.median(s))),
+        mean=num(float(s.mean())),
+        p5=num(qs[0]), p25=num(qs[1]), p75=num(qs[3]), p95=num(qs[4]), p99=num(qs[5]),
+        n=int(s.size),
+        n_nonpositive=int((s <= 0).sum()),
+        min=num(float(s.min())),
+    )
+
+
+def depth_profile(book_snapshots, burn_in_sec: float = 0.0,
+                  tick_size: float | None = None) -> dict:
+    """best からの距離別の平均デプス (スナップショットのレベル順位ベース)。
+
+    ★「デプスのピークが best (Δ=0) でない」のが ZI 板の健全な形 (指示書 §13
+    depth_front_depletion): best は成行に最初に食われるので前方が消耗し、ピークは
+    数レベル奥に来る。ピークが best にあるなら約定による前方消耗が働いていない。
+    """
+    b = book_snapshots
+    if b.is_empty:
+        return na("スナップショットがありません")
+    mask = _burned(b.t, burn_in_sec)
+    if mask.sum() < 10:
+        return na("burn-in 後のスナップショットが足りません")
+    bid_sz = np.where(np.isnan(b.bid_px[mask]), np.nan, b.bid_sz[mask])
+    ask_sz = np.where(np.isnan(b.ask_px[mask]), np.nan, b.ask_sz[mask])
+    prof_bid = np.nanmean(bid_sz, axis=0)
+    prof_ask = np.nanmean(ask_sz, axis=0)
+    prof = 0.5 * (prof_bid + prof_ask)
+    peak = int(np.nanargmax(prof))
+    # レベル順位 → ティック距離 (中央値) も出す (small tick では順位 != 距離)。
+    tick_dist = None
+    if tick_size:
+        bb = b.bid_px[mask][:, 0]
+        d = (bb[:, None] - b.bid_px[mask]) / tick_size
+        tick_dist = [num(float(np.nanmedian(d[:, k]))) for k in range(d.shape[1])]
+    return ok(
+        float(peak),
+        peak_level=int(peak),  # 0 = best
+        peak_is_best=bool(peak == 0),
+        profile_bid=[num(float(x)) for x in prof_bid],
+        profile_ask=[num(float(x)) for x in prof_ask],
+        profile_mean=[num(float(x)) for x in prof],
+        median_tick_distance=tick_dist,
+        n_snapshots=int(mask.sum()),
+    )
+
+
+def queue_length_distribution(book_snapshots, burn_in_sec: float = 0.0) -> dict:
+    """best キュー長 (ロット) の分布。"""
+    b = book_snapshots
+    if b.is_empty:
+        return na("スナップショットがありません")
+    mask = _burned(b.t, burn_in_sec)
+    q = np.concatenate([b.bid_sz[mask][:, 0], b.ask_sz[mask][:, 0]])
+    q = q[np.isfinite(q) & (q > 0)]
+    if q.size < 100:
+        return na("有効なキュー観測が足りません")
+    return ok(
+        num(float(np.median(q))),
+        median=num(float(np.median(q))),
+        mean=num(float(q.mean())),
+        p95=num(float(np.percentile(q, 95))),
+        cv=num(float(q.std() / q.mean())),
+        n=int(q.size),
+    )
+
+
+def order_size_check(sizes: np.ndarray, lot_values, lot_probs, w_round: float,
+                     pareto_alpha: float) -> dict:
+    """サイズ分布の仕様適合 (指示書 §6.3)。
+
+    混合 (離散ロット + 切り上げ Pareto) なので素朴な KS は使えない (離散原子が
+    あると KS の帰無分布が成り立たない)。代わりに (a) 各ロット点の質量が仕様の
+    期待値どおりか (二項 z)、(b) 非ロット部の裾指数が Pareto α と整合するか、で見る。
+    """
+    s = np.asarray(sizes, dtype=np.float64)
+    s = s[s > 0]
+    if s.size < 1000:
+        return na(f"標本が足りません (n={s.size})")
+    n = s.size
+    lot_values = np.asarray(lot_values, dtype=np.float64)
+    lot_probs = np.asarray(lot_probs, dtype=np.float64)
+
+    def pareto_ceil_mass(v: float) -> float:
+        # ceil(Pareto(xm=1)) = v になる質量 = P(v-1 < X <= v) (v >= 2)。
+        if v <= 1.0:
+            return 0.0
+        lo = max(v - 1.0, 1.0)
+        return lo ** (-pareto_alpha) - v ** (-pareto_alpha)
+
+    rows = []
+    max_z = 0.0
+    for v, p in zip(lot_values, lot_probs):
+        expected = w_round * p + (1.0 - w_round) * pareto_ceil_mass(float(v))
+        observed = float((s == v).mean())
+        se = float(np.sqrt(expected * (1 - expected) / n))
+        z = (observed - expected) / se if se > 0 else 0.0
+        rows.append({"lot": num(v), "expected": num(expected),
+                     "observed": num(observed), "z": num(z)})
+        if abs(z) > max_z:
+            max_z = abs(z)
+    tail = s[~np.isin(s, lot_values)]
+    tail_alpha = None
+    if tail.size > 200:
+        t_sorted = np.sort(tail)[::-1]
+        k = max(int(0.5 * t_sorted.size), 50)
+        top = t_sorted[:k]
+        denom = float(np.mean(np.log(top / top[-1] + 1e-300)))
+        tail_alpha = 1.0 / denom if denom > 0 else None
+    return ok(
+        num(max_z),
+        max_abs_z=num(max_z),
+        table=rows,
+        tail_alpha=num(tail_alpha) if tail_alpha else None,
+        spec_alpha=num(pareto_alpha),
+        n=int(n),
+    )
+
+
+def placement_check(
+    lo_price_tick: np.ndarray, lo_side: np.ndarray,
+    prev_best_bid_tick: np.ndarray, prev_best_ask_tick: np.ndarray,
+    mu_place_spec: float, place_offset: float, max_place: int,
+) -> dict:
+    """配置距離分布の仕様適合: べき指数の推定が仕様 ±0.2 (指示書 §13)。
+
+    Δ = 発注**直前**の同サイド best からの板内距離。イベントログの best は
+    イベント後の値なので、呼び出し側は前イベントの best を渡すこと (improvement は
+    自分が best を書き換えるため)。推定は板内配置 (Δ >= 1) の対数ビン回帰:
+    log P(Δ) = 定数 − (1+μ) log(Δ+Δ0)。
+    """
+    side = np.asarray(lo_side)
+    px = np.asarray(lo_price_tick, dtype=np.float64)
+    bb = np.asarray(prev_best_bid_tick, dtype=np.float64)
+    ba = np.asarray(prev_best_ask_tick, dtype=np.float64)
+    delta = np.where(side > 0, bb - px, px - ba)
+    delta = delta[np.isfinite(delta)]
+    pos = delta[(delta >= 1) & (delta <= max_place)]
+    if pos.size < 1000:
+        return na(f"板内配置の標本が足りません (n={pos.size})")
+    edges = np.unique(np.round(np.geomspace(1, max_place / 2, 18)).astype(int))
+    counts, _ = np.histogram(pos, bins=np.append(edges, edges[-1] * 2))
+    widths = np.diff(np.append(edges, edges[-1] * 2)).astype(float)
+    centers = edges.astype(float)
+    dens = counts / widths / pos.size
+    m = (counts > 20) & (dens > 0)
+    if m.sum() < 5:
+        return na("回帰に使えるビンが足りません")
+    slope, intercept = np.polyfit(np.log(centers[m] + place_offset), np.log(dens[m]), 1)
+    mu_hat = -slope - 1.0
+    resid = np.log(dens[m]) - (slope * np.log(centers[m] + place_offset) + intercept)
+    ss = float(((np.log(dens[m]) - np.log(dens[m]).mean()) ** 2).sum())
+    r2 = 1.0 - float((resid**2).sum()) / ss if ss > 0 else float("nan")
+    return ok(
+        num(mu_hat),
+        mu_estimated=num(mu_hat),
+        mu_spec=num(mu_place_spec),
+        difference=num(mu_hat - mu_place_spec),
+        fit_r2=num(r2),
+        frac_inspread=num(float((delta < 0).mean())),
+        frac_at_best=num(float((delta == 0).mean())),
+        n_interior=int(pos.size),
+    )
+
+
+def book_liveness(empty_time_sec: float, horizon_sec: float,
+                  n_reject_events: float, reject_vol: float) -> dict:
+    """片側枯渇の頻度 (指示書 §8.2 — 時間比率 < 0.1% がゲート)。"""
+    frac = empty_time_sec / horizon_sec if horizon_sec > 0 else float("nan")
+    return ok(
+        num(frac),
+        empty_side_time_fraction=num(frac),
+        empty_side_time_sec=num(empty_time_sec),
+        mo_reject_events=num(n_reject_events),
+        mo_reject_volume=num(reject_vol),
+    )
+
+
+def interevent_times(t: np.ndarray, burn_in_sec: float = 0.0,
+                     window_sec: float = 1800.0) -> dict:
+    """到着間隔の指数性 (S7 の比較基準 — 指示書 §13)。
+
+    2 つの独立な検査を返す:
+    - CV² = Var(Δt)/E[Δt]²。指数分布なら 1
+    - 窓あたり件数の過分散指数 (Fano factor) Var(N)/E[N]。Poisson なら 1
+
+    S7 で Hawkes を入れるとどちらも 1 を大きく超える (クラスタリング) ので、
+    ここで ≈1 を記録しておくことが「自己励起が入った」ことの検定の対照になる。
+    """
+    tt = np.asarray(t, dtype=np.float64)
+    tt = tt[tt >= burn_in_sec]
+    if tt.size < 1000:
+        return na(f"イベントが足りません (n={tt.size})")
+    dt = np.diff(tt)
+    dt = dt[dt > 0]
+    cv2 = float(dt.var() / dt.mean() ** 2)
+    n_windows = int((tt[-1] - tt[0]) / window_sec)
+    fano = None
+    if n_windows >= 30:
+        counts, _ = np.histogram(tt, bins=n_windows)
+        fano = float(counts.var(ddof=1) / counts.mean())
+    return ok(
+        num(cv2),
+        cv2=num(cv2),
+        fano_factor=num(fano) if fano is not None else None,
+        window_sec=float(window_sec),
+        n=int(dt.size),
+        mean_interarrival_sec=num(float(dt.mean())),
+    )
+
+
+def obi(book_snapshots, levels: int = 5, burn_in_sec: float = 0.0) -> dict:
+    """板不均衡 OBI = (D_bid − D_ask)/(D_bid + D_ask) の分布 (S9 で本格化する量)。"""
+    b = book_snapshots
+    if b.is_empty:
+        return na("スナップショットがありません")
+    mask = _burned(b.t, burn_in_sec)
+    k = min(levels, b.n_levels)
+    db = np.nansum(
+        np.where(np.isnan(b.bid_px[mask][:, :k]), 0.0, b.bid_sz[mask][:, :k]), axis=1
+    )
+    da = np.nansum(
+        np.where(np.isnan(b.ask_px[mask][:, :k]), 0.0, b.ask_sz[mask][:, :k]), axis=1
+    )
+    tot = db + da
+    good = tot > 0
+    if good.sum() < 100:
+        return na("有効なスナップショットが足りません")
+    x = (db[good] - da[good]) / tot[good]
+    return ok(
+        num(float(np.abs(x).mean())),
+        mean=num(float(x.mean())),
+        sd=num(float(x.std())),
+        mean_abs=num(float(np.abs(x).mean())),
+        p95_abs=num(float(np.percentile(np.abs(x), 95))),
+        levels=int(k),
+        n=int(good.sum()),
+    )

@@ -196,18 +196,23 @@ def run_all(result: StageResult, config: Config | None = None) -> dict[str, Any]
     # **φ だけから (乱数も価格も使わず) 計算した予測 0.852 と一致した** ので、
     # マルチンゲール性の破れではなく推定量の重み付けの問題と確定している。
     # 脱季節化して測り直すと max|VR-1| は 0.151 → 0.016 (S3 の 0.021 と同水準)。
+    # ★S6 (κ=0 の板): 観測は ZI ミッドで φ の季節性を**持たない**。φ で割ると
+    # 存在しないパターンの逆数が乗り、逆向きの歪みを作ってしまう。脱季節化は
+    # 「観測が L2 由来」のときだけ (板有効かつ κ=0 なら生のまま測る)。
+    obs_carries_phi = phi_bars is not None and not (cfg.enable_book and cfg.kappa == 0.0)
     vr_series = (
         _deseasonalized_log_price(r_primary_2d, phi_bars)
-        if phi_bars is not None
+        if obs_carries_phi
         else primary_bars.log_price
     )
     metrics["scaling"] = {
         "variance_ratio": safe_call(scaling.variance_ratio, vr_series, v.vr_qs),
-        "variance_ratio_deseasonalized": phi_bars is not None,
+        "variance_ratio_deseasonalized": bool(obs_carries_phi),
         "variance_ratio_raw": (
             safe_call(scaling.variance_ratio, primary_bars.log_price, v.vr_qs)
-            if phi_bars is not None
-            else {"status": "not_applicable", "reason": "季節性なし (variance_ratio と同一)",
+            if obs_carries_phi
+            else {"status": "not_applicable",
+                  "reason": "観測が季節性を持たない (variance_ratio と同一)",
                   "value": None}
         ),
         "kurtosis_by_scale": safe_call(
@@ -454,6 +459,10 @@ def run_all(result: StageResult, config: Config | None = None) -> dict[str, Any]
     }
 
     # ------------------------------------------------------------------
+    # book: ZI 板 (S6)。エンジン正当性・板の性質・S7/S8/S10 のベースライン。
+    metrics["book"] = _book_metrics(result, cfg)
+
+    # ------------------------------------------------------------------
     # chaos: 決定論的カオス成分 chi_2 (S5)。
     metrics["chaos"] = _chaos_metrics(result, cfg, r_daily)
 
@@ -464,10 +473,21 @@ def run_all(result: StageResult, config: Config | None = None) -> dict[str, Any]
     metrics["seasonality"] = _seasonality_metrics(result, cfg, r_primary_2d, r_daily)
 
     # ------------------------------------------------------------------
-    trades = result.events.trades()
-    signs = trades.side.astype(np.float64) if not trades.is_empty else None
-    sizes = trades.size if not trades.is_empty else None
-    trade_log_price = result.meta.get("trade_log_price")
+    # S6+: 符号 ACF と propagator は**攻撃注文単位**の系列で測る。TRADE 行のままだと
+    # 複数レベルを掃いた成行が同符号の行を連続させ、機械的な正の自己相関 (+0.38 を
+    # 実測) が出る — 記録粒度の人工物であって注文流の性質ではない。
+    ev_meta = result.events.meta
+    if isinstance(ev_meta, dict) and "agg_trade_side" in ev_meta and np.asarray(
+        ev_meta["agg_trade_side"]
+    ).size:
+        signs = np.asarray(ev_meta["agg_trade_side"], dtype=np.float64)
+        sizes = np.asarray(ev_meta["agg_trade_size"], dtype=np.float64)
+        trade_log_price = np.asarray(ev_meta["agg_trade_log_vwap"], dtype=np.float64)
+    else:
+        trades = result.events.trades()
+        signs = trades.side.astype(np.float64) if not trades.is_empty else None
+        sizes = trades.size if not trades.is_empty else None
+        trade_log_price = result.meta.get("trade_log_price")
 
     sign_acf_result = safe_call(micro.sign_acf, signs, v.micro_max_lag, v.micro_fit_lag_range)
     propagator_result = safe_call(
@@ -542,6 +562,203 @@ def _deseasonalized_log_price(r_2d: np.ndarray, phi_bars: np.ndarray) -> np.ndar
     """
     d = seasonality.deseasonalize(r_2d, phi_bars)
     return np.concatenate([np.zeros((d.shape[0], 1)), np.cumsum(d, axis=1)], axis=1)
+
+
+def _book_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
+    """S6 の測定群。板が無効なら全枝 ``not_applicable``。
+
+    ★この段階の観測価格 (ZI ミッド) に L2 の性質は現れない (κ=0)。tails/memory 等の
+    既存の枝が測る値は「純マイクロ構造ベースライン」であり、S10 で結合したときに
+    L2 の水準まで戻るかの比較対象になる (指示書 §11)。
+    """
+    from . import engine as engine_val
+
+    if not cfg.enable_book:
+        reason = "enable_book=False"
+        return {k: na(reason) for k in (
+            "engine_invariants", "throughput", "spread", "depth", "queue",
+            "order_size", "placement", "liveness", "interevent", "obi",
+            "corr_mid_pstar", "trade_price", "mid_vs_trade_signature",
+        )}
+
+    l3 = result.meta.get("l3", {})
+    ev = result.events
+    meta = ev.meta if isinstance(ev.meta, dict) else {}
+    burn_sec = cfg.book_burn_in_days * result.observation.session_seconds
+    horizon = cfg.n_days * result.observation.session_seconds
+
+    out: dict[str, Any] = {
+        "engine_invariants": safe_call(engine_val.engine_invariants, l3, ev.t),
+        "throughput": safe_call(engine_val.throughput, l3),
+    }
+
+    bb = np.asarray(meta.get("best_bid_tick", np.empty(0)))
+    ba = np.asarray(meta.get("best_ask_tick", np.empty(0)))
+    out["spread"] = safe_call(micro.spread_distribution, bb, ba, ev.t, burn_sec)
+    out["depth"] = safe_call(
+        micro.depth_profile, result.book, burn_sec, cfg.tick_size
+    )
+    out["queue"] = safe_call(micro.queue_length_distribution, result.book, burn_sec)
+    out["obi"] = safe_call(micro.obi, result.book, 5, burn_sec)
+    out["liveness"] = safe_call(
+        engine_liveness_from_meta, l3, horizon
+    )
+
+    # 発注 (LO/MO) のサイズ仕様適合。burn-in 後のみ。
+    from ..types import EventType
+
+    is_order = (ev.event_type == int(EventType.LIMIT_ADD)) | (
+        ev.event_type == int(EventType.MARKET)
+    )
+    order_mask = is_order & (ev.t >= burn_sec)
+    out["order_size"] = safe_call(
+        micro.order_size_check, ev.size[order_mask],
+        cfg.book_lot_values, cfg.book_lot_probs,
+        cfg.book_size_round_weight, cfg.book_size_pareto_alpha,
+    )
+
+    # 配置分布: 発注直前の best を復元して渡す (自分の improvement の影響を除く)。
+    lo_mask = (ev.event_type == int(EventType.LIMIT_ADD)) & (ev.t >= burn_sec)
+    if bb.size:
+        bb_prev = np.concatenate([[np.nan], bb[:-1].astype(np.float64)])
+        ba_prev = np.concatenate([[np.nan], ba[:-1].astype(np.float64)])
+        base_price = float(meta.get("base_price", 0.0))
+        tick = float(meta.get("tick_size", cfg.tick_size))
+        lo_ticks = np.round((ev.price[lo_mask] - base_price) / tick)
+        out["placement"] = safe_call(
+            micro.placement_check, lo_ticks, ev.side[lo_mask],
+            bb_prev[lo_mask], ba_prev[lo_mask],
+            cfg.book_mu_place, cfg.book_place_offset, cfg.book_max_place_ticks,
+        )
+    else:
+        out["placement"] = na("best 系列がありません")
+
+    # 到着間隔 (S7 ベースライン): 定数レートの到着 (MO+LO) で測る。取消は
+    # レートが N(t) 比例なので Poisson でなく、混ぜると意味が濁る。
+    arr_mask = is_order & (ev.t >= burn_sec)
+    out["interevent"] = safe_call(micro.interevent_times, ev.t[arr_mask], 0.0)
+    out["interevent_all_types"] = safe_call(
+        micro.interevent_times, ev.t[ev.t >= burn_sec], 0.0
+    )
+
+    # 符号 ACF (S8 ベースライン): 攻撃注文単位の符号で全ラグを見る。
+    # ★閾値は 2/√N ではなく Bonferroni 補正の 3.7/√N (指示書の字義 2/√N は
+    # 200 ラグの最大値に対して iid でもほぼ確実に破れる — S0 の ±2σ、S3 の
+    # z_no_autocorr と同型の問題で、同じ解決を適用する)。
+    agg_side = meta.get("agg_trade_side")
+    if agg_side is not None and np.asarray(agg_side).size > 5000:
+        s_arr = np.asarray(agg_side, dtype=np.float64)
+        agg_t = np.asarray(meta.get("agg_trade_t"))
+        s_arr = s_arr[agg_t >= burn_sec]
+        d = s_arr - s_arr.mean()
+        denom = float(d @ d)
+        nlags = 200
+        max_abs = 0.0
+        argmax = 0
+        for k_ in range(1, nlags + 1):
+            r_ = abs(float(d[:-k_] @ d[k_:]) / denom)
+            if r_ > max_abs:
+                max_abs = r_
+                argmax = k_
+        out["sign_acf_zero"] = {
+            "status": "ok",
+            "value": max_abs * math.sqrt(s_arr.size),
+            "max_abs_acf": max_abs,
+            "max_abs_z": max_abs * math.sqrt(s_arr.size),
+            "at_lag": argmax,
+            "threshold_bonferroni": 3.7,
+            "n": int(s_arr.size),
+            "n_lags": nlags,
+        }
+    else:
+        out["sign_acf_zero"] = na("約定が足りません")
+
+    # κ=0 の確認 (S10 ベースライン): **リターンの相関**で測る。
+    # ★水準 (ミッドと p* そのもの) の相関を使ってはならない — 独立なランダム
+    # ウォーク同士の標本相関は 0 に集中しない (arcsine 分布) ため、コイン投げの
+    # ゲートになる (S5 の価格シード横断相関と同じ教訓)。
+    lp_star = meta.get("log_pstar")
+    if lp_star is not None and bb.size:
+        okm = (bb >= 0) & (ba >= 0) & (ev.t >= burn_sec)
+        mid_t = ev.t[okm]
+        mid_v = 0.5 * (bb[okm] + ba[okm]).astype(np.float64)
+        ps_v = np.asarray(lp_star)[okm]
+        # 1 分ごとに間引いてリターン化
+        stride = max(int(round(60.0 / max(float(np.median(np.diff(mid_t[:1000]))), 1e-9))), 1)
+        dm = np.diff(mid_v[::stride])
+        dp = np.diff(ps_v[::stride])
+        good = (dm != 0) | (dp != 0)
+        if good.sum() > 100:
+            c = float(np.corrcoef(dm[good], dp[good])[0, 1])
+            out["corr_mid_pstar"] = {
+                "status": "ok", "value": c, "corr_returns": c,
+                "se": 1.0 / math.sqrt(good.sum()), "n": int(good.sum()),
+                "abs_z": abs(c) * math.sqrt(good.sum()),
+            }
+        else:
+            out["corr_mid_pstar"] = na("リターン標本が足りません")
+    else:
+        out["corr_mid_pstar"] = na("p* の配線記録がありません")
+
+    # ミッドの分散比 — **日次スケール**で測る (S10 ベースライン)。
+    # ★分単位スケール (60s バー、q<=64 分) の VR は ZI 板では**強い平均回帰**を
+    # 示す (実測 VR(64min)=0.19)。これはバグではなく ZI の既知の物理: 板が
+    # バネとして働き、注文の平均寿命 1/δ (=0.2 日 ≈ 94 分) より短い時間層では
+    # subdiffusive になる (Smith et al. 2003)。「長スケールで拡散的」の判定は
+    # クロスオーバーより上の日次バー (q=2..64 日) で行い、分単位は記録する。
+    obs = result.observation
+    daily_bars = obs.to_bars(obs.session_seconds)
+    lp_daily = daily_bars.log_price_flat()
+    n_burn_days = int(cfg.book_burn_in_days)
+    out["mid_vr_daily"] = safe_call(
+        scaling.variance_ratio, lp_daily[n_burn_days:], (2, 4, 8, 16, 32, 64)
+    )
+
+    # 約定価格系列 (bid-ask bounce): ACF(1) < 0 と signature plot の非平坦 (soft)。
+    agg_px = meta.get("agg_trade_log_vwap")
+    if agg_px is not None and np.asarray(agg_px).size > 1000:
+        r_tr = np.diff(np.asarray(agg_px))
+        d = r_tr - r_tr.mean()
+        acf1 = float(d[:-1] @ d[1:] / (d @ d))
+        out["trade_price"] = {
+            "status": "ok", "value": acf1, "acf1": acf1,
+            "se": 1.0 / math.sqrt(r_tr.size), "n": int(r_tr.size),
+        }
+    else:
+        out["trade_price"] = na("約定が足りません")
+
+    # signature plot: 約定価格 (bounce で短スケール上振れ) vs ミッド (ほぼ平坦)。
+    # 既存の scaling.signature_plot は観測 (ミッド) に対して走る — ここでは
+    # 両者の対比のため約定側の簡易版 (1/5/30 分の実現分散比) を記録する。
+    if agg_px is not None and np.asarray(agg_px).size > 5000:
+        agg_t = np.asarray(meta.get("agg_trade_t"))
+        px_arr = np.asarray(agg_px)
+        rows = {}
+        for sec in (60.0, 300.0, 1800.0):
+            grid = np.arange(burn_sec, horizon, sec)
+            idx = np.searchsorted(agg_t, grid, side="right") - 1
+            valid = idx >= 0
+            series = px_arr[idx[valid]]
+            rr = np.diff(series)
+            rows[f"var_per_sec_{int(sec)}"] = float(rr.var() / sec) if rr.size > 100 else None
+        v1, v30 = rows.get("var_per_sec_60"), rows.get("var_per_sec_1800")
+        rows["ratio_60_over_1800"] = (v1 / v30) if (v1 and v30) else None
+        out["mid_vs_trade_signature"] = {"status": "ok", "value": rows.get("ratio_60_over_1800"), **rows}
+    else:
+        out["mid_vs_trade_signature"] = na("約定が足りません")
+
+    return out
+
+
+def engine_liveness_from_meta(l3_meta: dict, horizon_sec: float) -> dict[str, Any]:
+    """枯渇カウンタの読み出し (micro.book_liveness の配線)。"""
+    from ..layers.book_engine import C_EMPTY_SIDE_TIME, C_MO_REJECT_EVENTS, C_MO_REJECT_VOL
+
+    c = np.asarray(l3_meta.get("counters"))
+    return micro.book_liveness(
+        float(c[C_EMPTY_SIDE_TIME]), horizon_sec,
+        float(c[C_MO_REJECT_EVENTS]), float(c[C_MO_REJECT_VOL]),
+    )
 
 
 def _chaos_metrics(result: StageResult, cfg: Config, r_daily: np.ndarray) -> dict[str, Any]:
@@ -680,13 +897,18 @@ def _chaos_metrics(result: StageResult, cfg: Config, r_daily: np.ndarray) -> dic
     out["marginal_log_vol"] = safe_call(scaling.marginal_normality, lv_with)
 
     # --- 合成 log σ / 価格でのカオス検出 (記録のみ — 検出困難/不能が期待) ---
+    # ★時間の単位に注意: 合成系列の dt は「日」なので、Theiler 窓や先読み時間も
+    # 日で渡す。chi 単体の既定値 (系固有単位で 100/400) を流用すると窓が系列長を
+    # 超えて空集合になる (実際にそうなって IndexError を出した)。
     stride_days = float(t_days[1] - t_days[0])
     out["composite_tests"] = {
         "lyapunov": safe_call(
             chaos_val.lyapunov_rosenstein, lv_with, stride_days,
+            5, None, None, 40.0, (2.0, 20.0),
         ),
         "correlation_dimension": safe_call(
-            chaos_val.correlation_dimension, lv_with, stride_days
+            chaos_val.correlation_dimension, lv_with, stride_days,
+            (3, 4, 5, 6), None, 5.0,
         ),
         "zero_one": safe_call(
             chaos_val.test_0_1_chaos, lv_with, max(int(round(4.0 / stride_days)), 1)

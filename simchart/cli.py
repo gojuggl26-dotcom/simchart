@@ -153,6 +153,60 @@ def _dilution_correlations(r5, r4) -> dict[str, float]:
     }
 
 
+def _book_seed_stats(result, config: Config) -> dict[str, float | None]:
+    """S6 のシード別板統計 (multiseed の中央値記録用)。
+
+    ゲート判定は seed 42 の単一実行で行う (板統計は L2 統計より遥かに速く収束する
+    — 指示書 §4)。ここでの多シード値はシード間ばらつきの記録。
+    """
+    import math
+
+    import numpy as np
+
+    from .types import EventType
+
+    ev = result.events
+    meta = ev.meta if isinstance(ev.meta, dict) else {}
+    burn = config.book_burn_in_days * result.observation.session_seconds
+    out: dict[str, float | None] = {
+        "book_throughput": (result.meta.get("l3") or {}).get("throughput_events_per_sec"),
+    }
+    bb = np.asarray(meta.get("best_bid_tick", np.empty(0)))
+    ba = np.asarray(meta.get("best_ask_tick", np.empty(0)))
+    if bb.size:
+        m = (bb >= 0) & (ba >= 0) & (ev.t >= burn)
+        out["book_spread_median"] = float(np.median(ba[m] - bb[m])) if m.any() else None
+    sgn = np.asarray(meta.get("agg_trade_side", np.empty(0)), dtype=np.float64)
+    tt = np.asarray(meta.get("agg_trade_t", np.empty(0)))
+    if sgn.size > 5000:
+        s = sgn[tt >= burn]
+        d = s - s.mean()
+        denom = float(d @ d)
+        mx = max(
+            abs(float(d[:-k] @ d[k:]) / denom) for k in range(1, 201)
+        )
+        out["book_sign_acf_max_z"] = mx * math.sqrt(s.size)
+    is_order = (ev.event_type == int(EventType.LIMIT_ADD)) | (
+        ev.event_type == int(EventType.MARKET)
+    )
+    ta = ev.t[is_order & (ev.t >= burn)]
+    if ta.size > 1000:
+        dt = np.diff(ta)
+        dt = dt[dt > 0]
+        out["book_interevent_cv2"] = float(dt.var() / dt.mean() ** 2)
+    lp_star = meta.get("log_pstar")
+    if lp_star is not None and bb.size:
+        okm = (bb >= 0) & (ba >= 0) & (ev.t >= burn)
+        stride = 100
+        mid_v = 0.5 * (bb[okm] + ba[okm]).astype(np.float64)
+        dm = np.diff(mid_v[::stride])
+        dp = np.diff(np.asarray(lp_star)[okm][::stride])
+        good = (dm != 0) | (dp != 0)
+        if good.sum() > 100:
+            out["book_corr_mid_pstar"] = float(np.corrcoef(dm[good], dp[good])[0, 1])
+    return out
+
+
 def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
     """ノイズの大きい指標をシードを変えて測り、中央値・IQR を返す (S3 指示書 §8)。
 
@@ -208,7 +262,11 @@ def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
         per_seed["gph_d"].append(
             gph_estimator(np.abs(r_daily), config.validation.daily_gph_bandwidth_exponent).get("d")
         )
-        if config.enable_seasonality:
+        # S6 (κ=0 の板): 観測は ZI ミッドなので、観測ベースの季節性ペアと
+        # 希釈の相関ペア実行 (どちらも観測を測る) はスキップする。潜在側
+        # (SD 比・シード横断・chi ハッシュ) は板と無関係なので継続する。
+        obs_is_book = config.enable_book and config.kappa == 0.0
+        if config.enable_seasonality and not obs_is_book:
             raw, dsn = _intraday_gph_pair(result, seed_config)
             per_seed["gph_d_intraday_raw"].append(raw)
             per_seed["gph_d_intraday_deseason"].append(dsn)
@@ -223,18 +281,23 @@ def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
             per_seed["dilution_sd_ratio"].append(
                 float(np.sqrt(v_without / v_with)) if v_with > 0 else None
             )
-            # 相関ベース 3 計器: 同一シードで chi を厳密に除いた S4 相当ペアを回す。
-            # (log σ は引き算で厳密復元できるが、価格はジャンプ抽選が λ(σ) 経由で
-            # 変わるため再実行が必要。)
-            r4 = run_pipeline(seed_config.replace(enable_chaos_vol=False))
-            dil = _dilution_correlations(result, r4)
-            for key_ in ("rv", "iv", "logiv"):
-                per_seed[f"dilution_corr_{key_}"].append(dil[key_])
-            del r4
+            if not obs_is_book:
+                # 相関ベース 3 計器: 同一シードで chi を厳密に除いた S4 相当ペアを
+                # 回す (log σ は引き算で厳密復元できるが、価格はジャンプ抽選が
+                # λ(σ) 経由で変わるため再実行が必要)。
+                r4 = run_pipeline(seed_config.replace(enable_chaos_vol=False))
+                dil = _dilution_correlations(result, r4)
+                for key_ in ("rv", "iv", "logiv"):
+                    per_seed[f"dilution_corr_{key_}"].append(dil[key_])
+                del r4
             # シード横断相関 (5 分に間引いてメモリを 1/5 に)。
             cross_seed_paths.append(lv_with[::5].astype(np.float64))
             chi_hashes.append(result.meta["l2"]["chaos"]["sha256"])
             del lv_with, lv_without
+        if config.enable_book:
+            stats = _book_seed_stats(result, config)
+            for key_, val_ in stats.items():
+                per_seed.setdefault(key_, []).append(val_)
         del result, obs, step_r, rv_daily
         print(f"      シード {seed} ({i + 1}/{n_seeds}) 完了", flush=True)
 
@@ -398,7 +461,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         base_stage = BASELINE_STAGE[stage]
         print(f"[4b/6] {base_stage} からの不変性照合 (results/{base_stage}/metrics.json)")
         baseline_inv = baseline_invariance_check(
-            config, metrics, base_stage, results_root=args.results_dir
+            config, metrics, base_stage, results_root=args.results_dir, result=result
         )
         if baseline_inv.get("error"):
             print(f"      基準が読めません: {baseline_inv['error']}")

@@ -37,7 +37,7 @@ __all__ = [
 STAGES: tuple[str, ...] = tuple(f"S{i}" for i in range(14))
 
 #: 現時点で実装が存在する段階。段階を進めるたびにここへ追加する。
-IMPLEMENTED_STAGES: tuple[str, ...] = ("S0", "S1", "S2", "S3", "S4", "S5")
+IMPLEMENTED_STAGES: tuple[str, ...] = ("S0", "S1", "S2", "S3", "S4", "S5", "S6")
 
 #: 年率ボラを 1 ステップ分に落とすときの営業日数。
 TRADING_DAYS_PER_YEAR: int = 252
@@ -53,7 +53,6 @@ UNIMPLEMENTED_FLAGS: dict[str, tuple[str, str, str]] = {
     "enable_hawkes": ("S7", "多変量 Hawkes 注文流", "simchart/layers/l1_activity.py"),
     "enable_chaos_lambda": ("S12", "カオス的強度変調 chi_1", "simchart/layers/l1_activity.py"),
     "enable_chaos_branching": ("S12", "カオス的分岐比変調 chi_3", "simchart/layers/l1_activity.py"),
-    "enable_book": ("S6", "板 (リミットオーダーブック) 層", "simchart/layers/l3_book.py"),
     "enable_metaorder": ("S8", "メタオーダー分割と符号自己相関", "simchart/layers/l3_book.py"),
     "enable_queue_reactive": ("S9", "queue-reactive な板ダイナミクス", "simchart/layers/l3_book.py"),
     "enable_uncertainty_zones": ("S9", "uncertainty zones による価格離散化", "simchart/layers/l3_book.py"),
@@ -72,6 +71,9 @@ IMPLEMENTED_FLAGS: tuple[str, ...] = (
     "enable_seasonality",  # S4
     "enable_overnight",  # S4
     "enable_chaos_vol",  # S5
+    "enable_book",  # S6
+    "book_allow_inspread",  # S6 (板の従属 bool — improvement の許可)
+    "book_debug_invariants",  # S6 (板の従属 bool — 毎イベント検証)
 )
 
 #: フラグ以外 (数値パラメータ) の未実装条件。
@@ -401,8 +403,57 @@ class Config:
     enable_chaos_lambda: bool = False  # S12 (chi_1)
     enable_chaos_branching: bool = False  # S12 (chi_3)
 
-    # --- L3 ---
+    # --- L3 / S6: ZI 板 (zero-intelligence、Smith et al. 2003 ベースライン) ---
+    # ★κ=0 で L2 と完全に切り離す。この段階の価格には ①③④⑧⑯⑱ は現れない —
+    # それが正しい状態 (指示書 §0)。L2 の性質が観測に現れるのは S10 の結合から。
     enable_book: bool = False  # S6
+    #: ティックサイズ (価格単位)。p0=100 で 0.01 = 1bp。**small tick レジーム**
+    #: (スプレッド 2〜5 ティック、板構造が観測可能)。large tick は板の別世界
+    #: (キュー長が全て) なので S9 で別 config として分岐する (指示書 §7)。
+    tick_size: float = 0.01
+    #: 成行注文の片側到着率 [件/日]。符号は 50/50 iid (S6)。
+    #: ★レートはスイープで確定した (2026-08-21): スプレッド中央値 3 tick・P95 8・
+    #: デプスピーク lvl 4・枯渇ゼロ・60 日安定。μ/α や δ を上げすぎると板が
+    #: **崩壊する** (μ/α=1, δ=10 でスプレッド 43,000 tick を実測 — 補充が枯渇に
+    #: 追いつかない相転移がある)。Smith の次元解析 (spread ∝ μ/α, depth ∝ α/δ) は
+    #: 出発点で、水準は実測で合わせた。
+    book_mu_mo: float = 900.0
+    #: 指値注文の片側到着率 [件/日]。
+    book_alpha_lo: float = 1500.0
+    #: **板上の各注文が独立に**取り消される率 [1/日]。
+    book_delta_cancel: float = 5.0
+    #: 配置べき則 P(Δ) ∝ (Δ+Δ0)^-(1+μ) の指数 (指示書 §6.2 の帯 [0.6, 1.5])。
+    book_mu_place: float = 0.9
+    book_place_offset: float = 3.0  # Δ0
+    #: 配置の最大距離 (打ち切り)。裾を切らないと遠方に無駄な注文が溜まる。
+    book_max_place_ticks: int = 200
+    #: スプレッド内 improvement (Δ<0) を許すか。小ティック板ではこれが無いと
+    #: スプレッドを狭める機構が存在せず発散する (成行が best を食う一方になる)。
+    book_allow_inspread: bool = True
+    #: improvement の最大深さ (実際は spread-1 で必ず打ち切られる)。
+    book_inspread_cap: int = 10
+    #: サイズ分布: w·ラウンドロット + (1-w)·Pareto (指示書 §6.3)。単位はロット。
+    book_size_round_weight: float = 0.7
+    book_size_pareto_alpha: float = 2.3
+    book_lot_values: tuple[float, ...] = (1.0, 2.0, 5.0, 10.0)
+    book_lot_probs: tuple[float, ...] = (0.45, 0.25, 0.20, 0.10)
+    #: 板スナップショットの間隔 (秒) と記録レベル数。
+    book_snapshot_interval_sec: float = 60.0
+    book_snapshot_levels: int = 10
+    #: イベントごとに記録する best±N ティックのデプス (指示書 §5.3)。
+    book_depth_ticks: int = 10
+    #: ウォームアップ (統計収集から除外する日数、指示書 §8.1)。
+    book_burn_in_days: float = 5.0
+    #: 初期化: best±init_levels の各レベルに init_size ロットの種注文を置く。
+    book_init_levels: int = 30
+    book_init_size: float = 20.0
+    #: 板の絶対ティック窓の半幅。ZI ミッドはランダムウォークするので、端に達したら
+    #: 黙って詰まらず明示的に失敗する。**窓は価格が正に留まる範囲に制限する**
+    #: (p0=100, tick=0.01 で ±8000 tick = ±$80。健全な ZI 板の 500 日ウォークの
+    #: SD ~数百 tick に対し十分で、板が崩壊した場合は窓逸脱として顕在化する)。
+    book_window_half_ticks: int = 8000
+    #: 毎イベントの完全検証 (テスト用。本番は 5 万イベントごとの抜き取り §9)。
+    book_debug_invariants: bool = False
     enable_metaorder: bool = False  # S8
     enable_queue_reactive: bool = False  # S9
     enable_uncertainty_zones: bool = False  # S9
@@ -496,6 +547,15 @@ class Config:
         "chaos_n_exponent", "chaos_dt", "chaos_ic", "chaos_burn_in_units",
         "chaos_days_per_unit", "vol_var_target_chaos", "chaos_normalization",
     )
+    _S6_BOOK_PARAMS = (
+        "tick_size", "book_mu_mo", "book_alpha_lo", "book_delta_cancel",
+        "book_mu_place", "book_place_offset", "book_max_place_ticks",
+        "book_allow_inspread", "book_inspread_cap", "book_size_round_weight",
+        "book_size_pareto_alpha", "book_lot_values", "book_lot_probs",
+        "book_snapshot_interval_sec", "book_snapshot_levels", "book_depth_ticks",
+        "book_burn_in_days", "book_init_levels", "book_init_size",
+        "book_window_half_ticks", "book_debug_invariants",
+    )
 
     def _check_s1_params(self) -> None:
         defaults = {f.name: f.default for f in dataclasses.fields(type(self))}
@@ -509,6 +569,7 @@ class Config:
             ("enable_seasonality", self._S4_SEASONALITY_PARAMS),
             ("enable_overnight", self._S4_OVERNIGHT_PARAMS),
             ("enable_chaos_vol", self._S5_CHAOS_PARAMS),
+            ("enable_book", self._S6_BOOK_PARAMS),
         ):
             if not getattr(self, flag):
                 changed = [n for n in params if getattr(self, n) != defaults[n]]
@@ -673,6 +734,39 @@ class Config:
                     f" 過渡が残ると初期の数百日に非定常な水準トレンドが乗ります"
                     f" (tau の 10 倍以上を要求)。"
                 )
+        if self.enable_book:
+            if self.tick_size <= 0:
+                raise ValueError("tick_size は正である必要があります")
+            if self.p0 / self.tick_size < 10 * self.book_max_place_ticks:
+                raise ValueError(
+                    "p0/tick_size が小さすぎます (配置範囲に対して価格が 0 に近すぎる)"
+                )
+            for name in ("book_mu_mo", "book_alpha_lo", "book_delta_cancel"):
+                if getattr(self, name) <= 0:
+                    raise ValueError(f"{name} は正である必要があります (0 は暗黙 no-op)")
+            if not (0.3 <= self.book_mu_place <= 3.0):
+                raise ValueError("book_mu_place は [0.3, 3.0] の範囲を想定しています")
+            if self.book_place_offset <= 0 or self.book_max_place_ticks < 10:
+                raise ValueError("配置分布のパラメータが不正です")
+            if len(self.book_lot_values) != len(self.book_lot_probs):
+                raise ValueError("book_lot_values と book_lot_probs の長さが一致しません")
+            if abs(sum(self.book_lot_probs) - 1.0) > 1e-9:
+                raise ValueError("book_lot_probs の合計が 1 ではありません")
+            if self.book_size_pareto_alpha <= 1.0:
+                raise ValueError(
+                    "book_size_pareto_alpha は 1 より大きい必要があります (平均の存在)"
+                )
+            if not (0.0 <= self.book_size_round_weight <= 1.0):
+                raise ValueError("book_size_round_weight は [0,1] の範囲です")
+            if self.book_snapshot_interval_sec <= 0:
+                raise ValueError("book_snapshot_interval_sec は正である必要があります")
+            if self.book_window_half_ticks < 4 * self.book_max_place_ticks:
+                raise ValueError("book_window_half_ticks が配置範囲に対して小さすぎます")
+            if self.book_window_half_ticks * self.tick_size >= self.p0:
+                raise ValueError(
+                    "book_window_half_ticks * tick_size が p0 以上です。"
+                    " 窓の下端が非正の価格になり、対数価格が定義できません。"
+                )
         if self.vol_var_budget_total <= 0:
             raise ValueError("vol_var_budget_total は正である必要があります")
         allocated = (
@@ -691,6 +785,17 @@ class Config:
     # ------------------------------------------------------------------
     # 導出量
     # ------------------------------------------------------------------
+    def without_book(self) -> "Config":
+        """板を外した同一設定 (L2 凍結検証の基準ラン用)。
+
+        ★``replace(enable_book=False)`` だけでは足りない: 板パラメータが既定値から
+        動いていると「フラグ off + 非既定パラメータ」の暗黙 no-op ガードに当たる。
+        板パラメータも既定値へ戻す (L2 には一切影響しない値なので比較は成立する)。
+        """
+        defaults = {f.name: f.default for f in dataclasses.fields(type(self))}
+        resets = {name: defaults[name] for name in self._S6_BOOK_PARAMS}
+        return self.replace(enable_book=False, **resets)
+
     @property
     def total_steps(self) -> int:
         """全期間のステップ数 (リターン本数)。時点数はこれに 1 を足したもの。"""
@@ -748,8 +853,30 @@ class Config:
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "Config":
+        # ★重複キーを明示エラーにする。yaml.safe_load は重複キーを黙って後勝ちに
+        # するため、コピー元の古い行が残っていると設定が静かに上書きされる
+        # (S6 で enable_book: true が 140 行下の false に食われる事故が実際に起きた)。
+        class _StrictLoader(yaml.SafeLoader):
+            pass
+
+        def _no_dup(loader, node, deep=False):
+            seen = set()
+            for key_node, _ in node.value:
+                key = loader.construct_object(key_node, deep=deep)
+                if key in seen:
+                    raise ValueError(
+                        f"{path}: キー {key!r} が重複しています (行 "
+                        f"{key_node.start_mark.line + 1})。YAML は黙って後勝ちに"
+                        f"するため、重複は設定の静かな上書きになる — 削除すること。"
+                    )
+                seen.add(key)
+            return yaml.SafeLoader.construct_mapping(loader, node, deep)
+
+        _StrictLoader.add_constructor(
+            yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _no_dup
+        )
         with open(path, "r", encoding="utf-8") as fh:
-            data = yaml.safe_load(fh) or {}
+            data = yaml.load(fh, Loader=_StrictLoader) or {}
         if not isinstance(data, Mapping):
             raise TypeError(f"{path} の内容が辞書ではありません")
         return cls.from_dict(data)

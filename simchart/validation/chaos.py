@@ -189,6 +189,12 @@ def correlation_dimension(
         iu = np.triu_indices(sample_idx.size, k=1)
         keep = np.abs(sample_idx[iu[0]] - sample_idx[iu[1]]) > the
         pool = sd[iu][keep]
+        if pool.size < 50:
+            # Theiler 窓が系列長に対して大きすぎる (単位の取り違え等)。
+            return na(
+                f"Theiler 窓 ({the} サンプル) が系列長 ({n}) に対して大きすぎ、"
+                f"時間的に独立な点対が取れません"
+            )
         r_lo, r_hi = np.quantile(pool, [0.02, 0.20])
         radii = np.geomspace(max(r_lo, 1e-12), r_hi, n_radii)
 

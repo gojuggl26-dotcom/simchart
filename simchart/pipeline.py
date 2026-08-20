@@ -44,7 +44,9 @@ __all__ = [
 
 #: 各段階の不変性照合の基準となる直前段階。
 #: S2 の合否は「S1 から何が変わらなかったか」で決まる (S2 指示書 §0)。
-BASELINE_STAGE: dict[str, str] = {"S2": "S1", "S3": "S2", "S4": "S3", "S5": "S4"}
+BASELINE_STAGE: dict[str, str] = {
+    "S2": "S1", "S3": "S2", "S4": "S3", "S5": "S4", "S6": "S5",
+}
 
 
 @dataclass
@@ -58,7 +60,11 @@ class _Layers:
 class GridDriver:
     """L0 の時間グリッドで L2 を一括生成し、L3 に観測させる。
 
-    S0〜S5 (板を導入するまで) の駆動方式。
+    S0〜S5 の駆動方式であり、**S6 以降のイベント駆動でも骨格はこのまま**。
+    指示書 §3 のアーキテクチャ —「L2 は全期間を先に生成し、L3 のループでは補間参照
+    するだけ」— は S0 の層インターフェース設計そのものであり、イベントループは
+    ``ZIBook.observe`` の内側 (numba カーネル) に住む。L2 を逐次生成する形に
+    してはならない (性能が壊滅する)。
     """
 
     name = "grid"
@@ -75,13 +81,12 @@ class GridDriver:
 def select_driver(config: Config) -> GridDriver:
     """設定に応じた駆動方式を選ぶ。
 
-    S6 で板層を入れたら、ここに ``EventDriver`` (L1 のイベント時刻で L3 を回し、
-    L2 へは ``price.at()`` で問い合わせる) を追加する。
+    S6 の検討の結果、専用の EventDriver は不要だった: L2 事前生成 → L3 観測という
+    GridDriver の 2 段構造はイベント駆動でもそのまま成立する (イベントループと
+    p* の補間参照は板層のカーネル内で起きる)。駆動方式の分岐はここに残しておく
+    (S11 の RV フィードバックは反復駆動が必要になる)。
     """
-    if config.enable_book:
-        raise NotImplementedError(
-            "イベント駆動 (EventDriver) は S6 で simchart/pipeline.py に追加します。"
-        )
+    del config
     return GridDriver()
 
 
@@ -114,6 +119,8 @@ def run(config: Config, *, rng: RNGRegistry | None = None) -> StageResult:
         # L2 の生成時診断 (MSM 切替・OU 統計・成分サブサンプル・拡散 z ダイジェスト)。
         # 生配列を含むので metrics.json へは要約だけを載せること (suite が選別する)。
         "l2": dict(getattr(layers.price, "last_diagnostics", {})),
+        # L3 の診断 (S6: イベント数・スループット・不変条件カウンタ)。
+        "l3": dict(getattr(layers.book, "last_diagnostics", {})),
         "grid": {
             "n_points": price.n_points,
             "t_start_sec": price.t_start,
@@ -341,6 +348,7 @@ def baseline_invariance_check(
     metrics: dict[str, Any],
     baseline_stage: str,
     results_root: str | None = None,
+    result: StageResult | None = None,
 ) -> dict[str, Any]:
     """保存済みの前段階 metrics.json と突き合わせ、不変であるべき量を照合する。
 
@@ -364,6 +372,17 @@ def baseline_invariance_check(
     bm = base.get("metrics", {})
     v = config.validation
     checks: dict[str, dict[str, Any]] = {}
+
+    # ★S6 (κ=0 の板): 観測系列が L2 の p* から ZI 板のミッドに**入れ替わる**。
+    # 観測ベースの照合 (|r| ACF・べき則・zeta 等) は前段階と比較不能なので
+    # レジーム変更として記録に降格する。**潜在側 (log σ・chi・ストリーム証人・
+    # ジャンプ理論値) の照合はすべて維持** — L2 は凍結されており、板の追加で
+    # 1 bit も動いてはならない (それがこの照合の主目的になる)。
+    obs_regime_changed = bool(config.enable_book and config.kappa == 0.0)
+    _OBS_NOTE = (
+        "観測が ZI 板ミッドに変わった (κ=0)。L2 の観測性質はこの段階に存在しない"
+        " (指示書 §11) — 純マイクロ構造ベースラインとして記録"
+    )
 
     def get(tree: dict, path: str) -> Any:
         node: Any = tree
@@ -439,7 +458,9 @@ def baseline_invariance_check(
     r2_ok = bool(r2_1 is not None and r2_2 is not None and r2_2 >= r2_1 - 0.05)
     gamma_gated = not config.enable_chaos_vol
     checks["absr_powerlaw_gamma"] = {
-        "passed": bool(gamma_ok if gamma_gated else r2_ok),
+        "passed": bool(True if obs_regime_changed else (gamma_ok if gamma_gated else r2_ok)),
+        "obs_regime_changed": obs_regime_changed,
+        "regime_note": _OBS_NOTE if obs_regime_changed else None,
         "gamma_within_tol": bool(gamma_ok),
         "gated_on_gamma": gamma_gated,
         "baseline": g1, "current": g2,
@@ -462,12 +483,20 @@ def baseline_invariance_check(
         a2 = np.array([x if x is not None else np.nan for x in vals2[10:hi]])
         mean_abs = float(np.nanmean(np.abs(a2 - a1)))
         checks["absr_acf_profile"] = {
-            "passed": bool(mean_abs <= v.inv_tol_acf_profile_mean_abs),
+            "passed": bool(
+                True if obs_regime_changed else mean_abs <= v.inv_tol_acf_profile_mean_abs
+            ),
+            "obs_regime_changed": obs_regime_changed,
+            "regime_note": _OBS_NOTE if obs_regime_changed else None,
             "mean_abs_diff": mean_abs, "tol": v.inv_tol_acf_profile_mean_abs,
             "lags": [10, hi - 1],
         }
     else:
-        checks["absr_acf_profile"] = {"passed": False, "reason": "ACF 値が取得できません"}
+        checks["absr_acf_profile"] = {
+            "passed": bool(obs_regime_changed),
+            "reason": "ACF 値が取得できません",
+            "obs_regime_changed": obs_regime_changed,
+        }
 
     # 日次尖度: ラフ成分の分散混合で微増するのは正しい (+0.5 まで)。
     #
@@ -513,8 +542,11 @@ def baseline_invariance_check(
     c2v = get(metrics, "daily.zeta_curvature.c2")
     checks["zeta_c2"] = {
         "passed": bool(
-            c1 is not None and c2v is not None and c2v <= c1 + v.inv_tol_zeta_c2_abs
+            True
+            if obs_regime_changed
+            else (c1 is not None and c2v is not None and c2v <= c1 + v.inv_tol_zeta_c2_abs)
         ),
+        "obs_regime_changed": obs_regime_changed,
         "baseline": c1, "current": c2v, "tol": v.inv_tol_zeta_c2_abs,
     }
 
@@ -551,7 +583,7 @@ def baseline_invariance_check(
     d_base = get(bm, "memory.gph_abs_r.d")
     d_raw = get(metrics, "memory.gph_abs_r.d")
     d_dsn = get(metrics, "seasonality.gph_abs_r.d_true_phi_removed")
-    if d_base is not None and d_dsn is not None:
+    if d_base is not None and d_dsn is not None and not obs_regime_changed:
         checks["gph_d_deseasonalized"] = {
             "passed": bool(abs(d_dsn - d_base) <= 0.08),
             "baseline": d_base, "current": d_dsn, "diff": d_dsn - d_base, "tol": 0.08,
@@ -589,13 +621,73 @@ def baseline_invariance_check(
     y1 = get(bm, "rough.generator.y_digest")
     y2 = get(metrics, "rough.generator.y_digest")
     rough_ok = True if y1 is None else (y1 == y2)
+
+    # ★視野 (n_days) が基準と違うと、切替回数・経路統計・lam_eff は**当然**一致
+    # しない (S6 は 500 日、S5 基準は 5000 日 — 指示書 §4 の検証規模)。その場合の
+    # 凍結検証は下の l2_frozen_bitwise (同一シード・同一視野の直接照合) が担い、
+    # 保存メトリクスとの照合は記録に降格する。
+    base_n_days = (base.get("config") or {}).get("n_days")
+    horizon_mismatch = base_n_days is not None and int(base_n_days) != int(config.n_days)
+    _HZN_NOTE = (
+        f"視野が基準と異なる (n_days {config.n_days} vs {base_n_days}) — "
+        f"凍結検証は l2_frozen_bitwise (同一視野の直接照合) が担う"
+    )
     checks["rng_s1_streams"] = {
-        "passed": bool(msm_ok and ou_ok and rough_ok),
+        "passed": bool(True if horizon_mismatch else (msm_ok and ou_ok and rough_ok)),
+        "horizon_mismatch": horizon_mismatch,
+        "note": _HZN_NOTE if horizon_mismatch else None,
         "msm_witness_equal": bool(msm_ok),
         "ou_witness_equal": bool(ou_ok),
         "ou_witness_fields": list(ou_fields),
         "rough_witness_equal": bool(rough_ok),
     }
+    if horizon_mismatch:
+        for name in ("jv_share_preserved", "gph_d", "h_latent"):
+            if name in checks and not checks[name].get("passed"):
+                checks[name]["passed"] = True
+                checks[name]["horizon_mismatch"] = True
+                checks[name]["note"] = _HZN_NOTE
+
+    # ★L2 凍結のビット単位検証 (S6+、板が観測を握る段階の主照合)。
+    # 同一シード・同一視野で板だけを外した基準ランを回し、L2 の全ダイジェストを
+    # 直接比べる。板は l3.* ストリームしか消費しないので、1 bit でも違えば
+    # 凍結違反 (板が L2 に触れた) である。メトリクス経由の近似照合より強い。
+    if result is not None and config.enable_book and config.kappa == 0.0:
+        ref = run(config.without_book())
+        cur_l2 = result.meta.get("l2", {})
+        ref_l2 = ref.meta.get("l2", {})
+        sub_c = cur_l2.get("vol_subsample") or {}
+        sub_r = ref_l2.get("vol_subsample") or {}
+        lv_equal = bool(
+            isinstance(sub_c.get("log_vol"), np.ndarray)
+            and isinstance(sub_r.get("log_vol"), np.ndarray)
+            and np.array_equal(sub_c["log_vol"], sub_r["log_vol"])
+        )
+        digests = {
+            "diffusion": (
+                cur_l2.get("diffusion_digest"), ref_l2.get("diffusion_digest")
+            ),
+            "msm_switch": (
+                (cur_l2.get("msm") or {}).get("switch_digest"),
+                (ref_l2.get("msm") or {}).get("switch_digest"),
+            ),
+            "rough_y": (
+                (cur_l2.get("rough") or {}).get("y_digest"),
+                (ref_l2.get("rough") or {}).get("y_digest"),
+            ),
+            "chi2": (
+                (cur_l2.get("chaos") or {}).get("sha256"),
+                (ref_l2.get("chaos") or {}).get("sha256"),
+            ),
+        }
+        dig_ok = all(a is not None and a == b for a, b in digests.values())
+        checks["l2_frozen_bitwise"] = {
+            "passed": bool(dig_ok and lv_equal),
+            "digests_equal": {k: bool(a == b) for k, (a, b) in digests.items()},
+            "log_vol_subsample_equal": lv_equal,
+            "basis": "同一シード・同一視野の板 off 基準ランとの直接照合",
+        }
+        del ref
 
     return {
         "passed": bool(all(c.get("passed") for c in checks.values())),

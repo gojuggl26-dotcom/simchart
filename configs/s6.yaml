@@ -1,22 +1,48 @@
-# S5: 決定論的カオス成分 chi_2 (Mackey-Glass) を log σ の緩慢帯域に加算。
-# ★S5 完了で L2 は構造凍結される (以降 S6〜S13 は板の実装)。
+# S6: ZI 板 (zero-intelligence LOB、Smith et al. 2003) — κ=0 で L2 と完全に切断。
 #
-# 目的は統計的リアリズムではなく**ボラ・レジームの決定論的な再現性と制御** —
-# 同一のカオス初期値なら、シード (確率成分) が違っても同じレジーム構造が現れる。
-# 合否は「③④⑱① を劣化させずに、決定論的成分が意図した分だけ入っているか」。
+# ★この段階の価格には ①③④⑧⑯⑱ は現れない — **それが正しい状態** (指示書 §0)。
+# 観測価格は板のミッドになり、L2 の性質が観測に現れるのは S10 の結合から。
+# L2 (凍結済み) はそのまま生成され、p* は κ=0 でも毎イベント参照して記録する
+# (§10: S10 の結合が 1 行の変更で済み、corr(Δmid, Δp*)≈0 が結合判定の基準になる)。
 #
-# ★S4 以前のパラメータは 1 つも変更していない。差分は下の chi_2 ブロックだけで、
-# 分散予算は S1 から予約されていた枠 (0.050 = 最終予算 0.25 の 20%) を消化する:
-#   MSM 0.125 (50%) + 緩慢OU 0.050 (20%) + ラフ 0.025 (10%) + chi_2 0.050 (20%)
-# ★指示書 §5.2 の表の絶対値列 (0.100/0.040/0.020) はリポジトリの実設定と食い違い、
-# シェア列 (40+16+8+20=84%) は合計 100% にならない — 操作的指示「既存を触らない・
-# chi は 0.050・総計 0.250」は全て整合するのでそちらに従った (README に記録)。
+# ★検証規模は 500 日 × 10 シード (指示書 §4: 板統計は L2 統計より遥かに速く収束
+# する。5000 日が要るのは ③ の再検証が入る S10 から)。
+# ★L2 のパラメータは S5 から 1 つも変更していない (L2 は凍結済み)。
 
 # --- 実行 ---
 seed: 42
-n_days: 5000
+n_days: 500
 steps_per_day: 23400
-stage: S5
+stage: S6
+
+# --- L3 / S6: ZI 板 (★この段階の差分) ---
+# ティックレジーム: **small tick** (スプレッド 2〜5 tick、板構造が観測可能 §7)。
+# S4 で確定した市場 (米国株相当) と整合。large tick (スプレッド常時 1 tick、
+# キュー長が全て) は板の別世界なので S9 で別 config として分岐する。
+enable_book: true
+tick_size: 0.01             # p0=100 で 1 tick = 1bp
+# レートはスイープで確定 (2026-08-21): スプレッド中央値 3 tick・P95 8・デプス
+# ピーク lvl 4・枯渇ゼロ・60 日安定。★μ/α や δ を上げすぎると板が**崩壊**する
+# (μ/α=1, δ=10 でスプレッド 43,000 tick を実測 — 補充が枯渇に追いつかない相転移)。
+book_mu_mo: 900.0           # 成行の片側到着率 [件/日]。符号 50/50 iid (S6)
+book_alpha_lo: 1500.0       # 指値の片側到着率 [件/日]
+book_delta_cancel: 5.0      # 板上の各注文の独立取消率 [1/日]
+book_mu_place: 0.9          # 配置べき則 P(Δ)∝(Δ+Δ0)^-(1+μ) (指示書の帯 [0.6,1.5])
+book_place_offset: 3.0
+book_max_place_ticks: 200   # 打ち切り (裾を切らないと遠方に注文が溜まる §6.2)
+book_allow_inspread: true   # improvement が無いとスプレッドを狭める機構が存在しない
+book_inspread_cap: 10
+book_size_round_weight: 0.7 # w·ラウンドロット + (1-w)·Pareto (§6.3)
+book_size_pareto_alpha: 2.3
+book_lot_values: [1.0, 2.0, 5.0, 10.0]
+book_lot_probs: [0.45, 0.25, 0.20, 0.10]
+book_snapshot_interval_sec: 60.0
+book_snapshot_levels: 10
+book_depth_ticks: 10
+book_burn_in_days: 5.0      # 統計収集から除外 (§8.1)
+book_init_levels: 30
+book_init_size: 20.0
+book_window_half_ticks: 8000  # ±$80。ZI ミッドの 500 日ウォーク SD ~220 tick に十分
 
 # --- L0 カレンダー (S4 ★) ---
 enable_seasonality: true
@@ -133,12 +159,11 @@ enable_hawkes: false        # S7
 enable_chaos_lambda: false  # S12
 enable_chaos_branching: false  # S12
 
-# --- L3 板 ---
-enable_book: false             # S6
+# --- L3 板 (S6 の本体設定は冒頭の「ZI 板」ブロック — enable_book はそちらで true) ---
 enable_metaorder: false        # S8
 enable_queue_reactive: false   # S9
 enable_uncertainty_zones: false  # S9
-kappa: 0.0                     # S10
+kappa: 0.0                     # S10 (κ=0: L2 と切断。p* は参照・記録のみ)
 
 # --- L2 / S5: 決定論的カオス成分 chi_2 (★この段階の差分) ---
 # ★値は config.py の既定と**同一**にしてある (単一の情報源は config.py 側)。
