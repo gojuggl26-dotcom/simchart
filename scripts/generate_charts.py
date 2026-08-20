@@ -166,26 +166,43 @@ def generate(args: argparse.Namespace) -> int:
     # ★チャンク単位で逐次書き出す。3 時間の生成が中断されても完了分は残り、
     # 同じコマンドで再開すれば未完了のチャンクだけを作る (実際に 2 度中断された)。
     n_done_before = 0
+    n_made = 0
+    stopped_early = False
     for c_idx in range(n_chunks):
         lo = c_idx * chunk
         hi = min(lo + chunk, n)
-        daily_part = parts_dir / f"daily_{c_idx:04d}.parquet"
-        index_part = parts_dir / f"index_{c_idx:04d}.parquet"
-        if daily_part.exists() and index_part.exists():
+        if _chunk_is_complete(parts_dir, c_idx, lo, hi):
             n_done_before += hi - lo
             continue
         _generate_chunk(
             base, lo, hi, n_days, steps_per_day, intraday_bars_per_day,
             steps_per_intraday_bar, args, parts_dir, c_idx,
         )
+        n_made += hi - lo
         elapsed = time.perf_counter() - started
-        made = hi - n_done_before if hi > n_done_before else 0
-        eta = (elapsed / made * (n - hi)) if made > 0 else 0.0
+        eta = (elapsed / n_made * (n - hi)) if n_made > 0 else 0.0
         print(f"  チャンク {c_idx + 1}/{n_chunks} (〜{hi}/{n} 本)  "
               f"経過 {elapsed:.0f} 秒 / 残り約 {eta:.0f} 秒", flush=True)
+        if args.time_budget_sec and elapsed >= args.time_budget_sec:
+            stopped_early = True
+            print(f"  時間予算 {args.time_budget_sec} 秒に到達。ここで一旦終了します"
+                  f" (同じコマンドで続きから再開できます)", flush=True)
+            break
 
     if n_done_before:
         print(f"  (既存のチャンクから {n_done_before} 本を再利用)")
+
+    missing = [
+        k for k in range(n_chunks)
+        if not _chunk_is_complete(parts_dir, k, k * chunk, min((k + 1) * chunk, n))
+    ]
+    if missing:
+        done = n - sum(
+            min((k + 1) * chunk, n) - k * chunk for k in missing
+        )
+        print(f"\n未完了: {len(missing)} チャンク (完了 {done}/{n} 本)。"
+              f" 同じコマンドを再実行すると続きから作ります。")
+        return 0 if stopped_early or n_made else 1
 
     # ------------------------------------------------------------------
     # 全チャンクを結合して最終成果物にする。
@@ -204,6 +221,25 @@ def generate(args: argparse.Namespace) -> int:
         n, n_days, steps_per_day, step_seconds, seconds_per_year,
         base_seed, flags_on, started,
     )
+
+
+def _chunk_is_complete(parts_dir: Path, c_idx: int, lo: int, hi: int) -> bool:
+    """チャンク ``c_idx`` が期待どおりの範囲 ``[lo, hi)`` で完了しているか。
+
+    ★ファイルの存在だけで判定してはならない。``--n-charts`` を変えて再実行すると
+    最終チャンクの範囲が変わる (例: n=45 の chunk1 は [25,45)、n=1000 なら [25,50))
+    ので、存在だけを見ると**短いチャンクを完了扱いにしてチャートを取りこぼす**。
+    index に記録された chart_id が期待範囲と一致することまで確認する。
+    """
+    daily_part = parts_dir / f"daily_{c_idx:04d}.parquet"
+    index_part = parts_dir / f"index_{c_idx:04d}.parquet"
+    if not (daily_part.exists() and index_part.exists()):
+        return False
+    try:
+        ids = pd.read_parquet(index_part, columns=["chart_id"])["chart_id"].tolist()
+    except Exception:  # noqa: BLE001 - 壊れた part は作り直す
+        return False
+    return sorted(int(v) for v in ids) == list(range(lo, hi))
 
 
 def _generate_chunk(
@@ -884,6 +920,12 @@ def main() -> int:
         "--chunk-size", type=int, default=100,
         help="この本数ごとに parts/ へ逐次書き出す。中断しても完了分は残り、"
              "同じコマンドで再開すると未完了のチャンクだけを作る",
+    )
+    parser.add_argument(
+        "--time-budget-sec", type=float, default=0.0,
+        help="この秒数を超えたらチャンクの区切りで正常終了する (0=無制限)。"
+             "長時間のバックグラウンド実行が使えない環境で、同じコマンドを"
+             "繰り返し呼んで少しずつ進めるために使う",
     )
     parser.add_argument("--no-plots", action="store_true")
     parser.add_argument("--recompute", action="store_true",
