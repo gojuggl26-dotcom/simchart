@@ -26,8 +26,8 @@ import numpy as np
 
 from ..config import TRADING_DAYS_PER_YEAR, Config
 from ..types import StageResult
-from . import cross, ensemble, memory, micro, scaling, tails
-from .base import safe_call
+from . import cross, ensemble, memory, micro, scaling, seasonality, tails
+from .base import na, safe_call
 
 __all__ = ["run_all", "collect_errors", "flatten", "standardized_returns"]
 
@@ -404,6 +404,12 @@ def run_all(result: StageResult, config: Config | None = None) -> dict[str, Any]
     }
 
     # ------------------------------------------------------------------
+    # seasonality: 日内季節性とオーバーナイト (S4)。
+    # ★S4 の成果物は「季節性を入れたこと」ではなく「除去すれば S1〜S3 の構造が
+    # そのまま出てくることを示せる道具」なので、測るのは主に**除去の効き目**。
+    metrics["seasonality"] = _seasonality_metrics(result, cfg, r_primary_2d, r_daily)
+
+    # ------------------------------------------------------------------
     trades = result.events.trades()
     signs = trades.side.astype(np.float64) if not trades.is_empty else None
     sizes = trades.size if not trades.is_empty else None
@@ -448,6 +454,138 @@ def run_all(result: StageResult, config: Config | None = None) -> dict[str, Any]
     }
 
     return metrics
+
+
+def _seasonality_metrics(
+    result: StageResult, cfg: Config, r_primary_2d: np.ndarray, r_daily: np.ndarray
+) -> dict[str, Any]:
+    """S4 の測定群。季節性・ON が無効なら全枝が ``not_applicable`` になる。
+
+    カレンダーは ``config`` から組み直す。``StageResult.meta`` に生オブジェクトを
+    入れると JSON 化できなくなるので入れていない。``SeasonalCalendar`` は乱数を
+    消費しないため、組み直しても経路には一切影響しない。
+    """
+    from ..layers.l0_calendar import build_calendar
+    from ..rng import RNGRegistry
+
+    calendar = build_calendar(cfg, RNGRegistry(cfg.seed))
+    l2m = result.meta.get("l2", {})
+    obs = result.observation
+    steps_per_day = (
+        int(round(obs.session_seconds / obs.step_seconds)) if obs.step_seconds else None
+    )
+
+    out: dict[str, Any] = {
+        "enabled": {"seasonality": cfg.enable_seasonality, "overnight": cfg.enable_overnight},
+        "calendar": (
+            {"status": "ok", "value": None, **calendar.diagnostics()}
+            if cfg.enable_seasonality or cfg.enable_overnight
+            else na("季節性・ON とも無効です")
+        ),
+        "phi_normalization": safe_call(seasonality.phi_normalization_check, calendar),
+    }
+
+    # --- 脱季節化 (真値経路・推定経路) ---
+    if cfg.enable_seasonality:
+        out["deseasonalization"] = safe_call(
+            seasonality.deseasonalization_report,
+            r_primary_2d,
+            calendar,
+            3,
+            "median_abs",
+            steps_per_day,
+        )
+        # ★README が要求する数値: 季節性が長期記憶の推定を汚す量と、除去で戻る量。
+        out["gph_abs_r"] = safe_call(
+            _gph_deseasonalized, r_primary_2d, calendar, cfg, steps_per_day
+        )
+    else:
+        reason = "enable_seasonality=False"
+        out["deseasonalization"] = na(reason)
+        out["gph_abs_r"] = na(reason)
+
+    # --- オーバーナイト ---
+    gaps = result.price.overnight_gaps
+    if cfg.enable_overnight and gaps.size:
+        sigma_close = None
+        if steps_per_day:
+            n_days = int(round((obs.t[-1] - obs.t[0]) / obs.session_seconds))
+            close_idx = np.arange(1, n_days) * steps_per_day - 1
+            if close_idx.size == gaps.size:
+                sigma_close = np.exp(result.price.log_vol[close_idx])
+        out["overnight"] = safe_call(seasonality.overnight_stats, gaps, r_daily, sigma_close)
+        out["overnight_generator"] = (
+            {"status": "ok", "value": None, **l2m["overnight"]}
+            if l2m.get("overnight")
+            else na("生成側診断がありません")
+        )
+    else:
+        out["overnight"] = na("enable_overnight=False")
+        out["overnight_generator"] = na("enable_overnight=False")
+
+    # --- ジャンプ強度の S4 補正 (QV 予算が S3 から動いていないかの根拠) ---
+    jump = l2m.get("jump")
+    out["jump_intensity_scale"] = (
+        {
+            "status": "ok",
+            "value": jump.get("intensity_scale_s4"),
+            "cap_binding_fraction": jump.get("cap_binding_fraction"),
+            "jv_share_theory": jump.get("jv_share_theory"),
+            "lambda_effective_per_year": jump.get("lambda_effective_per_year"),
+        }
+        if jump
+        else na("enable_jump=False")
+    )
+    return out
+
+
+def _gph_deseasonalized(
+    r_2d: np.ndarray, calendar: Any, cfg: Config, steps_per_day: int | None
+) -> dict[str, Any]:
+    """|r| の GPH d を raw / 真値 φ 除去 / 推定 φ̂ 除去の 3 通りで測る。
+
+    季節性は ``|r|`` のスペクトルの高調波に力を足すので、GPH の回帰に低周波側から
+    漏れて ``d`` を**上方に**偏らせる。除去でどれだけ戻るかがここの主題。
+    差は GPH の漸近標準誤差 ``pi/sqrt(24m)`` と比べて読むこと — 単独の経路では
+    1 標準誤差前後の差は判定できない (複数シードで見る)。
+    """
+    bwe = cfg.validation.gph_bandwidth_exponent
+    truth = seasonality.true_phi_bars(calendar, r_2d.shape[1], steps_per_day=steps_per_day)
+    est = seasonality.estimate_phi(r_2d)
+
+    series: dict[str, np.ndarray] = {"raw": r_2d}
+    if truth["status"] == "ok":
+        series["true_phi_removed"] = seasonality.deseasonalize(
+            r_2d, np.asarray(truth["value"])
+        )
+    if est["status"] == "ok":
+        series["est_phi_removed"] = seasonality.deseasonalize(r_2d, np.asarray(est["value"]))
+
+    fits = {
+        name: memory.gph_estimator(np.abs(arr).ravel(), bandwidth_exponent=bwe)
+        for name, arr in series.items()
+    }
+    d_raw = fits["raw"].get("value")
+    d_true = fits.get("true_phi_removed", {}).get("value")
+    se = fits["raw"].get("se_asymptotic")
+    return {
+        "status": "ok",
+        "value": d_raw,
+        "d_raw": d_raw,
+        "d_true_phi_removed": d_true,
+        "d_est_phi_removed": fits.get("est_phi_removed", {}).get("value"),
+        # README 記載必須: 季節性による d の汚染量。
+        "d_raw_minus_true_phi": (
+            d_raw - d_true if d_raw is not None and d_true is not None else None
+        ),
+        "se_asymptotic": se,
+        "bias_in_se_units": (
+            (d_raw - d_true) / se
+            if d_raw is not None and d_true is not None and se
+            else None
+        ),
+        "fits": fits,
+    }
 
 
 def _nested(result: Mapping[str, Any], key: str, subkey: str) -> Any:

@@ -59,6 +59,8 @@ STREAM_NAMES: tuple[str, ...] = (
     "l2.leverage",  # bridge のセル集計直交成分 w (S3)
     "l2.leverage_slow",  # OU 駆動の直交成分 w2 (S3)
     "l2.leverage_mid",  # 中速レバレッジ成分の x0 と直交駆動 (S3)
+    # --- S4 で追加 ---
+    "l0.overnight",  # オーバーナイト・ギャップの拡散とジャンプ (S4)
 )
 
 #: 後段で必要になることが設計上ほぼ確実なストリーム。先に名前だけ確保しておく。
@@ -68,8 +70,7 @@ RESERVED_STREAM_NAMES: tuple[str, ...] = (
     # S10: PriceProcess.at() をブラウン橋で補間する方式に切り替える場合に使う。
     # S0 の既定は決定論的な線形補間なので未使用 (README §補間の設計判断 を参照)。
     "l2.bridge",
-    "l0.calendar",  # S4: 日次のカレンダー撹乱 (祝日・半日立会など)
-    "l0.overnight",  # S4: オーバーナイト・ギャップ
+    "l0.calendar",  # S4+: 日次のカレンダー撹乱 (祝日・半日立会など)
     "l1.chaos",  # S12: chi_1 / chi_3 の初期条件
     "l3.queue",  # S9: queue-reactive 板
     "l3.uncertainty",  # S9: uncertainty zones

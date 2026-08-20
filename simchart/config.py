@@ -37,7 +37,7 @@ __all__ = [
 STAGES: tuple[str, ...] = tuple(f"S{i}" for i in range(14))
 
 #: 現時点で実装が存在する段階。段階を進めるたびにここへ追加する。
-IMPLEMENTED_STAGES: tuple[str, ...] = ("S0", "S1", "S2", "S3")
+IMPLEMENTED_STAGES: tuple[str, ...] = ("S0", "S1", "S2", "S3", "S4")
 
 #: 年率ボラを 1 ステップ分に落とすときの営業日数。
 TRADING_DAYS_PER_YEAR: int = 252
@@ -50,8 +50,6 @@ SESSION_SECONDS: float = 6.5 * 3600.0
 # 未実装フラグの表: フラグ名 -> (実装段階, 内容, 追加先)
 # ---------------------------------------------------------------------------
 UNIMPLEMENTED_FLAGS: dict[str, tuple[str, str, str]] = {
-    "enable_seasonality": ("S4", "日内 U 字の活動度季節性 phi(t)", "simchart/layers/l0_calendar.py"),
-    "enable_overnight": ("S4", "オーバーナイト・ギャップと寄引", "simchart/layers/l0_calendar.py"),
     "enable_chaos_vol": ("S5", "カオス的ボラ成分 chi_2", "simchart/layers/l2_price.py"),
     "enable_hawkes": ("S7", "多変量 Hawkes 注文流", "simchart/layers/l1_activity.py"),
     "enable_chaos_lambda": ("S12", "カオス的強度変調 chi_1", "simchart/layers/l1_activity.py"),
@@ -72,6 +70,8 @@ IMPLEMENTED_FLAGS: tuple[str, ...] = (
     "enable_rough",  # S2
     "enable_jump",  # S3
     "enable_leverage",  # S3
+    "enable_seasonality",  # S4
+    "enable_overnight",  # S4
 )
 
 #: フラグ以外 (数値パラメータ) の未実装条件。
@@ -311,6 +311,53 @@ class Config:
     leverage_mid_half_life_days: float = 5.0
     leverage_mid_var: float = 0.0  # 0 = 無効。>0 で slow の内数を再配分
     leverage_rho_mid: float = -0.80
+
+    # --- L0 / S4: 日内季節性 (phi) ---
+    # 対象市場は**米国株相当の連続単一セッション** (6.5 時間) — 2026-08-20 指定。
+    # S0 以来 SESSION_SECONDS = 23400 なので、既存 S0〜S3 の基準値がそのまま使える。
+    # 昼休みのある市場 (W 字) を扱うときは session_type を "split" にして
+    # セグメント定義を足す (l0_calendar.py に拡張点を用意してある)。
+    session_type: str = "continuous"  # "continuous" | "split" | "24h"
+    #: ★線形項の傾き。**周期 Fourier だけでは phi(寄付) = phi(引け) が強制される**
+    #: (cos(2πk·0) = cos(2πk·1))。寄付と引けで水準を変えるには非周期の項が要る。
+    #: phi_sigma は負 (寄付 > 引け)、phi_lambda は正 (引けのクロージング・
+    #: オークションが最大) にする。
+    phi_sigma_slope: float = -0.2219
+    phi_lambda_slope: float = 0.9374
+    #: phi_sigma(u) の Fourier 係数。u はセッション内の相対位置 (0〜1)。
+    #: ★正規化は **(1/T)∫phi^2 du = 1** (phi ではなく phi^2 の平均)。加算されるのは
+    #: 分散なので、phi の平均を 1 にすると Jensen で日次積分分散が目標を超える。
+    #: 正規化定数は生成時に数値積分で求める (係数を直接いじらない)。
+    #: 既定は寄付最大 (1.484)・日中最小 (0.711)・引け中高 (1.269) の U 字。
+    #: 係数は「phi^2 の起伏比 = 4.5 (指示書 §4.4 の 3〜6 の中央)」を満たすよう
+    #: 数値的に逆算した値 (cos 1 次で U 字、cos 2 次で形を整え、slope で寄付>引け)。
+    phi_sigma_cos: tuple[float, ...] = (0.3439, 0.0777, 0.0)
+    phi_sigma_sin: tuple[float, ...] = (0.0, 0.0, 0.0)
+    #: phi_lambda(u) の Fourier 係数。**phi_sigma と同一にしないこと** — 実証的に
+    #: 出来高は引け (クロージング・オークション) が最大でボラより顕著。
+    #: 正規化は (1/T)∫phi_lambda du = 1 (強度なので一乗)。
+    #: ★S4 では**定義のみ**で消費されない (L1 がスタブのため)。S7 で使う。
+    #: 既定は寄付 1.406・日中最小 0.375・引け最大 2.344 (起伏比 7.0、§4.4 の
+    #: 4〜10 の中央)。ボラより起伏が大きく、最大が引けに来るのが出来高の特徴。
+    phi_lambda_cos: tuple[float, ...] = (0.7499, 0.1250, 0.0)
+    phi_lambda_sin: tuple[float, ...] = (0.0, 0.0, 0.0)
+
+    # --- L0 / S4: オーバーナイト ---
+    # ★物理時間比例 (17.5h/6.5h) では作らない。取引の無い時間帯は情報時計が
+    # ほとんど進まないので、**別レジームとして c_ON を直接指定**する (指示書 §6.3)。
+    #: クローズ・トゥ・クローズ分散に占める ON ギャップの寄与 (設計値)。
+    #: 手元に実データが無いため文献値 (米国株 15〜25%) の中央を設定値として使い、
+    #: ゲートは「実測が**この設定値**と一致するか」を見る (実装の検定であって
+    #: 市場の真値の主張ではない — 2026-08-20 オペレータ承認)。
+    overnight_variance_share: float = 0.20
+    #: ON ジャンプの発生確率 (日あたり)。ギャップは実質ジャンプ的なので日中
+    #: (実効 ~4.2/年 = 1.7%/日) より高い。
+    overnight_jump_prob: float = 0.06
+    #: ON 分散に占めるジャンプ寄与。**サイズ倍率ではなく分散シェアで指定する** —
+    #: 倍率で指定すると Kou の E[J²] が ON の分散予算と噛み合わず、実測シェアが
+    #: 目標の 3 倍になる (実際にそうなった)。S3 の Kou 形状 (p_up, eta 比) を保った
+    #: まま、このシェアを満たすよう eta のスケールを逆算する。
+    overnight_jump_variance_share: float = 0.35
     enable_jump: bool = False  # S3
     enable_leverage: bool = False  # S3
     enable_chaos_vol: bool = False  # S5  (chi_2)
@@ -402,6 +449,14 @@ class Config:
         "leverage_rho_rough", "leverage_rho_slow",
         "leverage_mid_half_life_days", "leverage_mid_var", "leverage_rho_mid",
     )
+    _S4_SEASONALITY_PARAMS = (
+        "session_type", "phi_sigma_cos", "phi_sigma_sin", "phi_sigma_slope",
+        "phi_lambda_cos", "phi_lambda_sin", "phi_lambda_slope",
+    )
+    _S4_OVERNIGHT_PARAMS = (
+        "overnight_variance_share", "overnight_jump_prob",
+        "overnight_jump_variance_share",
+    )
 
     def _check_s1_params(self) -> None:
         defaults = {f.name: f.default for f in dataclasses.fields(type(self))}
@@ -412,6 +467,8 @@ class Config:
             ("enable_rough", self._S2_ROUGH_PARAMS),
             ("enable_jump", self._S3_JUMP_PARAMS),
             ("enable_leverage", self._S3_LEVERAGE_PARAMS),
+            ("enable_seasonality", self._S4_SEASONALITY_PARAMS),
+            ("enable_overnight", self._S4_OVERNIGHT_PARAMS),
         ):
             if not getattr(self, flag):
                 changed = [n for n in params if getattr(self, n) != defaults[n]]
@@ -515,6 +572,32 @@ class Config:
                     f" vol_var_target_slow ({self.vol_var_target_slow}) の内数"
                     f" (0 <= mid < slow、0 は無効) である必要があります。中速成分は"
                     f" 緩慢 OU の予算からの再配分であり、総予算を増やしてはならない。"
+                )
+        if self.enable_seasonality:
+            if self.session_type not in ("continuous", "split", "24h"):
+                raise ValueError(
+                    f"session_type は continuous / split / 24h のいずれかです: {self.session_type!r}"
+                )
+            if self.session_type != "continuous":
+                raise NotImplementedError(
+                    f"session_type={self.session_type!r} は未実装です。S4 の対象市場は"
+                    f" 連続単一セッション (米国株相当) と決定されています。分割セッション"
+                    f" (W 字) を扱うには SESSION_SECONDS の変更が必要で、S0〜S3 の基準値を"
+                    f" すべて再生成することになります。"
+                )
+            if not any(abs(v) > 0 for v in self.phi_sigma_cos + self.phi_sigma_sin):
+                raise ValueError(
+                    "enable_seasonality=True なのに phi_sigma の係数が全て 0 です。"
+                    " 平坦な phi は暗黙 no-op になるため許可しません。"
+                )
+        if self.enable_overnight:
+            if not (0.0 < self.overnight_variance_share < 1.0):
+                raise ValueError("overnight_variance_share は (0, 1) の範囲である必要があります")
+            if not (0.0 <= self.overnight_jump_prob <= 1.0):
+                raise ValueError("overnight_jump_prob は [0, 1] の範囲である必要があります")
+            if not (0.0 <= self.overnight_jump_variance_share < 1.0):
+                raise ValueError(
+                    "overnight_jump_variance_share は [0, 1) の範囲である必要があります"
                 )
         if self.vol_var_budget_total <= 0:
             raise ValueError("vol_var_budget_total は正である必要があります")

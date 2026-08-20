@@ -1,4 +1,4 @@
-"""L0: カレンダー層 (S0 ではスタブ)。
+"""L0: カレンダー層。
 
 最終系での役割
 --------------
@@ -7,29 +7,124 @@
 長期記憶や多重フラクタルに見えてしまう)。したがって L0 は最下層に置き、
 上の層はすべて phi(t) で伸縮された時間の上で動く。
 
-S0 での実装
------------
-phi(t) は恒等的に 1、セッションは等長・等間隔、オーバーナイトなし。
+S4 での実装 (対象市場: 米国株相当の連続単一セッション 6.5 時間)
+--------------------------------------------------------------
+- ``phi_sigma(u)``: 観測ボラへの**乗法変調** ``sigma_obs = phi_sigma(u) sigma_stoch``。
+  確率ボラ成分 (MSM / 緩慢 OU / ラフ) 自体には季節性を掛けない — 掛けると
+  S2 のラフ成分の粗さ H が時間変形で歪み、S3 との比較も成立しなくなる。
+  決定論的な乗法変調に限定することで、**phi で割れば S3 の系列が完全に復元できる**
+  (これが S4 のゲートの検定力の源)。
+- ``phi_lambda(u)``: 出来高・注文流の強度変調。**S4 では定義のみで消費されない**
+  (L1 がスタブのため)。S7 で Hawkes のベースラインに組み込む。
+- オーバーナイト: 引けと翌日の寄付の間に単一のギャップ・リターンを挿入する。
+
+**正規化条件が phi_sigma と phi_lambda で違う** ことに注意:
+
+- ``phi_sigma``: ``(1/T) ∫ phi^2 du = 1`` — 加算されるのは分散なので**二乗**の平均。
+  phi の平均を 1 にすると Jensen の不等式で日次積分分散が目標を超える。
+- ``phi_lambda``: ``(1/T) ∫ phi du = 1`` — 強度なので一乗。
 """
 
 from __future__ import annotations
+
+import math
+from typing import Any, Sequence
 
 import numpy as np
 
 from ..config import SESSION_SECONDS, Config
 from ..rng import RNGRegistry
 
-__all__ = ["ConstantCalendar", "build_calendar", "SESSION_SECONDS"]
+__all__ = [
+    "ConstantCalendar",
+    "SeasonalCalendar",
+    "build_calendar",
+    "SESSION_SECONDS",
+    "fourier_profile",
+    "normalize_phi_sigma",
+    "normalize_phi_lambda",
+]
 
 
+# ---------------------------------------------------------------------------
+# phi の表現と正規化
+# ---------------------------------------------------------------------------
+def fourier_profile(
+    u: np.ndarray | float,
+    cos_coeffs: Sequence[float],
+    sin_coeffs: Sequence[float],
+    slope: float = 0.0,
+) -> np.ndarray:
+    """``1 + s(u-1/2) + sum_k (a_k cos 2pi k u + b_k sin 2pi k u)`` (正規化前)。
+
+    定数項を 1 に固定してあるので、係数は「平均からの相対的な起伏」を表す。
+
+    ★線形項 ``s(u-1/2)`` が必要な理由: **周期 Fourier だけでは
+    ``phi(0) = phi(1)``、つまり寄付と引けの水準が必ず等しくなる**
+    (cos(2πk·0) = cos(2πk·1) = 1、sin はどちらも 0)。実証的にはボラは寄付が最大で
+    引けはそれより低く、出来高は逆に引けが最大なので、非周期の項がないと
+    どちらの形も作れない。線形項は平均 0 なので定数項の解釈を壊さない。
+
+    正の値を保つため、結果は下限 0.05 でクリップする (係数を強くしすぎたときに
+    負の phi ができて sqrt や log が壊れるのを防ぐ)。
+    """
+    uu = np.asarray(u, dtype=np.float64)
+    out = np.ones_like(uu)
+    if slope:
+        out = out + slope * (uu - 0.5)
+    for k, (a, b) in enumerate(zip(cos_coeffs, sin_coeffs), start=1):
+        ang = 2.0 * math.pi * k * uu
+        if a:
+            out = out + a * np.cos(ang)
+        if b:
+            out = out + b * np.sin(ang)
+    return np.clip(out, 0.05, None)
+
+
+def _grid(n: int = 20001) -> np.ndarray:
+    return np.linspace(0.0, 1.0, n)
+
+
+def normalize_phi_sigma(
+    cos_coeffs: Sequence[float], sin_coeffs: Sequence[float], slope: float = 0.0
+) -> float:
+    """``(1/T) ∫ (c*g)^2 du = 1`` を満たす正規化定数 c を返す。
+
+    **二乗の平均を 1 にする** (指示書 §4.1)。加算されるのは分散なので二乗。
+    phi の平均を 1 にすると Jensen の不等式で日次積分分散が目標を超える。
+    数値積分は台形則で行い、生成側が診断に実測値を残す。
+    """
+    u = _grid()
+    g = fourier_profile(u, cos_coeffs, sin_coeffs, slope)
+    mean_sq = float(np.trapezoid(g**2, u))
+    if mean_sq <= 0:
+        raise ValueError("phi_sigma の二乗平均が 0 以下です")
+    return 1.0 / math.sqrt(mean_sq)
+
+
+def normalize_phi_lambda(
+    cos_coeffs: Sequence[float], sin_coeffs: Sequence[float], slope: float = 0.0
+) -> float:
+    """``(1/T) ∫ c*g du = 1`` を満たす正規化定数 c を返す (強度なので一乗)。"""
+    u = _grid()
+    g = fourier_profile(u, cos_coeffs, sin_coeffs, slope)
+    mean = float(np.trapezoid(g, u))
+    if mean <= 0:
+        raise ValueError("phi_lambda の平均が 0 以下です")
+    return 1.0 / mean
+
+
+# ---------------------------------------------------------------------------
 class ConstantCalendar:
-    """時間構造を持たないカレンダー。
+    """時間構造を持たないカレンダー (S0〜S3)。
 
     セッションを等間隔に分割した通し時刻グリッドを供給するだけで、季節性も
     ギャップも入れない。
     """
 
     name = "l0.constant"
+    has_seasonality = False
+    has_overnight = False
 
     def __init__(self, config: Config) -> None:
         self._config = config
@@ -52,8 +147,9 @@ class ConstantCalendar:
 
         ``t_i = i * step_seconds`` で ``i = 0 .. n_days * steps_per_day``。
         セッション境界の時刻は前日の最終点と翌日の始点が同一点として共有される
-        (S0 にはオーバーナイトが無いため)。S4 でギャップを入れるときは、ここで
-        境界に 2 点を置き、その間に不連続を作ることになる。
+        (オーバーナイトが無いため)。S4 でギャップを入れるときは、価格グリッドは
+        このまま (取引時間のみを刻む) にして、**日境界に単一のギャップ・リターンを
+        挿入する** — グリッドに物理時間 17.5 時間を足すのではない。
         """
         n_points = self._config.total_steps + 1
         # 本番設定では 1 配列 936MB。`arange(...) * step` は中間配列をもう 1 本
@@ -62,34 +158,129 @@ class ConstantCalendar:
         grid *= self._step_seconds
         return grid
 
-    def phi(self, t: float | np.ndarray) -> float | np.ndarray:
-        """活動度の季節係数。S0 では恒等的に 1。"""
+    def intraday_position(self, t: np.ndarray) -> np.ndarray:
+        """セッション内の相対位置 u ∈ [0, 1)。
+
+        ★セッションをまたいで連続にしない。後場の寄付は「日の中盤」ではなく
+        「セッションの開始」なので、u は必ずセッション内で 0 から始める
+        (分割セッションを入れるときにここが効く)。
+        """
+        return np.mod(t / self._session_seconds, 1.0)
+
+    def phi_sigma(self, t: float | np.ndarray) -> float | np.ndarray:
+        """ボラの季節係数。S0〜S3 では恒等的に 1。"""
         if np.isscalar(t):
             return 1.0
         return np.ones_like(np.asarray(t, dtype=np.float64))
 
-    def day_index(self, t: float | np.ndarray) -> np.ndarray:
-        """時刻が属するセッション番号。"""
-        arr = np.asarray(t, dtype=np.float64)
-        idx = np.floor(arr / self._session_seconds + 1e-9).astype(np.int64)
-        return np.clip(idx, 0, self._config.n_days - 1)
+    def phi_lambda(self, t: float | np.ndarray) -> float | np.ndarray:
+        """活動度の季節係数。S0〜S3 では恒等的に 1。"""
+        return self.phi_sigma(t)
+
+    # 後方互換 (S0〜S3 のコードとテストは phi() を使う)
+    phi = phi_sigma
 
     def overnight_gaps(self) -> np.ndarray:
-        """各セッション境界のギャップ (対数)。S0 では常にゼロ。"""
+        """各セッション境界のギャップ (対数)。S0〜S3 では常にゼロ。"""
         return np.zeros(max(self._config.n_days - 1, 0), dtype=np.float64)
+
+    def diagnostics(self) -> dict[str, Any]:
+        return {"seasonality": False, "overnight": False}
+
+
+class SeasonalCalendar(ConstantCalendar):
+    """S4: 日内季節性 phi(u) とオーバーナイトを持つカレンダー。
+
+    価格グリッドは ``ConstantCalendar`` と同一 (取引時間のみを刻む)。季節性は
+    L2 が観測ボラに乗法で掛け、オーバーナイトは L2 が日境界に単一リターンとして
+    挿入する。カレンダーはその**係数とギャップの供給元**に徹する。
+    """
+
+    name = "l0.seasonal"
+
+    def __init__(self, config: Config, rng: RNGRegistry) -> None:
+        super().__init__(config)
+        self._rng = rng
+        self.has_seasonality = config.enable_seasonality
+        self.has_overnight = config.enable_overnight
+
+        self._c_sigma = (
+            normalize_phi_sigma(
+                config.phi_sigma_cos, config.phi_sigma_sin, config.phi_sigma_slope
+            )
+            if config.enable_seasonality
+            else 1.0
+        )
+        self._c_lambda = (
+            normalize_phi_lambda(
+                config.phi_lambda_cos, config.phi_lambda_sin, config.phi_lambda_slope
+            )
+            if config.enable_seasonality
+            else 1.0
+        )
+
+    # ------------------------------------------------------------------
+    def phi_sigma_of_u(self, u: np.ndarray | float) -> np.ndarray:
+        """相対位置 u から phi_sigma を評価する (正規化済み)。"""
+        if not self.has_seasonality:
+            return np.ones_like(np.asarray(u, dtype=np.float64))
+        cfg = self._config
+        return self._c_sigma * fourier_profile(
+            u, cfg.phi_sigma_cos, cfg.phi_sigma_sin, cfg.phi_sigma_slope
+        )
+
+    def phi_lambda_of_u(self, u: np.ndarray | float) -> np.ndarray:
+        """相対位置 u から phi_lambda を評価する (正規化済み)。
+
+        **S4 では消費されない** — L1 がスタブのため。S7 で Hawkes のベースラインに
+        ``lambda(t) = phi_lambda(u_t) [mu Z_t + Hawkes 項]`` として組み込む。
+        季節性を除去せずに Hawkes を当てると、活発な時間帯へのイベント集中を
+        自己励起と誤認して**分岐比 n が系統的に過大推定**される
+        (Filimonov-Sornette)。その対策の供給元がこれ。
+        """
+        if not self.has_seasonality:
+            return np.ones_like(np.asarray(u, dtype=np.float64))
+        cfg = self._config
+        return self._c_lambda * fourier_profile(
+            u, cfg.phi_lambda_cos, cfg.phi_lambda_sin, cfg.phi_lambda_slope
+        )
+
+    def phi_sigma(self, t: float | np.ndarray) -> float | np.ndarray:
+        return self.phi_sigma_of_u(self.intraday_position(np.asarray(t, dtype=np.float64)))
+
+    def phi_lambda(self, t: float | np.ndarray) -> float | np.ndarray:
+        return self.phi_lambda_of_u(self.intraday_position(np.asarray(t, dtype=np.float64)))
+
+    phi = phi_sigma
+
+    def diagnostics(self) -> dict[str, Any]:
+        cfg = self._config
+        u = _grid()
+        phi2 = self.phi_sigma_of_u(u) ** 2
+        lam = self.phi_lambda_of_u(u)
+        return {
+            "seasonality": self.has_seasonality,
+            "overnight": self.has_overnight,
+            "session_type": cfg.session_type,
+            "phi_sigma_norm_const": self._c_sigma,
+            "phi_lambda_norm_const": self._c_lambda,
+            # 正規化の検証値 (ゲート phi_normalization が見る)。
+            "phi_sigma_sq_mean": float(np.trapezoid(phi2, u)),
+            "phi_lambda_mean": float(np.trapezoid(lam, u)),
+            "phi_sigma_sq_max_min_ratio": float(phi2.max() / phi2.min()),
+            "phi_lambda_max_min_ratio": float(lam.max() / lam.min()),
+            "phi_sigma_at_open": float(self.phi_sigma_of_u(0.0)),
+            "phi_sigma_at_mid": float(self.phi_sigma_of_u(0.5)),
+            "phi_sigma_at_close": float(self.phi_sigma_of_u(0.999)),
+            "phi_lambda_at_open": float(self.phi_lambda_of_u(0.0)),
+            "phi_lambda_at_close": float(self.phi_lambda_of_u(0.999)),
+            "overnight_variance_share_target": cfg.overnight_variance_share,
+        }
 
 
 def build_calendar(config: Config, rng: RNGRegistry) -> ConstantCalendar:
-    """設定に応じた L0 を組み立てる。
-
-    ``enable_seasonality`` / ``enable_overnight`` は S4 で実装する。Config 側で
-    既に弾いているが、層の側でも二重に止めておく (Config を経由しない直接構築で
-    静かにスタブが使われるのを防ぐため)。
-    """
+    """設定に応じた L0 を組み立てる。"""
     if config.enable_seasonality or config.enable_overnight:
-        raise NotImplementedError(
-            "日内季節性 phi(t) とオーバーナイト・ギャップは S4 で "
-            "simchart/layers/l0_calendar.py に実装します。"
-        )
-    del rng  # S0 の L0 は乱数を使わない (S4 で l0.calendar / l0.overnight を使う)
+        return SeasonalCalendar(config, rng)
+    del rng  # S0〜S3 の L0 は乱数を使わない
     return ConstantCalendar(config)

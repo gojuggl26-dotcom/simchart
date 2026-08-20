@@ -28,6 +28,9 @@ _BULKY_KEYS = frozenset(
         "values", "lags", "table", "profile", "per_q", "scales", "propagator",
         "probs", "theoretical_quantiles", "empirical_quantiles", "per_stream",
         "per_array", "traceback",
+        # S4: 配列を返す枝 (φ の形、スペクトル比、ラグ別 ACF)。
+        "ratios", "peak_acf", "excess_by_multiple", "u", "coefficients",
+        "raw_profile", "fits",
     }
 )
 
@@ -805,12 +808,280 @@ _S3_NEW_GATES: tuple[Gate, ...] = (
 
 S3_GATES: tuple[Gate, ...] = _S3_INHERITED_GATES + _S3_NEW_GATES
 
-#: 段階ごとのゲート。S4 以降を実装するときはここに追加する。
+
+# ---------------------------------------------------------------------------
+# S4 のゲート
+# ---------------------------------------------------------------------------
+def _phi_norm_check(value: Any) -> bool:
+    """φ_σ は二乗平均 1、φ_λ は一乗平均 1 (規約を取り違えていないか)。"""
+    if not isinstance(value, Mapping):
+        return False
+    a = value.get("phi_sigma_sq_mean_error")
+    b = value.get("phi_lambda_mean_error")
+    if a is None or b is None:
+        return False
+    return float(a) < 1e-3 and float(b) < 1e-3
+
+
+def _phi_shape_check(value: Any) -> bool:
+    """日内の起伏比と形状 (§4.3-4.4)。
+
+    - φ_σ² の最大/最小 ∈ [3, 6]、φ_λ の最大/最小 ∈ [4, 10]
+    - ボラは寄付が最大で引けはそれより低い / 出来高は引けが最大
+    - どちらも最小はセッション中盤 (端が最小なら U 字になっていない)
+    """
+    if not isinstance(value, Mapping):
+        return False
+    try:
+        rs = float(value["phi_sigma_sq_max_min_ratio"])
+        rl = float(value["phi_lambda_max_min_ratio"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    return (
+        3.0 <= rs <= 6.0
+        and 4.0 <= rl <= 10.0
+        and bool(value.get("phi_sigma_open_gt_close"))
+        and bool(value.get("phi_lambda_close_gt_open"))
+        and bool(value.get("phi_sigma_min_interior"))
+        and bool(value.get("phi_lambda_min_interior"))
+        and bool(value.get("phi_sigma_positive"))
+        and bool(value.get("phi_lambda_positive"))
+    )
+
+
+def _flat_at_noise_floor(value: Any) -> bool:
+    """日内プロファイルの起伏が標本誤差の水準まで落ちていること。"""
+    if not isinstance(value, Mapping):
+        return False
+    x = value.get("excess_over_se")
+    return x is not None and float(x) < 1.35
+
+
+def _spectral_null_level(value: Any) -> bool:
+    """スペクトル高調波比が帰無水準にあること (S3 実測 1.1〜2.3)。"""
+    if not isinstance(value, Mapping):
+        return False
+    x = value.get("mean_ratio")
+    return x is not None and float(x) < 5.0
+
+
+def _phi_recovery_check(value: Any) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    c = value.get("correlation")
+    e = value.get("max_abs_rel_error")
+    return c is not None and e is not None and float(c) > 0.99 and float(e) < 0.10
+
+
+def _gap_null_control(value: Any) -> bool:
+    """ギャップが翌日の日中リターンの向きを予測しないこと (帰無対照)。
+
+    ★これは「効果があること」ではなく「無いこと」を要求するゲートなので、
+    検出力不足で自動的に通ってしまう。標本数の下限を課して、少なくとも
+    ``|corr| > 0.15`` 程度の漏れは捕らえられる状態でのみ合格にする。
+    """
+    if not isinstance(value, Mapping):
+        return False
+    c = value.get("corr_gap_next_intraday")
+    se = value.get("corr_gap_next_intraday_se")
+    n = value.get("n_gaps")
+    if c is None or se is None or not n:
+        return False
+    return int(n) >= 100 and abs(float(c)) <= 3.0 * float(se)
+
+
+def _on_kurtosis_higher(value: Any) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    a = value.get("kurtosis_gap")
+    b = value.get("kurtosis_intraday_daily")
+    return a is not None and b is not None and float(a) > float(b)
+
+
+#: S4 では S3 の絶対ゲートを 1 つも差し替えない。
+#:
+#: 当初は「観測 |r| の GPH d が季節性で上振れするから脱季節化系列に差し替える」
+#: つもりだったが、``multiseed.gph_d`` が測っているのは**日次**リターンの |r| で
+#: あり、季節性は日内現象なので原理的に効かない: 日次分散は
+#: ``sum_k phi_k^2 sigma^2 dt = sigma^2 (1 日分)`` で、φ_σ の二乗正規化により
+#: **厳密に**不変だからである (潜在側の ``daily.latent_gph_d`` も、日内平均
+#: log φ が全日で同一定数なので GPH が厳密に不変)。
+#: 汚染が出るのは日内バーの |r| のほうで、そちらは S3 でゲートされていない量なので
+#: 「差し替え」ではなく新規ゲート (seasonality_bias_gph) として追加する。
+#: 実測で日次 GPH が動かないことは inv_gph_d と gph_d が継承のまま通ることで確認する。
+_S4_REPLACED: set[str] = set()
+
+_S4_INHERITED_GATES: tuple[Gate, ...] = tuple(
+    g for g in S3_GATES if g.name not in _S4_REPLACED
+)
+
+_S4_NEW_GATES: tuple[Gate, ...] = (
+    # --- φ の定義そのもの ---
+    Gate(
+        name="phi_normalization",
+        metric_path="seasonality.phi_normalization",
+        check=_phi_norm_check,
+        threshold="(1/T)∫φ_σ²du = 1 かつ (1/T)∫φ_λdu = 1 (どちらも誤差 < 1e-3)",
+        description=(
+            "★正規化の規約が σ と λ で違う (§4.1)。分散は加算されるので φ_σ は"
+            "**二乗**の平均を 1 に、強度は一乗の平均を 1 にする。片方の規約を"
+            "もう片方へ流用すると Jensen の不等式の分だけ日次積分分散が目標を外れる。"
+        ),
+    ),
+    Gate(
+        name="intraday_shape",
+        metric_path="seasonality.phi_normalization",
+        check=_phi_shape_check,
+        threshold="φ_σ² の起伏比 ∈ [3,6]、φ_λ ∈ [4,10]、寄付>引け(σ)・引け>寄付(λ)、最小が中盤",
+        description="§4.3-4.4 の形状要件。係数は起伏比 4.5 / 7.0 を狙って数値的に逆算した。",
+    ),
+    # --- 季節性が実際に入っているか (フラグの空振り検出) ---
+    Gate(
+        name="seasonality_present",
+        metric_path="seasonality.deseasonalization.raw.spectral.mean_ratio",
+        check=_gt(20.0),
+        threshold="生の |r| のスペクトル高調波比 > 20 (帰無水準は 1)",
+        description=(
+            "★enable_seasonality が黙って空振りしていないことの検出。実測 241 "
+            "(1 分足) / 46 (30 分足) に対し S3 の帰無は 1.1〜2.3。"
+            "除去側のゲートだけだと「最初から季節性が無い」場合に全部通ってしまう。"
+        ),
+    ),
+    # --- 除去の効き目 (真値経路) ---
+    Gate(
+        name="deseason_flatness_true",
+        metric_path="seasonality.deseasonalization.true_phi_removed.flatness",
+        check=_flat_at_noise_floor,
+        threshold="真値 φ 除去後の日内プロファイルの sd(log) が標本誤差の 1.35 倍未満",
+        description=(
+            "除去できたかの主判定。バー粒度に依らず検出力があるのでスペクトルより"
+            "こちらを主にする。実測: 生 4.12 倍 → 除去後 1.01 倍。"
+        ),
+    ),
+    Gate(
+        name="deseason_spectral_true",
+        metric_path="seasonality.deseasonalization.true_phi_removed.spectral",
+        check=_spectral_null_level,
+        threshold="真値 φ 除去後のスペクトル高調波比 < 5 (帰無水準 1〜2.3)",
+        description=(
+            "周波数領域での確認。周期成分は離散的な高調波にしか力を持たず、"
+            "長期記憶は連続スペクトルなので、両者はここで原理的に分離できる。"
+        ),
+    ),
+    # --- 除去の効き目 (推定経路 = 実務で使えるか) ---
+    Gate(
+        name="phi_estimation_accuracy",
+        metric_path="seasonality.deseasonalization.recovery",
+        check=_phi_recovery_check,
+        threshold="φ̂ と真の φ の相関 > 0.99 かつ 最大相対誤差 < 10%",
+        description=(
+            "φ を知らない立場からの推定 (バー別 |r| 中央値 → 対数を Fourier 回帰)。"
+            "実測 corr 0.9992 / 最大相対誤差 2.0%。実データへ持っていくのはこの経路。"
+        ),
+    ),
+    Gate(
+        name="deseason_flatness_est",
+        metric_path="seasonality.deseasonalization.est_phi_removed.flatness",
+        check=_flat_at_noise_floor,
+        threshold="推定 φ̂ 除去後も日内プロファイルが標本誤差の 1.35 倍未満",
+        description=(
+            "推定誤差を含めても道具として使えるか。実測 1.00 倍。"
+            "真値経路 (1.01) をわずかに下回るのは φ̂ が同じ標本に当てはめられていて"
+            "標本ノイズを少し吸収するため — 過学習の兆候だが 8 母数 / 390 ビンなので微小。"
+        ),
+    ),
+    # --- 季節性が長期記憶の測定を汚す量 (S7 への布石) ---
+    Gate(
+        name="seasonality_bias_gph",
+        metric_path="multiseed.gph_bias_intraday.median",
+        check=_gt(0.005),
+        threshold="日内バー |r| の GPH d (生 − 脱季節化後) > +0.005 (10 シード中央値)",
+        description=(
+            "★S4 を作る動機そのものの定量化。季節性は |r| のスペクトルに周期成分を"
+            "足して d を**上方**へ偏らせる (実測 +0.017、範囲 +0.011〜+0.025)。"
+            "1 経路では GPH の SE 0.013 に埋もれるので中央値で判定する。"
+            "S7 の Hawkes 分岐比の過大推定 (Filimonov-Sornette) と同じ機構であり、"
+            "そこでは φ_λ の時間変更で対処する (time_change_by_phi_lambda)。"
+            "★日次リターンの GPH (gph_d ゲート) はこの汚染を受けない — φ_σ の"
+            "二乗正規化により日次分散が厳密に不変だから。汚染は日内でのみ起きる。"
+        ),
+    ),
+    Gate(
+        name="gph_d_intraday_deseason",
+        metric_path="multiseed.gph_d_intraday_deseason.median",
+        check=_between(0.25, 0.50),
+        threshold="脱季節化後の日内バー |r| の GPH d ∈ [0.25, 0.50] (10 シード中央値)",
+        description=(
+            "汚染を取り除いた側が妥当な範囲にあること。日次の gph_d ゲート"
+            "([0.25,0.45]) より上限が広いのは、日内バーのほうが標本が多く帯域も"
+            "違うため水準が一致しないから (S3 実測 0.39〜0.43)。"
+        ),
+    ),
+    # --- オーバーナイト ---
+    Gate(
+        name="overnight_share",
+        metric_path="seasonality.overnight.variance_share",
+        check=_between(0.15, 0.27),
+        threshold="ON の分散シェア ∈ [0.15, 0.27] (目標 0.20)",
+        description=(
+            "帯が目標の ±35% と広いのは、399 ギャップ・尖度 13.8 の標本分散の"
+            "標準誤差が大きいため (実測 0.213)。狭くすると正しい実装が落ちる。"
+        ),
+    ),
+    Gate(
+        name="overnight_kurtosis",
+        metric_path="seasonality.overnight",
+        check=_on_kurtosis_higher,
+        threshold="ギャップの尖度 > 日中日次リターンの尖度",
+        description=(
+            "ON は情報が溜まって一度に出るのでテールが厚い (実測 13.8 vs 6.0)。"
+            "絶対値でなく日中との**大小**で判定するのは、水準がボラ予算に依存する一方"
+            "大小関係は ON をジャンプ主体に設計したことの直接の帰結だから。"
+        ),
+    ),
+    Gate(
+        name="overnight_vol_link",
+        metric_path="seasonality.overnight.corr_abs_gap_sigma_close",
+        check=_gt(0.20),
+        threshold="corr(|gap|, σ_close) > 0.20 (SE ≈ 0.05、実測 0.38)",
+        description=(
+            "★『σ_ON = c_ON σ_close だから相関 1』は構成上自明で検定になっていない"
+            "(自動成立するゲートは置かない)。観測できるのは |gap| = |σ_ON z + J| で、"
+            "|z| の揺らぎと ON ジャンプで必ず希薄化する。判定は 0 との差 (4 SE) で行う。"
+        ),
+    ),
+    Gate(
+        name="overnight_no_lookahead",
+        metric_path="seasonality.overnight",
+        check=_gap_null_control,
+        threshold="|corr(gap_d, 日中_{d+1})| <= 3 SE かつ ギャップ数 >= 100",
+        description=(
+            "帰無対照。設計上ギャップは翌日の日中方向を予測しない。ここが有意なら"
+            "実装が未来を漏らしている。検出力不足で自動的に通らないよう標本下限を課す。"
+        ),
+    ),
+    # --- S3 の予算が動いていないこと ---
+    Gate(
+        name="inv_jv_share",
+        metric_path="runtime.baseline_invariance.checks.jv_share_preserved.passed",
+        check=_is_true,
+        threshold="ジャンプ QV シェアが S3 から ±0.005 以内",
+        description=(
+            "S4 の強度補正 (ON 取り分 + φ の Jensen 効果) が効いていることの照合。"
+            "補正が抜けると 12.7% → 14.9% に跳ねる。実測 差 +0.00001。"
+        ),
+    ),
+)
+
+S4_GATES: tuple[Gate, ...] = _S4_INHERITED_GATES + _S4_NEW_GATES
+
+#: 段階ごとのゲート。S5 以降を実装するときはここに追加する。
 STAGE_GATES: dict[str, tuple[Gate, ...]] = {
     "S0": S0_GATES,
     "S1": S1_GATES,
     "S2": S2_GATES,
     "S3": S3_GATES,
+    "S4": S4_GATES,
 }
 
 

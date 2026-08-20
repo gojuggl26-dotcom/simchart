@@ -6,7 +6,18 @@
 「どの段階までは正常だったか」を後から遡れる。
 """
 
-from . import base, cross, ensemble, gates, memory, micro, scaling, suite, tails
+from . import (
+    base,
+    cross,
+    ensemble,
+    gates,
+    memory,
+    micro,
+    scaling,
+    seasonality,
+    suite,
+    tails,
+)
 from .base import is_na, is_ok, na, ok
 from .gates import Gate, GateResult, evaluate, gates_for, summarize
 from .suite import run_all
@@ -19,6 +30,7 @@ __all__ = [
     "memory",
     "micro",
     "scaling",
+    "seasonality",
     "suite",
     "tails",
     "ok",

@@ -79,6 +79,12 @@ class PriceProcess:
     log_p_star: np.ndarray
     log_vol: np.ndarray
     jump_times: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.float64))
+    #: S4: オーバーナイト・ギャップ (日境界ごとに 1 つ、長さ n_days-1)。
+    #: ★``log_p_star`` は**日中のみ**の連続経路で、ギャップはそこに含まれない。
+    #: グリッドを S3 と同一に保つことで ``compare S3 S4`` が直接成立し、開値〜引値
+    #: の統計 (Hill α / JV share) が S3 と同じ定義で測れる。クローズ・トゥ・
+    #: クローズ系列は検証側でギャップと合成して作る (S4 指示書 §10 の分離)。
+    overnight_gaps: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.float64))
     interpolation: str = "linear"
 
     _SUPPORTED_INTERPOLATION = ("linear",)
@@ -159,7 +165,10 @@ class PriceProcess:
     def digest(self) -> str:
         """経路の SHA-256。決定性ゲートの照合に使う。"""
         h = hashlib.sha256()
-        for arr in (self.t, self.log_p_star, self.log_vol, self.jump_times):
+        # overnight_gaps は S0〜S3 では空配列なので tobytes() が b"" となり、
+        # ハッシュに寄与しない — 既存段階のダイジェストは変わらない。
+        for arr in (self.t, self.log_p_star, self.log_vol, self.jump_times,
+                    self.overnight_gaps):
             h.update(np.ascontiguousarray(arr, dtype=np.float64).tobytes())
         return h.hexdigest()
 

@@ -66,9 +66,10 @@ def test_multi_asset_raises_for_s13() -> None:
 
 
 def test_unimplemented_stage_raises() -> None:
+    # 実装が進んだら「次の未実装段階」へ更新する (S4 の実装で S4 -> S5)。
     with pytest.raises(NotImplementedError) as excinfo:
-        Config(stage="S4")
-    assert "S4" in str(excinfo.value)
+        Config(stage="S5")
+    assert "S5" in str(excinfo.value)
 
 
 def test_unknown_stage_is_a_value_error() -> None:
@@ -108,7 +109,9 @@ def _force(config: Config, **changes: object) -> Config:
 @pytest.mark.parametrize(
     "flag,builder,stage",
     [
-        ("enable_seasonality", "calendar", "S4"),
+        # enable_seasonality / enable_overnight は S4 で実装済みなので外した。
+        # 代わりに S5 のカオス成分がここを守る。
+        ("enable_chaos_vol", "price", "S5"),
         ("enable_hawkes", "activity", "S7"),
         ("enable_book", "book", "S6"),
         ("enable_metaorder", "book", "S8"),

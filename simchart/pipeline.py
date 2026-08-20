@@ -44,7 +44,7 @@ __all__ = [
 
 #: 各段階の不変性照合の基準となる直前段階。
 #: S2 の合否は「S1 から何が変わらなかったか」で決まる (S2 指示書 §0)。
-BASELINE_STAGE: dict[str, str] = {"S2": "S1", "S3": "S2"}
+BASELINE_STAGE: dict[str, str] = {"S2": "S1", "S3": "S2", "S4": "S3"}
 
 
 @dataclass
@@ -447,6 +447,41 @@ def baseline_invariance_check(
         checks["h_latent"] = {
             "passed": bool(abs(h2 - h1) <= 0.02),
             "baseline": h1, "current": h2, "diff": h2 - h1, "tol": 0.02,
+        }
+
+    # --- S4 固有 ---------------------------------------------------------
+    # ジャンプの QV シェア: S4 の強度補正 (jump_intensity_scale) が効いていれば
+    # 季節性・ON を入れても S3 から動かない。補正が抜けると ON の取り分の分だけ
+    # 拡散側だけが縮んで実測 12.7% → 14.9% に跳ねる (実際にそうなった) ので、
+    # この照合は補正欠落を確実に捕らえる。
+    jv1 = get(bm, "jumps.generator.jv_share_theory")
+    jv2 = get(metrics, "jumps.generator.jv_share_theory")
+    if jv1 is not None and jv2 is not None:
+        checks["jv_share_preserved"] = {
+            "passed": bool(abs(jv2 - jv1) <= 0.005),
+            "baseline": jv1, "current": jv2, "diff": jv2 - jv1, "tol": 0.005,
+            "intensity_scale": get(metrics, "jumps.generator.intensity_scale_s4"),
+        }
+
+    # 観測 |r| の GPH: 季節性は日内周期成分をスペクトルに足して d を**上方**へ
+    # 偏らせる (実測 +0.017、範囲 +0.011〜+0.025)。脱季節化でそれが取れることを
+    # 記録する。★閾値が緩いのは、この構成ではジャンプ抽選の違いが d を最大
+    # ±0.05 動かし、季節性のバイアス (+0.017) を覆い隠すため — 単一経路では
+    # 判定できない。除去の**厳密さ**はジャンプ無し構成のテストが検証し
+    # (差が 4 桁でゼロ)、水準の判定は多シード中央値のゲートが行う。
+    d_base = get(bm, "memory.gph_abs_r.d")
+    d_raw = get(metrics, "memory.gph_abs_r.d")
+    d_dsn = get(metrics, "seasonality.gph_abs_r.d_true_phi_removed")
+    if d_base is not None and d_dsn is not None:
+        checks["gph_d_deseasonalized"] = {
+            "passed": bool(abs(d_dsn - d_base) <= 0.08),
+            "baseline": d_base, "current": d_dsn, "diff": d_dsn - d_base, "tol": 0.08,
+            "raw_current": d_raw,
+            "raw_diff": (d_raw - d_base) if d_raw is not None else None,
+            "basis": "observed_abs_r_primary_bar",
+            "note": (
+                "ジャンプ抽選差が支配的なため緩い帯。厳密性はテストと多シードで判定"
+            ),
         }
 
     # RNG の証人: 前段階のストリームがビット単位で不変であることの実測 (JSON の

@@ -18,6 +18,8 @@ import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+import numpy as np
+
 from .config import Config
 from .pipeline import (
     BASELINE_STAGE,
@@ -36,6 +38,7 @@ from .report import (
     write_metrics,
 )
 from .validation import evaluate, gates_for, summarize
+from .validation.base import jsonable
 from .validation.suite import collect_errors, run_all
 
 __all__ = ["main"]
@@ -66,8 +69,46 @@ def _fmt(value: Any) -> str:
             return f"{value:.4e}"
         return f"{value:.6g}"
     if isinstance(value, Mapping):
-        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))[:60]
+        # ★jsonable を通す。検証関数が numpy 配列を返す枝があり (S4 のスペクトル
+        # 検定の ratios など)、生の dict を json.dumps すると TypeError で
+        # **ゲート表示の途中で実行が落ちる**。表示のために解析を落とすのは本末転倒。
+        return json.dumps(jsonable(value), ensure_ascii=False, separators=(",", ":"))[:60]
+    if isinstance(value, np.ndarray):
+        return f"<配列 {value.shape}>"
     return str(value)
+
+
+def _intraday_gph_pair(result, config: Config) -> tuple[float | None, float | None]:
+    """日内バー |r| の GPH d を (生, 真値 φ 除去後) の組で返す (S4)。
+
+    ★真値 φ で除く。推定 φ̂ ではなく真値を使うのは、ここで測りたいのが
+    「季節性が推定を汚す量」であって「推定器の性能」ではないから。φ̂ の性能は
+    別の枝 (seasonality.deseasonalization.recovery) が測る。
+    """
+    import numpy as np
+
+    from .layers.l0_calendar import build_calendar
+    from .rng import RNGRegistry
+    from .validation.memory import gph_estimator
+    from .validation.seasonality import deseasonalize, true_phi_bars
+
+    obs = result.observation
+    bars = obs.to_bars(config.validation.primary_bar_sec)
+    r_2d = bars.returns_2d()
+    calendar = build_calendar(config, RNGRegistry(config.seed))
+    steps_per_day = (
+        int(round(obs.session_seconds / obs.step_seconds)) if obs.step_seconds else None
+    )
+    truth = true_phi_bars(calendar, r_2d.shape[1], steps_per_day=steps_per_day)
+    bwe = config.validation.gph_bandwidth_exponent
+    raw = gph_estimator(np.abs(r_2d).ravel(), bandwidth_exponent=bwe).get("d")
+    if truth["status"] != "ok":
+        return raw, None
+    dsn = gph_estimator(
+        np.abs(deseasonalize(r_2d, np.asarray(truth["value"]))).ravel(),
+        bandwidth_exponent=bwe,
+    ).get("d")
+    return raw, dsn
 
 
 def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
@@ -88,10 +129,15 @@ def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
     per_seed: dict[str, list[float]] = {
         "hill_alpha": [], "leverage_corr": [], "jv_share": [], "skewness_daily": [],
         "hill_scale_slope": [], "gph_d": [],
+        # S4: 季節性が**日内**バーの長期記憶推定を汚す量。1 経路では GPH の
+        # SE 0.013 に埋もれる (実測バイアス +0.017) ため中央値で判定する。
+        # 日次 gph_d は φ_σ の二乗正規化により汚染を受けない (別枝で確認)。
+        "gph_d_intraday_raw": [], "gph_d_intraday_deseason": [], "gph_bias_intraday": [],
     }
     seeds = [config.seed + i for i in range(n_seeds)]
     for i, seed in enumerate(seeds):
-        result = run_pipeline(config.replace(seed=seed))
+        seed_config = config.replace(seed=seed)
+        result = run_pipeline(seed_config)
         obs = result.observation
         r_daily = obs.to_bars(obs.session_seconds).returns()
         steps_per_day = int(round(obs.session_seconds / obs.step_seconds))
@@ -112,6 +158,13 @@ def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
         per_seed["gph_d"].append(
             gph_estimator(np.abs(r_daily), config.validation.daily_gph_bandwidth_exponent).get("d")
         )
+        if config.enable_seasonality:
+            raw, dsn = _intraday_gph_pair(result, seed_config)
+            per_seed["gph_d_intraday_raw"].append(raw)
+            per_seed["gph_d_intraday_deseason"].append(dsn)
+            per_seed["gph_bias_intraday"].append(
+                raw - dsn if raw is not None and dsn is not None else None
+            )
         del result, obs, step_r, rv_daily
         print(f"      シード {seed} ({i + 1}/{n_seeds}) 完了", flush=True)
 

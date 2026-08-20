@@ -257,14 +257,58 @@ class GBMPriceLayer:
     def sigma_bar_diffusion(self) -> float:
         """拡散側の基準ボラ。
 
-        ジャンプ有効時は総 QV (年率 sigma_bar^2) のうちジャンプ分を確保するため
-        ``sigma_bar * sqrt(1 - jump_qv_share_target)`` に縮小する (S3 指示書 §7)。
-        Var(log sigma) の予算 (変動幅) とは独立で、S1/S2 の配分は変わらない。
+        総 QV (年率 sigma_bar^2) を保つため、後段が確保する分だけ縮小していく:
+
+        - S3: ジャンプ分 ``sqrt(1 - jump_qv_share_target)``
+        - S4: オーバーナイト分 ``sqrt(1 - overnight_variance_share)``
+
+        Var(log sigma) の予算 (変動幅) とは独立な軸で、S1/S2 の配分は変わらない。
+        phi の正規化 ((1/T)∫phi^2 du = 1) が正しければ、季節性の導入自体は
+        日次積分分散を変えないので σ̄ の修正には効かない (指示書 §7)。
         """
         cfg = self._config
+        sigma = cfg.sigma_bar
         if cfg.enable_jump:
-            return cfg.sigma_bar * math.sqrt(1.0 - cfg.jump_qv_share_target)
-        return cfg.sigma_bar
+            sigma *= math.sqrt(1.0 - cfg.jump_qv_share_target)
+        if cfg.enable_overnight:
+            sigma *= math.sqrt(1.0 - cfg.overnight_variance_share)
+        return sigma
+
+    @property
+    def jump_intensity_scale(self) -> float:
+        """ジャンプ基準強度 ``lambda0`` に掛ける S4 の補正係数。
+
+        S4 を入れたことで**日中のジャンプ/拡散の配分が動いてしまう**のを止める。
+        補正しないと実測で JV シェアが 12.7% → 14.9% に動いた (S3 の QV 予算の破壊)。
+        原因は 2 つあり、どちらも「季節性・ON は配分を変えるが総量は変えない」という
+        S4 の設計原則からの逸脱なので、両方を打ち消す。
+
+        1. **ON の取り分**: 拡散側だけが ``sqrt(1-ON_share)`` で縮み、ジャンプ側は
+           そのままだったので、日中 QV に占めるジャンプの比率が上がった。
+           日中 QV 全体を ``(1-ON_share)`` 倍にするには強度も同率で縮める。
+        2. **phi の Jensen 効果**: 強度は ``lambda0 (sigma_t/sigma_bar)^rho`` で、
+           sigma に phi が掛かると平均強度が ``(1/T)∫phi^rho du`` 倍になる。
+           phi の正規化は ``∫phi^2 du = 1`` (二乗) なので、rho != 2 では
+           ``∫phi^rho du != 1`` になり、既定の rho=1 では **0.969 倍**に下がる。
+           φ_σ の二乗正規化をそのまま強度に流用してはならない、ということ。
+
+        補正後は「ジャンプの**時刻**が日内で偏るが、**本数と分散寄与は S3 と同じ**」
+        になる。これがジャンプ側の季節性の正しい入れ方である。
+        """
+        cfg = self._config
+        if not cfg.enable_jump:
+            return 1.0
+        scale = 1.0
+        if cfg.enable_overnight:
+            scale *= 1.0 - cfg.overnight_variance_share
+        if cfg.enable_seasonality and hasattr(self._calendar, "phi_sigma_of_u"):
+            u = np.linspace(0.0, 1.0, 20001)
+            phi = np.asarray(self._calendar.phi_sigma_of_u(u), dtype=np.float64)
+            mean_phi_rho = float(np.trapezoid(phi**cfg.jump_vol_exponent, u))
+            if mean_phi_rho <= 0:
+                raise ValueError("phi^rho の平均が 0 以下です")
+            scale /= mean_phi_rho
+        return scale
 
     # ------------------------------------------------------------------
     # S1: MSM 成分
@@ -790,8 +834,14 @@ class GBMPriceLayer:
         lam = sigma_left / sig_bar
         if cfg.jump_vol_exponent != 1.0:
             np.power(lam, cfg.jump_vol_exponent, out=lam)
+        # 上限は**ボラ比の増幅**に掛ける (S4 の phi もこの比に入る)。既定 cap=10 は
+        # phi の最大 1.48 では滅多に binding しないが、黙って効いていると強度の
+        # 設計値がずれるので、実際に binding した割合を診断に残す。
+        cap_binding = float((lam > cfg.jump_intensity_cap).mean())
         np.minimum(lam, cfg.jump_intensity_cap, out=lam)
-        lam *= cfg.jump_lambda_per_year  # [1/年]
+        # S4 補正 (ON 取り分 + phi の Jensen 効果) — 詳細は jump_intensity_scale。
+        intensity_scale = self.jump_intensity_scale
+        lam *= cfg.jump_lambda_per_year * intensity_scale  # [1/年]
 
         u = self._rng.get("l2.jump_time").uniform(size=n_steps)
         prob = lam * dt_years
@@ -832,8 +882,11 @@ class GBMPriceLayer:
             "lambda0_per_year": cfg.jump_lambda_per_year,
             "vol_exponent": cfg.jump_vol_exponent,
             "intensity_cap": cfg.jump_intensity_cap,
+            "cap_binding_fraction": cap_binding,
             "k_compensation": k_comp,
             "compensation_applied": True,
+            # S4 の強度補正。1.0 なら補正なし (S0〜S3)。
+            "intensity_scale_s4": intensity_scale,
             "lambda_effective_per_year": lam_eff,
             "n_jumps": n_jumps,
             "n_up": int(up.sum()),
@@ -847,6 +900,132 @@ class GBMPriceLayer:
             "jv_share_target": cfg.jump_qv_share_target,
         }
         return jump_times, jump_add, compensation
+
+    # ------------------------------------------------------------------
+    # S4: オーバーナイト・ギャップ
+    # ------------------------------------------------------------------
+    def _simulate_overnight(
+        self, log_vol: np.ndarray, n_days: int, steps_per_day: int
+    ) -> np.ndarray:
+        """日 d の引けと日 d+1 の寄付の間のギャップ・リターンを生成する。
+
+        ★物理時間比例 (17.5h/6.5h) では作らない (指示書 §6.3)。取引の無い時間帯は
+        情報時計がほとんど進まないので、**別レジーム**として扱う:
+
+            r_ON(d) = sigma_ON(d) z + J_ON(d),   sigma_ON(d) = c_ON sigma_close(d)
+
+        ``c_ON`` は「クローズ・トゥ・クローズ分散に占める ON の寄与」が設定値に
+        なるように逆算する。日中の 1 日分の分散は sigma_bar_diff^2/252 なので、
+
+            share = var_ON / (var_ON + var_intraday)
+            => var_ON = var_intraday * share/(1-share)
+
+        ``sigma_close(d)`` に連動させることで ON にもボラ・クラスタリングが伝わり、
+        ``corr(sigma_ON, sigma_close) > 0.5`` のゲートが成立する。ジャンプは
+        S3 の Kou を ON 用パラメータで入れる (ギャップは実質ジャンプ的なので
+        発生確率は日中より高い) — これで ON リターンの尖度が日中より高くなる。
+
+        乱数消費は ``l0.overnight`` から (z -> ジャンプ判定 -> 符号 -> 大きさ) の順。
+        """
+        cfg = self._config
+        rng = self._rng.get("l0.overnight")
+        n_gaps = n_days - 1
+        if n_gaps < 1:
+            return np.zeros(0, dtype=np.float64)
+
+        # 各日の引け時点 (その日の最終ステップ) の瞬間ボラ。
+        close_idx = np.arange(1, n_days) * steps_per_day - 1
+        sigma_close = np.exp(log_vol[close_idx])
+
+        # ON の分散水準。設計上「クローズ・トゥ・クローズ分散 sigma_bar^2/252 の
+        # うち share を ON が取る」なので、目標は sigma_bar^2 share / 252。
+        # ★sigma_bar_diffusion (拡散のみ) から (1-share) 経由で逆算してはならない —
+        # 日中の分散にはジャンプ分も含まれるため share がずれる。
+        share = cfg.overnight_variance_share
+        var_on_target = cfg.sigma_bar**2 * share / TRADING_DAYS_PER_YEAR
+
+        # ジャンプは**分散シェアで指定**し、そこから Kou の eta スケールを逆算する。
+        # サイズ倍率で指定すると E[J^2] が ON の分散予算と噛み合わず、実測シェアが
+        # 目標の 3 倍になる (実際にそうなった)。形状 (p_up, eta 比) は S3 のまま。
+        jshare = cfg.overnight_jump_variance_share
+        var_on_jump = var_on_target * jshare
+        var_on_diffusion = var_on_target * (1.0 - jshare)
+        eta_u = eta_d = k_on = 0.0
+        if cfg.overnight_jump_prob > 0 and jshare > 0:
+            shape_e_j2 = (
+                cfg.jump_p_up * 2.0 / cfg.jump_eta_up**2
+                + (1.0 - cfg.jump_p_up) * 2.0 / cfg.jump_eta_down**2
+            )
+            # eta' = eta / s とすると E[J^2] = s^2 * shape_e_j2。
+            s = math.sqrt(var_on_jump / (cfg.overnight_jump_prob * shape_e_j2))
+            eta_u = cfg.jump_eta_up / s
+            eta_d = cfg.jump_eta_down / s
+            if eta_u <= 1.0:
+                raise ValueError(
+                    f"ON ジャンプの eta_u ({eta_u:.3f}) が 1 以下です。"
+                    f" E[e^J] が発散するので overnight_jump_variance_share を下げるか"
+                    f" overnight_jump_prob を上げてください。"
+                )
+        # ★sigma_close は**引け時点**の値なので、季節性があると phi(引け) 倍に
+        # 膨らんでいる (既定で 1.38、二乗で 1.90 倍)。E[sigma_close^2] =
+        # phi_close^2 sigma_bar_diff^2 なので、その分を割って基準を揃える。
+        # 割らないと ON シェアが目標の 1.9 倍になる (実際にそうなった)。
+        phi_close = 1.0
+        if cfg.enable_seasonality and hasattr(self._calendar, "phi_sigma_of_u"):
+            u_close = (steps_per_day - 1) / steps_per_day
+            phi_close = float(self._calendar.phi_sigma_of_u(u_close))
+        c_on = math.sqrt(var_on_diffusion * TRADING_DAYS_PER_YEAR) / (
+            self.sigma_bar_diffusion * phi_close
+        )
+
+        z = rng.standard_normal(n_gaps)
+        sigma_on = c_on * sigma_close / math.sqrt(TRADING_DAYS_PER_YEAR)
+        gaps = sigma_on * z
+
+        n_on_jumps = 0
+        if eta_u > 0:
+            u = rng.uniform(size=n_gaps)
+            mask = u < cfg.overnight_jump_prob
+            n_on_jumps = int(mask.sum())
+            u_sign = rng.uniform(size=n_on_jumps)
+            e_mag = rng.standard_exponential(size=n_on_jumps)
+            up = u_sign < cfg.jump_p_up
+            gaps[mask] += np.where(up, e_mag / eta_u, -e_mag / eta_d)
+            # マルチンゲール補償 (ON ジャンプ分)。忘れると価格にドリフトが乗る。
+            k_on = (
+                cfg.jump_p_up * eta_u / (eta_u - 1.0)
+                + (1.0 - cfg.jump_p_up) * eta_d / (eta_d + 1.0)
+                - 1.0
+            )
+            gaps -= cfg.overnight_jump_prob * k_on
+            del u, u_sign, e_mag, up
+        # 拡散側の凸性補正 (E[e^{r_ON}] = 1 を保つ)。
+        gaps -= 0.5 * sigma_on**2
+
+        # sigma_ON ∝ sigma_close なので構成上の相関は 1。ゲートが見るべきは
+        # **観測可能な連動** (|gap| と sigma_close の相関) — こちらは z のノイズで
+        # 1 より小さくなる。両方を記録して取り違えを防ぐ。
+        corr_obs = float(np.corrcoef(np.abs(gaps), sigma_close)[0, 1])
+        self.last_diagnostics["overnight"] = {
+            "n_gaps": int(n_gaps),
+            "c_on": c_on,
+            "variance_share_target": share,
+            "var_on_target": var_on_target,
+            "var_on_diffusion": var_on_diffusion,
+            "var_on_jump": var_on_jump,
+            "jump_variance_share": jshare,
+            "jump_prob": cfg.overnight_jump_prob,
+            "jump_eta_up": eta_u,
+            "jump_eta_down": eta_d,
+            "k_compensation": k_on,
+            "n_on_jumps": n_on_jumps,
+            "sample_var": float(gaps.var()),
+            "sample_mean": float(gaps.mean()),
+            "corr_sigma_on_close_by_construction": 1.0,
+            "corr_abs_gap_sigma_close": corr_obs,
+            "sigma_close_mean": float(sigma_close.mean()),
+        }
+        return gaps
 
     # ------------------------------------------------------------------
     # 拡張フック
@@ -957,6 +1136,20 @@ class GBMPriceLayer:
         # 展開済みラフ配列 (本番で 936MB) はもう不要。
         if isinstance(y_rough, np.ndarray):
             del y_rough
+        # S4: 日内季節性を**観測ボラへの乗法変調**として掛ける。
+        # log sigma_obs = log phi_sigma(u) + log sigma_stoch。
+        # 確率ボラ成分そのものには掛けない (§3) — phi で割れば S3 の系列が
+        # 完全に復元でき、それが S4 のゲートの検定力の源になる。
+        if cfg.enable_seasonality and hasattr(self._calendar, "phi_sigma_of_u"):
+            u = self._calendar.intraday_position(t)
+            log_phi = np.log(self._calendar.phi_sigma_of_u(u))
+            del u
+            log_vol += log_phi
+            subsample["log_phi_sigma"] = log_phi[::stride].copy()
+            del log_phi
+        else:
+            subsample["log_phi_sigma"] = np.zeros(n_sub)
+
         subsample["log_vol"] = log_vol[::stride].copy()
         self.last_diagnostics["vol_subsample"] = subsample
         self.last_diagnostics["composition"] = {
@@ -965,6 +1158,7 @@ class GBMPriceLayer:
             "enable_msm": cfg.enable_msm,
             "enable_slow_ou": cfg.enable_slow_ou,
             "enable_rough": cfg.enable_rough,
+            "enable_seasonality": cfg.enable_seasonality,
         }
         return log_vol
 
@@ -1090,11 +1284,20 @@ class GBMPriceLayer:
         np.cumsum(increments, out=log_p[1:])
         log_p[1:] += log_p[0]
 
+        # S4: オーバーナイト・ギャップ。log_p には足さず別配列として返す
+        # (PriceProcess.overnight_gaps の docstring に理由を記載)。
+        gaps = np.empty(0, dtype=np.float64)
+        if cfg.enable_overnight:
+            n_days_grid = int(round((t[-1] - t[0]) / self._seconds_per_day))
+            steps_per_day = (n - 1) // n_days_grid
+            gaps = self._simulate_overnight(log_vol, n_days_grid, steps_per_day)
+
         return PriceProcess(
             t=t,
             log_p_star=log_p,
             log_vol=log_vol,
             jump_times=jump_times,
+            overnight_gaps=gaps,
             interpolation="linear",
         )
 
@@ -1105,6 +1308,11 @@ def build_price_layer(
     calendar: ConstantCalendar,
     activity: ConstantActivity,
 ) -> GBMPriceLayer:
+    if config.enable_overnight and not config.enable_jump:
+        raise ValueError(
+            "enable_overnight=True には enable_jump=True が必要です"
+            " (ON ジャンプは S3 の Kou パラメータを ON 用倍率で使うため)"
+        )
     if config.enable_chaos_vol:
         raise NotImplementedError("カオス的ボラ成分 chi_2 は S5 で実装します。")
     return GBMPriceLayer(config, rng, calendar, activity)
