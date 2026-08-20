@@ -211,18 +211,23 @@ def fig_overnight(gaps: np.ndarray, r_daily: np.ndarray, sigma_close: np.ndarray
     fig, axes = plt.subplots(1, 3, figsize=(14.0, 4.3))
 
     ax = axes[0]
-    lim = float(np.percentile(np.abs(np.concatenate([gaps, r_daily])), 99.5))
+    # ★それぞれ自分の SD で標準化してから比べる。ON は総分散の 2 割しか持たないので
+    # 生のままだと「ギャップのほうが分布が狭い」という**逆の**印象になり、伝えたい
+    # 「裾が厚い」が読めない。ここで見せたいのは水準ではなく形である。
+    zg = gaps / gaps.std()
+    zi = r_daily / r_daily.std()
+    lim = float(np.percentile(np.abs(np.concatenate([zg, zi])), 99.8))
     bins = np.linspace(-lim, lim, 61)
-    ax.hist(r_daily, bins=bins, density=True, color=GREY, alpha=0.55,
+    ax.hist(zi, bins=bins, density=True, color=GREY, alpha=0.55,
             label=f"intraday daily (kurt {stats['kurtosis_intraday_daily']:.1f})")
-    ax.hist(gaps, bins=bins, density=True, histtype="step", color=BLUE, lw=1.8,
+    ax.hist(zg, bins=bins, density=True, histtype="step", color=BLUE, lw=1.8,
             label=f"overnight gap (kurt {stats['kurtosis_gap']:.1f})")
     ax.set_yscale("log")
-    ax.set_xlabel("log return")
+    ax.set_xlabel("log return / own standard deviation")
     ax.set_ylabel("density")
     ax.set_title(
-        "information accumulates and is released at once\n"
-        f"variance share {stats['variance_share'] * 100:.1f}% (target 20%)",
+        "same scale, different shape: the gap has heavier tails\n"
+        f"(gap carries {stats['variance_share'] * 100:.1f}% of the variance, target 20%)",
         fontsize=10,
     )
     ax.legend(fontsize=8.5)
