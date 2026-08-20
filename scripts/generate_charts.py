@@ -174,6 +174,18 @@ def generate(args: argparse.Namespace) -> int:
         if _chunk_is_complete(parts_dir, c_idx, lo, hi):
             n_done_before += hi - lo
             continue
+        # 予算判定は**チャンクを始める前**に予測で行う。終わってから判定すると
+        # 最後の 1 チャンク分 (本番で ~260 秒) だけ必ず超過し、呼び出し側の
+        # タイムアウトを踏む。平均チャンク時間が分かるまで (最初の 1 本) は実行する。
+        if args.time_budget_sec and n_made:
+            elapsed = time.perf_counter() - started
+            avg = elapsed / n_made * (hi - lo)
+            if elapsed + avg > args.time_budget_sec:
+                stopped_early = True
+                print(f"  次のチャンクは予算 {args.time_budget_sec:.0f} 秒に収まらない見込み"
+                      f" (経過 {elapsed:.0f} + 予測 {avg:.0f})。ここで一旦終了します",
+                      flush=True)
+                break
         _generate_chunk(
             base, lo, hi, n_days, steps_per_day, intraday_bars_per_day,
             steps_per_intraday_bar, args, parts_dir, c_idx,
@@ -183,11 +195,6 @@ def generate(args: argparse.Namespace) -> int:
         eta = (elapsed / n_made * (n - hi)) if n_made > 0 else 0.0
         print(f"  チャンク {c_idx + 1}/{n_chunks} (〜{hi}/{n} 本)  "
               f"経過 {elapsed:.0f} 秒 / 残り約 {eta:.0f} 秒", flush=True)
-        if args.time_budget_sec and elapsed >= args.time_budget_sec:
-            stopped_early = True
-            print(f"  時間予算 {args.time_budget_sec} 秒に到達。ここで一旦終了します"
-                  f" (同じコマンドで続きから再開できます)", flush=True)
-            break
 
     if n_done_before:
         print(f"  (既存のチャンクから {n_done_before} 本を再利用)")
