@@ -95,13 +95,20 @@ def write_metrics(
     runtime_sec: float,
     root: str | Path | None = None,
     extra: Mapping[str, Any] | None = None,
+    git: Mapping[str, Any] | None = None,
 ) -> Path:
-    """``results/<stage>/metrics.json`` を書き出してパスを返す。"""
+    """``results/<stage>/metrics.json`` を書き出してパスを返す。
+
+    ★``git`` には**実行開始時点**の :func:`git_info` を渡すこと。書き出し時に
+    取り直すと、この関数自身の出力 (metrics.json の上書き / 初回の未追跡
+    results ディレクトリ) が status に映って **dirty が常に True になる**
+    (S5〜S7 の本番記録が実際に全てこの自己汚染を受けていた)。
+    """
     out_dir = results_dir(stage, root)
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / "metrics.json"
 
-    info = git_info()
+    info = dict(git) if git is not None else git_info()
     payload: dict[str, Any] = {
         "stage": stage,
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),

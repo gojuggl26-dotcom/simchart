@@ -471,6 +471,11 @@ def cmd_run(args: argparse.Namespace) -> int:
     started = time.perf_counter()
     config = _build_config(args)
     stage = config.stage
+    # ★コード版数は**実行開始時点**で確定する。書き出し時に取ると自分の出力
+    # (metrics.json) が status に映って dirty が常に True になる (report.py 参照)。
+    from .report import git_info
+
+    git_at_start = git_info()
     print(f"[1/6] 実行 stage={stage} seed={config.seed} "
           f"n_days={config.n_days} steps_per_day={config.steps_per_day}")
 
@@ -574,7 +579,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     print("[5/6] 結果の書き出しと読み直し")
     total_runtime = time.perf_counter() - started
     path = write_metrics(
-        stage, config, metrics, gate_results, summary, total_runtime, root=args.results_dir
+        stage, config, metrics, gate_results, summary, total_runtime,
+        root=args.results_dir, git=git_at_start,
     )
     verification = verify_metrics_file(path)
     metrics["runtime"]["artifacts"] = verification
@@ -582,7 +588,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     summary = summarize(gate_results)
     total_runtime = time.perf_counter() - started
     path = write_metrics(
-        stage, config, metrics, gate_results, summary, total_runtime, root=args.results_dir
+        stage, config, metrics, gate_results, summary, total_runtime,
+        root=args.results_dir, git=git_at_start,
     )
     print(f"      {path} ({verification.get('size_bytes', 0):,} バイト)")
 
