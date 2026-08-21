@@ -1,9 +1,9 @@
 {
   "stage": "S7",
-  "created_at": "2026-08-21T03:05:24+00:00",
-  "git_commit": "d5834f02926f3b0d0e1a672504d269c5cff45a24",
+  "created_at": "2026-08-21T03:18:12+00:00",
+  "git_commit": "89822efda79d379b496ecc4e676d9cc8b1dcf4c8",
   "git_branch": "master",
-  "git_dirty": true,
+  "git_dirty": false,
   "config": {
     "seed": 42,
     "n_days": 500,
@@ -6125,10 +6125,10 @@
       },
       "throughput": {
         "status": "ok",
-        "value": 5696369.736935675,
-        "events_per_sec": 5696369.736935675,
+        "value": 5636026.619975937,
+        "events_per_sec": 5636026.619975937,
         "n_events": 4477587.0,
-        "engine_runtime_sec": 0.7860421999939717,
+        "engine_runtime_sec": 0.7944580999901518,
         "n_trades": 1474789.0
       },
       "spread": {
@@ -10175,23 +10175,23 @@
         "values": []
       },
       "book_throughput": {
-        "median": 5691644.925665835,
-        "iqr": 147226.83235502057,
-        "q1": 5601858.550920655,
-        "q3": 5749085.383275676,
-        "min": 5527590.384287852,
-        "max": 5794577.7272948,
+        "median": 5694376.128714641,
+        "iqr": 42919.150751440786,
+        "q1": 5664953.5539305,
+        "q3": 5707872.70468194,
+        "min": 5478867.710937461,
+        "max": 5812761.296876972,
         "values": [
-          5765928.332942927,
-          5567136.939901123,
-          5674295.542481128,
-          5752203.746207449,
-          5615132.978413462,
-          5708994.308850543,
-          5739730.294480357,
-          5597433.741756386,
-          5794577.7272948,
-          5527590.384287852
+          5686697.083269476,
+          5812761.296876972,
+          5686342.065841097,
+          5703901.25350659,
+          5799297.813160136,
+          5478867.710937461,
+          5582312.017659114,
+          5709196.521740391,
+          5702055.174159805,
+          5657824.0499603
         ]
       },
       "book_spread_median": {
@@ -10358,7 +10358,7 @@
     "runtime": {
       "pipeline": {
         "completed": true,
-        "runtime_sec": 4.259716300002765,
+        "runtime_sec": 4.274791899952106,
         "driver": "grid",
         "layers": {
           "l0": "l0.seasonal",
@@ -10603,12 +10603,12 @@
         "all_callable": true,
         "n_errors": 0,
         "errors": [],
-        "runtime_sec": 84.6002980999765
+        "runtime_sec": 83.28551399998832
       },
       "artifacts": {
         "metrics_json_ok": true,
         "path": "E:\\模擬チャート生成\\results\\S7\\metrics.json",
-        "size_bytes": 342689,
+        "size_bytes": 342691,
         "missing_top_level_keys": [],
         "missing_metric_groups": [],
         "n_gates": 65
@@ -11271,7 +11271,7 @@
     {
       "name": "throughput",
       "passed": true,
-      "value": 5696369.736935675,
+      "value": 5636026.619975937,
       "threshold": ">= 50,000 events/sec (JIT ウォーム後、指示書 §4)",
       "critical": true,
       "metric_path": "book.throughput.events_per_sec",
@@ -11766,5 +11766,5 @@
     "failed_warning": []
   },
   "all_critical_passed": true,
-  "runtime_sec": 95.51609340001596
+  "runtime_sec": 93.8827653999906
 }
