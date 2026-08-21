@@ -106,7 +106,13 @@ C_LO_INSTANT = 19  # 板に載らず全量即時約定した指値 (台帳の保
 C_VOL_LO_IN = 20  # 指値 (初期化込み) の投入総量
 C_VOL_CANCELLED = 21  # 取消された量
 C_VOL_LO_ENTRY_EXEC = 22  # aggressive LO が入り口で約定した量 (板に載らなかった分)
-N_COUNTERS = 23
+# S7: Hawkes thinning の診断
+C_H_CANDIDATES = 23  # thinning 候補数 (棄却込み)
+C_H_REJECTED = 24  # 棄却数 (受理率 = 1 - rejected/candidates)
+C_H_CAP_HITS = 25  # 強度上限ガードの発動数 (指示書 §5.3)
+C_H_DAYCAP_HITS = 26  # 日次イベント上限ガードの発動数
+C_CX_NOOP = 27  # 励起由来の取消が空板で空振りした数 (n の会計から漏れる分 — 記録)
+N_COUNTERS = 28
 
 
 @njit(cache=True)
@@ -189,6 +195,17 @@ def run_zi_book(
     max_orders, ev_capacity,
     # --- 検証 ---
     debug_invariants, invariant_stride,
+    # --- S7: Hawkes (use_hawkes=False なら全て無視され、S6 経路はビット単位で不変) ---
+    use_hawkes, rng_hawkes,
+    h_a,  # 励起行列 3x3 (型レベル、両サイド合算の子孫数)
+    h_beta_day,  # カーネル減衰率 [1/日] (K 成分)
+    h_w,  # カーネル重み (合計 1)
+    h_mu_mo, h_mu_lo,  # ベースライン [件/日/側]
+    h_delta0,  # 取消の各注文独立ハザード [1/日] (ベースライン = φ·δ0·N)
+    phi_lam_table,  # φ_λ(u) の格子 (u ∈ [0,1))
+    phi_lam_max,
+    h_cap,  # 総強度の絶対上限 [1/日]
+    h_day_cap,  # 1 日あたり最大イベント数 (ログのみのガード)
 ):
     """ZI 板を最後まで走らせ、(イベントログ, グリッドミッド, スナップショット,
     カウンタ) を返す。単一スレッド・固定消費順で決定論。"""
@@ -291,14 +308,43 @@ def run_zi_book(
 
     day_sec = session_seconds
 
+    # S7: Hawkes の励起状態。h_states[y, k] = 励起先 y のカーネル成分 k の現在値
+    # [1/日]。イベント (型 x) ごとに h_states[y, k] += a[x,y]·w[k]·β[k] で跳ね、
+    # イベント間で e^{-β_k Δt} 減衰する (指数和 = Markov、更新 O(1) — §4.1)。
+    n_kern = h_beta_day.shape[0]
+    h_states = np.zeros((3, n_kern), dtype=np.float64)
+    phi_n = phi_lam_table.shape[0]
+    h_day_idx = -1
+    h_day_events = 0
+
     # ------------------------------------------------------------------
     # メインループ
     # ------------------------------------------------------------------
     while True:
-        # 総強度 [1/日] と次イベント時刻
-        lam_total = 2.0 * mu_mo + 2.0 * alpha_lo + delta_cancel * n_live
-        u_dt = rng_type.random()
-        dt_days = -np.log(1.0 - u_dt) / lam_total
+        # 次候補時刻の決定。
+        # S6: 定数レートの合成 Poisson (厳密)。
+        # S7: Ogata thinning の上界 λ̄ = φ_max·ベースライン + 現在の励起
+        #     (励起はイベント間で単調減少、φ は大域最大で抑える → 有効な上界)。
+        lam_total = 0.0
+        lam_bar = 0.0
+        if use_hawkes:
+            exc_total = 0.0
+            for y in range(3):
+                for k in range(n_kern):
+                    exc_total += h_states[y, k]
+            lam_bar = (
+                phi_lam_max * (2.0 * h_mu_mo + 2.0 * h_mu_lo + h_delta0 * n_live)
+                + exc_total
+            )
+            if lam_bar > h_cap:
+                lam_bar = h_cap
+                counters[C_H_CAP_HITS] += 1.0
+            u_dt = rng_hawkes.random()
+            dt_days = -np.log(1.0 - u_dt) / lam_bar
+        else:
+            lam_total = 2.0 * mu_mo + 2.0 * alpha_lo + delta_cancel * n_live
+            u_dt = rng_type.random()
+            dt_days = -np.log(1.0 - u_dt) / lam_total
         t_next = t_now + dt_days * day_sec
 
         # グリッドミッドとスナップショットを t_next まで進める
@@ -356,15 +402,74 @@ def run_zi_book(
             frac = pos - i0
             pstar_val = log_pstar[i0] * (1.0 - frac) + log_pstar[i0 + 1] * frac
 
-        # 種別の決定
-        u_cat = rng_type.random() * lam_total
-        # [0, mu) MO買い / [mu, 2mu) MO売り / [2mu, 2mu+a) LO買い /
-        # [.., 2mu+2a) LO売り / 残り CX
+        # 種別の決定 (kind: 0=MO, 1=LO, 2=CX)
+        kind = 0
+        side = 1
+        if use_hawkes:
+            # --- S7: Ogata thinning の受理判定 ---
+            # 励起状態を候補時刻まで減衰 (棄却でも時間は進むので必ず先に行う)
+            for k in range(n_kern):
+                dec = np.exp(-h_beta_day[k] * dt_days)
+                for y in range(3):
+                    h_states[y, k] *= dec
+            # 日内位置 u と φ_λ(u) (季節性はベースラインのみ — §3.3)
+            u_day = t_now / day_sec
+            u_frac = u_day - int(u_day)
+            pi = int(u_frac * phi_n)
+            if pi >= phi_n:
+                pi = phi_n - 1
+            phi_now = phi_lam_table[pi]
+            e_mo = 0.0
+            e_lo = 0.0
+            e_cx = 0.0
+            for k in range(n_kern):
+                e_mo += h_states[0, k]
+                e_lo += h_states[1, k]
+                e_cx += h_states[2, k]
+            lam_mo_h = phi_now * 2.0 * h_mu_mo + e_mo
+            lam_lo_h = phi_now * 2.0 * h_mu_lo + e_lo
+            lam_cx_h = phi_now * h_delta0 * n_live + e_cx
+            lam_tot_h = lam_mo_h + lam_lo_h + lam_cx_h
+            counters[C_H_CANDIDATES] += 1.0
+            u_acc = rng_hawkes.random()
+            if u_acc * lam_bar >= lam_tot_h:
+                counters[C_H_REJECTED] += 1.0
+                continue
+            # 日次イベント数ガード (記録のみ。記憶保護は ev_capacity が担う)
+            di = int(u_day)
+            if di != h_day_idx:
+                h_day_idx = di
+                h_day_events = 0
+            h_day_events += 1
+            if h_day_events > h_day_cap:
+                counters[C_H_DAYCAP_HITS] += 1.0
+            # 型レベル 3D + 独立な符号 (符号対称制約 §3.1 の等価表現)
+            u_kind = rng_hawkes.random() * lam_tot_h
+            if u_kind < lam_mo_h:
+                kind = 0
+            elif u_kind < lam_mo_h + lam_lo_h:
+                kind = 1
+            else:
+                kind = 2
+            if kind != 2:
+                side = 1 if rng_hawkes.random() < 0.5 else -1
+        else:
+            # --- S6: 定数レート (乱数消費列をビット単位で維持) ---
+            u_cat = rng_type.random() * lam_total
+            # [0, mu) MO買い / [mu, 2mu) MO売り / [2mu, 2mu+a) LO買い /
+            # [.., 2mu+2a) LO売り / 残り CX
+            if u_cat < 2.0 * mu_mo:
+                kind = 0
+                side = 1 if u_cat < mu_mo else -1
+            elif u_cat < 2.0 * mu_mo + 2.0 * alpha_lo:
+                kind = 1
+                side = 1 if u_cat < 2.0 * mu_mo + alpha_lo else -1
+            else:
+                kind = 2
         ev_row = n_events
 
-        if u_cat < 2.0 * mu_mo:
+        if kind == 0:
             # ---------------- 成行 ----------------
-            side = 1 if u_cat < mu_mo else -1
             size = _draw_size(rng_size, w_round, lot_cum, lot_vals, pareto_alpha)
             remaining = size
             counters[C_SUBMITTED_MO] += 1.0
@@ -442,9 +547,8 @@ def run_zi_book(
             ev[EV_EXEC, ev_row] = size - remaining
             counters[C_VOL_AGGR] += size - remaining
 
-        elif u_cat < 2.0 * mu_mo + 2.0 * alpha_lo:
+        elif kind == 1:
             # ---------------- 指値 ----------------
-            side = 1 if u_cat < 2.0 * mu_mo + alpha_lo else -1
             size = _draw_size(rng_size, w_round, lot_cum, lot_vals, pareto_alpha)
             counters[C_SUBMITTED_LO] += 1.0
             counters[C_VOL_LO_IN] += size
@@ -603,7 +707,11 @@ def run_zi_book(
         else:
             # ---------------- 取消 ----------------
             if n_live == 0:
-                # 生存注文が無ければ空振り (レートが n_live 比例なのでほぼ来ない)
+                # 生存注文が無ければ空振り (S6: レートが n_live 比例なのでほぼ来ない。
+                # S7: 励起項は n_live=0 でも正になり得る → 空振り数を記録し、
+                # その子孫は失われる — n の会計上の漏れとして README に明記)
+                if use_hawkes:
+                    counters[C_CX_NOOP] += 1.0
                 continue
             u_pick = rng_cancel.random()
             idx = int(u_pick * n_live)
@@ -685,6 +793,15 @@ def run_zi_book(
                         counters[C_INV_FIFO_VIOL] += 1.0
                     if not vol_ok:
                         counters[C_INV_VOL_VIOL] += 1.0
+
+        # ---------------- S7: 励起状態の跳ね (処理済みイベントのみ) ----------------
+        # 型 x のイベントは h_states[y,k] += a[x,y]·w_k·β_k を加える。
+        # ∫カーネル = a[x,y]·Σw = a[x,y] なので分岐比 n = ρ(a) が厳密に保たれる。
+        if use_hawkes:
+            for k in range(n_kern):
+                jump = h_w[k] * h_beta_day[k]
+                for y in range(3):
+                    h_states[y, k] += h_a[kind, y] * jump
 
     # 終了処理
     counters[C_LIVE_ORDERS] = n_live

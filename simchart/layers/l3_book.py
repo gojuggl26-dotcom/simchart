@@ -77,10 +77,17 @@ class ZIBook:
 
     name = "l3.zi_book"
 
-    def __init__(self, config: Config, rng: RNGRegistry, calendar: ConstantCalendar) -> None:
+    def __init__(
+        self,
+        config: Config,
+        rng: RNGRegistry,
+        calendar: ConstantCalendar,
+        activity: ConstantActivity | None = None,
+    ) -> None:
         self._config = config
         self._rng = rng
         self._calendar = calendar
+        self._activity = activity
         self.last_diagnostics: dict = {}
 
     # ------------------------------------------------------------------
@@ -124,7 +131,6 @@ class ZIBook:
             run_zi_book,
         )
 
-        del activity
         cfg = self._config
         cal = calendar or self._calendar
         session = cal.session_seconds()
@@ -138,18 +144,69 @@ class ZIBook:
         p0_tick = cfg.book_window_half_ticks  # 窓の中心 = p0
         # 容量見積: 到着 (MO+LO) + 取消 (定常 N ~ 2α/δ) + TRADE 行 + 余白。
         n_res = 2.0 * cfg.book_alpha_lo / cfg.book_delta_cancel
-        rate_per_day = (
-            2.0 * (cfg.book_mu_mo + cfg.book_alpha_lo)
-            + cfg.book_delta_cancel * n_res
-            + 2.5 * cfg.book_mu_mo  # TRADE 行 (1 約定 = 平均 ~2 レベル強)
-        )
-        ev_capacity = int(cfg.n_days * rate_per_day * 1.5) + 100_000
+
+        # ---------------- S7: Hawkes 引数の構築 ----------------
+        use_hawkes = bool(cfg.enable_hawkes)
+        if use_hawkes:
+            act = activity if activity is not None else self._activity
+            if act is None or not hasattr(act, "betas_per_day"):
+                raise TypeError(
+                    "enable_hawkes には HawkesActivity が必要です"
+                    " (build_book_layer 経由で構築すること)。"
+                )
+            h_a = act.matrix()
+            h_beta_day = act.betas_per_day()
+            h_w = act.weights()
+            h_mu_mo = float(cfg.hawkes_mu_mo)
+            h_mu_lo = float(cfg.hawkes_mu_lo)
+            h_delta0 = float(cfg.hawkes_delta0)
+            # φ_λ(u) の格子 (季節性はベースラインのみ — §3.3)。thinning の上界は
+            # カーネル側も同じ格子を引くので、格子の最大値が厳密な上界になる。
+            m_phi = 4096
+            u_grid = (np.arange(m_phi, dtype=np.float64) + 0.5) / m_phi
+            if hasattr(cal, "phi_lambda_of_u"):
+                phi_tab = np.asarray(cal.phi_lambda_of_u(u_grid), dtype=np.float64)
+            else:
+                phi_tab = np.ones(m_phi, dtype=np.float64)
+            phi_max = float(phi_tab.max())
+            # 定常レートと容量。総数の期待値は ∫φ=1 より季節性で変わらない。
+            r_vec = act.stationary_rates()
+            rate_per_day = float(r_vec.sum() + 2.5 * r_vec[0])
+            # クラスタリングで日単位は過分散になるが全期間の総数の相対 SD は
+            # 微小 (Fano ~ (1-n)^-2 でも 500 日合計では ≪1%) — 1.6 倍で足りる。
+            ev_capacity = int(cfg.n_days * rate_per_day * 1.6) + 100_000
+            # 強度上限 [1/日]: 定常総レートの cap_mult 倍 (§5.3 バーストガード)。
+            h_cap = float(cfg.hawkes_intensity_cap_mult * r_vec.sum())
+            h_day_cap = int(cfg.hawkes_daily_event_cap)
+            rng_hawkes = self._rng.get("l1.hawkes")
+        else:
+            rate_per_day = (
+                2.0 * (cfg.book_mu_mo + cfg.book_alpha_lo)
+                + cfg.book_delta_cancel * n_res
+                + 2.5 * cfg.book_mu_mo  # TRADE 行 (1 約定 = 平均 ~2 レベル強)
+            )
+            ev_capacity = int(cfg.n_days * rate_per_day * 1.5) + 100_000
+            # ダミー (use_hawkes=False ではカーネルが一切読まない)
+            h_a = np.zeros((3, 3), dtype=np.float64)
+            h_beta_day = np.ones(1, dtype=np.float64)
+            h_w = np.ones(1, dtype=np.float64)
+            h_mu_mo = 0.0
+            h_mu_lo = 0.0
+            h_delta0 = 0.0
+            phi_tab = np.ones(8, dtype=np.float64)
+            phi_max = 1.0
+            h_cap = 1.0
+            h_day_cap = 1
+            # ★S6 経路のビット単位不変: レジストリのストリームは取得だけでも
+            # 名前ハッシュ独立なので他ストリームに影響しないが、紛れを避けるため
+            # 使い捨ての Generator を渡す (カーネルは一度も呼ばない)。
+            rng_hawkes = np.random.default_rng(0)
         max_orders = int(n_res * 20) + 50_000
 
         # JIT ウォームアップ (コンパイル / キャッシュロードを計測から外す)。
         # ★使い捨ての Generator を使う — レジストリのストリームを消費すると
         # 決定論が壊れる。出力は捨てる。
-        _warm = [np.random.default_rng(i) for i in range(4)]
+        _warm = [np.random.default_rng(i) for i in range(5)]
         run_zi_book(
             _warm[0], _warm[1], _warm[2], _warm[3],
             0.2, float(session),
@@ -165,6 +222,9 @@ class ZIBook:
             float(step_sec),
             100_000, 100_000,
             False, 50_000,
+            use_hawkes, _warm[4],
+            h_a, h_beta_day, h_w, h_mu_mo, h_mu_lo, h_delta0,
+            phi_tab, phi_max, h_cap, h_day_cap,
         )
 
         started = time.perf_counter()
@@ -186,6 +246,9 @@ class ZIBook:
             float(step_sec),
             int(max_orders), int(ev_capacity),
             bool(cfg.book_debug_invariants), 50_000,
+            use_hawkes, rng_hawkes,
+            h_a, h_beta_day, h_w, h_mu_mo, h_mu_lo, h_delta0,
+            phi_tab, phi_max, h_cap, h_day_cap,
         )
         engine_runtime = time.perf_counter() - started
 
@@ -297,6 +360,33 @@ class ZIBook:
             "ev_capacity": int(ev_capacity),
             "max_orders": int(max_orders),
         }
+        if use_hawkes:
+            from .book_engine import (
+                C_CX_NOOP,
+                C_H_CANDIDATES,
+                C_H_CAP_HITS,
+                C_H_DAYCAP_HITS,
+                C_H_REJECTED,
+            )
+
+            n_cand = float(counters[C_H_CANDIDATES])
+            self.last_diagnostics["hawkes"] = {
+                "branching_ratio_design": float(act.branching_ratio()),
+                "stationary_rates_target_per_day": [float(v) for v in r_vec],
+                "intensity_cap_per_day": h_cap,
+                "candidates": int(n_cand),
+                "rejected": int(counters[C_H_REJECTED]),
+                "acceptance_rate": (
+                    1.0 - counters[C_H_REJECTED] / n_cand if n_cand > 0 else None
+                ),
+                "cap_hits": int(counters[C_H_CAP_HITS]),
+                "cap_hit_rate": (
+                    counters[C_H_CAP_HITS] / n_cand if n_cand > 0 else None
+                ),
+                "daycap_hits": int(counters[C_H_DAYCAP_HITS]),
+                "cx_noop": int(counters[C_CX_NOOP]),
+                "phi_lambda_max": phi_max,
+            }
         return observation, events, book
 
 
@@ -313,7 +403,8 @@ def build_book_layer(
     if config.kappa != 0.0:
         raise NotImplementedError("p* との結合 (kappa) は S10 で実装します。")
     if config.enable_book:
-        del activity
-        return ZIBook(config, rng, calendar)
+        # S7+: Hawkes の仕様 (行列・カーネル・ベースライン) は L1 が持ち、
+        # L3 はそれを消費する。S6 (enable_hawkes=False) では使わない。
+        return ZIBook(config, rng, calendar, activity)
     del rng, activity  # S0〜S5 の L3 は乱数も活動度も使わない
     return PassThroughBook(config, calendar)

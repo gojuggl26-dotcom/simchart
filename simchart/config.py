@@ -37,7 +37,7 @@ __all__ = [
 STAGES: tuple[str, ...] = tuple(f"S{i}" for i in range(14))
 
 #: 現時点で実装が存在する段階。段階を進めるたびにここへ追加する。
-IMPLEMENTED_STAGES: tuple[str, ...] = ("S0", "S1", "S2", "S3", "S4", "S5", "S6")
+IMPLEMENTED_STAGES: tuple[str, ...] = ("S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7")
 
 #: 年率ボラを 1 ステップ分に落とすときの営業日数。
 TRADING_DAYS_PER_YEAR: int = 252
@@ -50,7 +50,6 @@ SESSION_SECONDS: float = 6.5 * 3600.0
 # 未実装フラグの表: フラグ名 -> (実装段階, 内容, 追加先)
 # ---------------------------------------------------------------------------
 UNIMPLEMENTED_FLAGS: dict[str, tuple[str, str, str]] = {
-    "enable_hawkes": ("S7", "多変量 Hawkes 注文流", "simchart/layers/l1_activity.py"),
     "enable_chaos_lambda": ("S12", "カオス的強度変調 chi_1", "simchart/layers/l1_activity.py"),
     "enable_chaos_branching": ("S12", "カオス的分岐比変調 chi_3", "simchart/layers/l1_activity.py"),
     "enable_metaorder": ("S8", "メタオーダー分割と符号自己相関", "simchart/layers/l3_book.py"),
@@ -74,6 +73,7 @@ IMPLEMENTED_FLAGS: tuple[str, ...] = (
     "enable_book",  # S6
     "book_allow_inspread",  # S6 (板の従属 bool — improvement の許可)
     "book_debug_invariants",  # S6 (板の従属 bool — 毎イベント検証)
+    "enable_hawkes",  # S7
 )
 
 #: フラグ以外 (数値パラメータ) の未実装条件。
@@ -398,8 +398,46 @@ class Config:
     #: 生成物キャッシュの置き場 (再現性の証拠。ロード時に必ずハッシュ照合される)。
     chaos_cache_dir: str = "cache"
 
-    # --- L1 ---
+    # --- L1 / S7: 多変量 Hawkes 注文流 ---
+    # ★6 次元 {成行,指値,取消}×{買,売} に**符号対称制約** Φ[買X→買Y]=Φ[買X→売Y] を
+    # 課す (指示書 §3.1)。⑪ 符号 ACF は S8 のメタオーダー分割の担当で、Hawkes の
+    # 交差励起に符号相関を持たせると二重計上になり γ・β の整合が崩れる。この制約の
+    # もとで 6D は「型レベル 3D Hawkes + iid 符号」と厳密に等価 (6×6 ブロック行列
+    # [[A/2,A/2],[A/2,A/2]] のスペクトル半径 = ρ(A)) — 実装は 3D で行う。
     enable_hawkes: bool = False  # S7
+    #: 励起行列 a[X][Y] = 型 X のイベント 1 件が生む型 Y の子孫の期待数
+    #: (両サイド合算)。ρ(a) = 0.830 (目標帯 0.80〜0.85、S12 で χ₃ が変調するまで固定)。
+    #: 構造は指示書 §4.3 の目安 (対角支配 + 成行→取消 = 約定を見て指値を引く挙動 =
+    #: ⑬ の源)。値は scripts/calibrate_s7_hawkes.py の出力 — 定常レートを **S6 の
+    #: 実測** r = (1800, 3000, 1195)/日 に保つ mu = (I-a^T)r > 0 の制約下で較正。
+    #: ★取消レートを δ·N̄ = 4500/日 と仮定した初版較正は誤り (取消数は指値流入を
+    #: 超えられない。実測 N̄ = 239)。誤った r で走らせると励起駆動の取消が板を
+    #: 食い尽くし、42% の時間で片側が空になりミッドが窓から逸脱した (実測)。
+    hawkes_a: tuple[tuple[float, ...], ...] = (
+        (0.6722, 0.4608, 0.1149),
+        (0.0739, 0.4733, 0.1077),
+        (0.0807, 0.2491, 0.2154),
+    )
+    #: 指数和カーネルの時定数 [秒]。最遅 300 秒 (指示書 §3.2 の上限 1 時間の内側) —
+    #: 日次に伸ばすと S10 で MSM の帯域と競合して ③ を壊す。Hawkes は秒〜分の
+    #: 反応連鎖の担当で、日次以上は L2 (と S10 の Z_t) の担当。
+    hawkes_tau_seconds: tuple[float, ...] = (0.5, 10.0, 300.0)
+    hawkes_weights: tuple[float, ...] = (0.5, 0.3, 0.2)
+    #: ベースライン [件/日/側]。mu = (I - a^T) r から逆算 (r = S6 実測 1800/3000/1195)。
+    #: ベースラインシェアは MO/LO 15.1%・CX 34.1% (残りが励起由来)。
+    hawkes_mu_mo: float = 135.95
+    hawkes_mu_lo: float = 226.49
+    #: 取消のベースラインは**各注文独立ハザード δ0·N(t) を維持**する (S6 の構造)。
+    #: 定数ベースラインに置き換えると板の復元力が消えて N がランダムウォークし
+    #: 500 日で板が漂流する。励起は加法なので n の会計は厳密のまま。これは S9 が
+    #: 禁じる「板の状態への戦略的依存」ではなく S6 から継続する簿記構造 (README)。
+    #: δ0 = mu_cx / N̄ref。N̄ref は S6 本番 500 日の実測平均生存注文数。
+    hawkes_delta0: float = 1.7061
+    hawkes_nbar_ref: float = 238.95  # = 597386 取消 / 500 日 / (δ=5)
+    #: バーストガード (指示書 §5.3): 総強度の上限 (非励起ベースライン最大値の倍数) と
+    #: 1 日あたり最大イベント数。発動はカウンタに記録され、ゲートが頻度 < 0.01% を課す。
+    hawkes_intensity_cap_mult: float = 50.0
+    hawkes_daily_event_cap: int = 500_000
     enable_chaos_lambda: bool = False  # S12 (chi_1)
     enable_chaos_branching: bool = False  # S12 (chi_3)
 
@@ -547,6 +585,11 @@ class Config:
         "chaos_n_exponent", "chaos_dt", "chaos_ic", "chaos_burn_in_units",
         "chaos_days_per_unit", "vol_var_target_chaos", "chaos_normalization",
     )
+    _S7_HAWKES_PARAMS = (
+        "hawkes_a", "hawkes_tau_seconds", "hawkes_weights",
+        "hawkes_mu_mo", "hawkes_mu_lo", "hawkes_delta0", "hawkes_nbar_ref",
+        "hawkes_intensity_cap_mult", "hawkes_daily_event_cap",
+    )
     _S6_BOOK_PARAMS = (
         "tick_size", "book_mu_mo", "book_alpha_lo", "book_delta_cancel",
         "book_mu_place", "book_place_offset", "book_max_place_ticks",
@@ -570,6 +613,7 @@ class Config:
             ("enable_overnight", self._S4_OVERNIGHT_PARAMS),
             ("enable_chaos_vol", self._S5_CHAOS_PARAMS),
             ("enable_book", self._S6_BOOK_PARAMS),
+            ("enable_hawkes", self._S7_HAWKES_PARAMS),
         ):
             if not getattr(self, flag):
                 changed = [n for n in params if getattr(self, n) != defaults[n]]
@@ -767,6 +811,58 @@ class Config:
                     "book_window_half_ticks * tick_size が p0 以上です。"
                     " 窓の下端が非正の価格になり、対数価格が定義できません。"
                 )
+        if self.enable_hawkes:
+            if not self.enable_book:
+                raise ValueError(
+                    "enable_hawkes=True には enable_book=True が必要です"
+                    " (Hawkes は板の注文流の強度 — 板が無いと消費先が無い)"
+                )
+            import numpy as _np
+
+            a_mat = _np.asarray(self.hawkes_a, dtype=float)
+            if a_mat.shape != (3, 3) or (a_mat < 0).any():
+                raise ValueError("hawkes_a は非負の 3x3 行列である必要があります")
+            rho = float(max(abs(_np.linalg.eigvals(a_mat))))
+            if rho >= 1.0:
+                raise ValueError(
+                    f"分岐比 rho(a) = {rho:.4f} >= 1 (爆発条件)。n < 1 を厳守すること"
+                    f" (指示書 §4.2)。"
+                )
+            if len(self.hawkes_tau_seconds) != len(self.hawkes_weights):
+                raise ValueError("hawkes_tau_seconds と hawkes_weights の長さが一致しません")
+            if abs(sum(self.hawkes_weights) - 1.0) > 1e-9:
+                raise ValueError("hawkes_weights の合計が 1 ではありません (∫Φ = a の規約)")
+            if any(t <= 0 for t in self.hawkes_tau_seconds):
+                raise ValueError("hawkes_tau_seconds は正である必要があります")
+            if max(self.hawkes_tau_seconds) > 3600.0:
+                raise ValueError(
+                    f"カーネル最遅時定数 {max(self.hawkes_tau_seconds)}s > 1 時間。"
+                    f" 日次帯域に食い込むと S10 で MSM と競合して ③ が壊れる (指示書 §3.2)。"
+                )
+            if self.hawkes_mu_mo <= 0 or self.hawkes_mu_lo <= 0 or self.hawkes_delta0 <= 0:
+                raise ValueError("Hawkes のベースラインは正である必要があります")
+            if self.hawkes_nbar_ref <= 0:
+                raise ValueError("hawkes_nbar_ref (参照定常注文数) は正である必要があります")
+            # ★フロー実行可能性: 定常の取消レートは指値流入を超えられない
+            # (取消は板に載った注文しか消せず、約定退出のぶん厳密に少ない)。
+            # これを破った初版較正 (r_CX=4500 > r_LO=3000) は励起駆動の取消が
+            # 板を食い尽くし、42% の時間で片側が空になった (実測)。
+            # なお r > 0 自体は mu > 0 と rho < 1 から自動で従うので検査しない。
+            mu_vec = _np.array(
+                [
+                    2.0 * self.hawkes_mu_mo,
+                    2.0 * self.hawkes_mu_lo,
+                    self.hawkes_delta0 * self.hawkes_nbar_ref,
+                ]
+            )
+            r_vec = _np.linalg.solve(_np.eye(3) - a_mat.T, mu_vec)
+            if r_vec[2] >= r_vec[1]:
+                raise ValueError(
+                    f"定常取消レート r_CX = {r_vec[2]:.0f}/日 >= 指値流入 r_LO ="
+                    f" {r_vec[1]:.0f}/日。板に載らない注文は取り消せないので、この"
+                    f" 較正は板を枯渇させる。scripts/calibrate_s7_hawkes.py で"
+                    f" S6 の実測レートから較正し直すこと。"
+                )
         if self.vol_var_budget_total <= 0:
             raise ValueError("vol_var_budget_total は正である必要があります")
         allocated = (
@@ -791,10 +887,13 @@ class Config:
         ★``replace(enable_book=False)`` だけでは足りない: 板パラメータが既定値から
         動いていると「フラグ off + 非既定パラメータ」の暗黙 no-op ガードに当たる。
         板パラメータも既定値へ戻す (L2 には一切影響しない値なので比較は成立する)。
+        S7 以降は Hawkes も同時に外す (enable_hawkes は enable_book を要求するため、
+        板を外した基準ランでは必ず両方落ちる。L2 は Hawkes を一切読まない)。
         """
         defaults = {f.name: f.default for f in dataclasses.fields(type(self))}
         resets = {name: defaults[name] for name in self._S6_BOOK_PARAMS}
-        return self.replace(enable_book=False, **resets)
+        resets.update({name: defaults[name] for name in self._S7_HAWKES_PARAMS})
+        return self.replace(enable_book=False, enable_hawkes=False, **resets)
 
     @property
     def total_steps(self) -> int:
@@ -898,13 +997,22 @@ class Config:
 
 
 def _coerce(cls: type, data: Mapping[str, Any]) -> dict[str, Any]:
-    """YAML の list を dataclass 側の tuple 既定値に合わせて変換する。"""
+    """YAML の list を dataclass 側の tuple 既定値に合わせて変換する。
+
+    ★入れ子の list (hawkes_a のような tuple[tuple, ...]) は**再帰的に** tuple 化
+    する。外側だけ変換すると (list, list, ...) の tuple になり、既定値との比較や
+    「フラグ off + 非既定パラメータ」ガードが誤発火する (to_dict 往復で実際に発火)。
+    """
     defaults = {f.name: f for f in dataclasses.fields(cls)}
+
+    def deep(v: Any) -> Any:
+        return tuple(deep(x) for x in v) if isinstance(v, list) else v
+
     out: dict[str, Any] = {}
     for key, value in data.items():
         fld = defaults[key]
         default_value = fld.default if fld.default is not dataclasses.MISSING else None
         if isinstance(default_value, tuple) and isinstance(value, list):
-            value = tuple(value)
+            value = deep(value)
         out[key] = value
     return out
