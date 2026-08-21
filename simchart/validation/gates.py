@@ -1546,7 +1546,180 @@ _S6_NEW_GATES: tuple[Gate, ...] = (
 
 S6_GATES: tuple[Gate, ...] = _S6_INHERITED_GATES + _S6_NEW_GATES
 
-#: 段階ごとのゲート。S7 以降を実装するときはここに追加する。
+
+# ---------------------------------------------------------------------------
+# S7: 符号対称 Hawkes 注文流
+# ---------------------------------------------------------------------------
+def _hawkes_abs_within(key: str, tol: float) -> Callable[[Any], bool]:
+    def check(value: Any) -> bool:
+        if not isinstance(value, Mapping):
+            return False
+        v = value.get(key)
+        return v is not None and abs(float(v)) <= tol
+
+    return check
+
+
+def _hawkes_clustered_check(value: Any) -> bool:
+    """到着間隔が指数から明確に離れている (S6 ゲートの反転)。"""
+    if not isinstance(value, Mapping):
+        return False
+    cv2 = value.get("interevent_cv2")
+    p = value.get("ks_pvalue_vs_exponential")
+    return cv2 is not None and float(cv2) > 1.5 and p is not None and float(p) < 1e-6
+
+
+def _burst_guard_check(value: Any) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    rate = value.get("cap_hit_rate")
+    day = value.get("daycap_hits")
+    return rate is not None and float(rate) < 1e-4 and day is not None and int(day) == 0
+
+
+def _block_sd_check(value: Any) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    blocks = value.get("blocks")
+    if not isinstance(blocks, Mapping):
+        return False
+    sd = blocks.get("n_hat_sd")
+    return sd is not None and float(sd) < 0.02
+
+
+#: S7 で落とす S6 ゲート: 「到着は Poisson」— S7 の本体がこれを**意図して**壊す。
+#: 置き換え先は hawkes_interevent_clustered / hawkes_overdispersion (反転側の検定)。
+_S7_DROPPED_GATES = {"interevent_exponential"}
+
+_S7_INHERITED_GATES: tuple[Gate, ...] = tuple(
+    g for g in S6_GATES if g.name not in _S7_DROPPED_GATES
+)
+
+_S7_NEW_GATES: tuple[Gate, ...] = (
+    # --- 分岐比の 3 経路再推定 (指示書の中心ゲート) ---
+    Gate(
+        name="hawkes_n_true_phi",
+        metric_path="hawkes.three_way",
+        check=_hawkes_abs_within("true_phi_minus_design", 0.05),
+        threshold="真の φ_λ で脱季節化した MLE の n̂ が設計値 ±0.05",
+        description=(
+            "β 固定・振幅のみの 3D MLE (ターゲット型別の凹最大化)。"
+            "500 日実測 +0.0008 (50 日ブロック SD 0.003)。CX ベースラインの"
+            "モデル不一致 (δ0·N(t) を定数近似) はこの規模では現れない。"
+        ),
+    ),
+    Gate(
+        name="hawkes_n_est_phi",
+        metric_path="hawkes.three_way",
+        check=_hawkes_abs_within("est_phi_minus_design", 0.08),
+        threshold="推定 φ̂_λ (52 ビンのイベント数、真値を参照しない) で ±0.08",
+        description=(
+            "実データで可能な唯一の経路の再現。500 日実測 +0.0006 — 52 ビンの"
+            "φ̂ で真値経路と実質同精度が出る。"
+        ),
+    ),
+    Gate(
+        name="hawkes_raw_inflated",
+        metric_path="hawkes.three_way",
+        check=lambda v: (
+            isinstance(v, Mapping)
+            and v.get("raw_inflation_over_true") is not None
+            and float(v["raw_inflation_over_true"]) > 0.03
+        ),
+        threshold="脱季節化なしの n̂ が真値経路より +0.03 以上大きい",
+        description=(
+            "★Filimonov–Sornette の罠の実証ゲート (落ちたら困る側が逆): 日内 U 字を"
+            "除去しないと活発時間帯への集中を自己励起と誤認して n̂ が過大になる。"
+            "500 日実測 +0.066 (0.830 → 0.897)。これが S4 の脱季節化機構の存在理由。"
+        ),
+    ),
+    Gate(
+        name="hawkes_block_stability",
+        metric_path="hawkes.three_way",
+        check=_block_sd_check,
+        threshold="50 日ブロック別 n̂ の SD < 0.02",
+        description="n̂ が期間内で漂わない (非定常や局所暴走の検出)。実測 SD 0.0031。",
+    ),
+    Gate(
+        name="hawkes_residual_poisson",
+        metric_path="hawkes.rescaling.ks_pvalue",
+        check=_gt(0.01),
+        threshold="時間再スケーリング後の間隔が Exp(1) (KS p > 0.01)",
+        description=(
+            "Ogata の残差検定。当てはめモデルの Λ(t) で時間変換すると単位 Poisson に"
+            "戻るはず。500 日 (297 万イベント) 実測 p=0.34・mean_tau=1.0000。"
+            "誤モデル (励起なし) は p<1e-6 で棄却される (検定力はテストで確認済み)。"
+        ),
+    ),
+    # --- クラスタリングの存在 (S6 からの反転) ---
+    Gate(
+        name="hawkes_overdispersion",
+        metric_path="hawkes.overdispersion.fano_60s",
+        check=_gt(1.3),
+        threshold="1 分窓の Fano > 1.3 (指示書 §9)",
+        description=(
+            "自己励起の直接証拠。500 日実測 14.4 (Poisson なら 1)。長窓は"
+            " (1-n)^-2 = 34.6 に加えて φ の日内変動が乗る (1800s 窓で 191)。"
+        ),
+    ),
+    Gate(
+        name="hawkes_interevent_clustered",
+        metric_path="hawkes.overdispersion",
+        check=_hawkes_clustered_check,
+        threshold="間隔 CV² > 1.5 かつ KS が指数を棄却 (p < 1e-6)",
+        description="S6 の interevent_exponential の反転。実測 CV²=6.4。",
+    ),
+    # --- 季節性の消費とレートの整合 ---
+    Gate(
+        name="hawkes_intraday_u_shape",
+        metric_path="hawkes.intraday_shape.corr",
+        check=_gt(0.9),
+        threshold="u ビン別イベント数と φ_λ(u) の相関 > 0.9",
+        description=(
+            "季節性がベースラインに乗っている確認 (カーネル ≤300s の平滑化込み)。"
+            "実測 0.994。"
+        ),
+    ),
+    Gate(
+        name="hawkes_volume_acf",
+        metric_path="hawkes.volume_acf",
+        check=lambda v: (
+            isinstance(v, Mapping)
+            and v.get("lag1") is not None and float(v["lag1"]) > 0.0
+            and v.get("z_lag1") is not None and float(v["z_lag1"]) > 4.0
+        ),
+        threshold="分単位出来高の ACF(1) が正で z > 4 (指示書 §9: 分スケールの正相関)",
+        description=(
+            "活動度クラスタリング → 出来高クラスタリング (⑦ の前駆)。"
+            "実測 lag1=+0.34 (z=151)、lag30 でも +0.1 台。S6 では ≈0。"
+        ),
+    ),
+    Gate(
+        name="hawkes_realized_rates",
+        metric_path="hawkes.realized_rates.max_abs_rel_diff",
+        check=_lt(0.05),
+        threshold="実現レート (MO/LO/CX) が定常目標 ±5%",
+        description=(
+            "μ = (I-aᵀ)r 較正の閉ループ確認。500 日実測は最大 0.27% (CX)。"
+            "±5% を超えたら較正の前提 (N̄ref 等) が崩れている。"
+        ),
+    ),
+    # --- ガード (§5.3) ---
+    Gate(
+        name="hawkes_burst_guard",
+        metric_path="hawkes.guards",
+        check=_burst_guard_check,
+        threshold="強度上限ガードの発動率 < 0.01% かつ日次件数ガード発動 0",
+        description=(
+            "n=0.83 の健全な較正では発動しない (実測 0)。発動が見えたら"
+            "暴走の兆候 — 数値を疑う前に較正と board 状態を調べる。"
+        ),
+    ),
+)
+
+S7_GATES: tuple[Gate, ...] = _S7_INHERITED_GATES + _S7_NEW_GATES
+
+#: 段階ごとのゲート。S8 以降を実装するときはここに追加する。
 STAGE_GATES: dict[str, tuple[Gate, ...]] = {
     "S0": S0_GATES,
     "S1": S1_GATES,
@@ -1555,6 +1728,7 @@ STAGE_GATES: dict[str, tuple[Gate, ...]] = {
     "S4": S4_GATES,
     "S5": S5_GATES,
     "S6": S6_GATES,
+    "S7": S7_GATES,
 }
 
 

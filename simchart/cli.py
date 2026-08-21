@@ -207,6 +207,50 @@ def _book_seed_stats(result, config: Config) -> dict[str, float | None]:
     return out
 
 
+def _hawkes_seed_stats(result, config: Config) -> dict[str, float | None]:
+    """S7 のシード別 Hawkes 統計 (multiseed の中央値記録用)。
+
+    ゲート判定は seed 42 の単一実行 (500 日 = 297 万イベントで n̂ の 50 日ブロック
+    SD が 0.003)。ここではシード間のばらつきを記録する。raw 経路の再推定は
+    シードごとには回さない (計算が支配的になる割に情報が薄い — 単一シードの
+    +0.066 と多シードの n̂_true の安定で足りる)。
+    """
+    import numpy as np
+
+    from .validation.hawkes import hawkes_mle, marks_from_eventlog
+
+    times, marks = marks_from_eventlog(result.events)
+    session = float(result.observation.session_seconds)
+    t_end = config.n_days * session
+    betas = 1.0 / np.asarray(config.hawkes_tau_seconds, dtype=np.float64)
+    w = np.asarray(config.hawkes_weights, dtype=np.float64)
+
+    phi_table = None
+    if config.enable_seasonality:
+        from .layers.l0_calendar import build_calendar
+        from .rng import RNGRegistry
+
+        cal = build_calendar(config, RNGRegistry(config.seed))
+        u = (np.arange(4096, dtype=np.float64) + 0.5) / 4096
+        phi_table = np.asarray(cal.phi_lambda_of_u(u))
+
+    fit = hawkes_mle(
+        times, marks, t_end, betas, w,
+        phi_table=phi_table, session_seconds=session if phi_table is not None else None,
+    )
+    burn = config.book_burn_in_days * session
+    t_b = times[times >= burn]
+    edges = np.arange(burn, t_end + 60.0, 60.0)
+    c, _ = np.histogram(t_b, bins=edges)
+    h_diag = (result.meta.get("l3") or {}).get("hawkes") or {}
+    return {
+        "hawkes_n_hat_true_phi": float(fit["n_hat"]) if fit["converged"] else None,
+        "hawkes_fano_60s": float(c.var() / c.mean()) if c.mean() > 0 else None,
+        "hawkes_acceptance": h_diag.get("acceptance_rate"),
+        "hawkes_cap_hits": float(h_diag.get("cap_hits", -1)),
+    }
+
+
 def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
     """ノイズの大きい指標をシードを変えて測り、中央値・IQR を返す (S3 指示書 §8)。
 
@@ -297,6 +341,10 @@ def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
         if config.enable_book:
             stats = _book_seed_stats(result, config)
             for key_, val_ in stats.items():
+                per_seed.setdefault(key_, []).append(val_)
+        if config.enable_hawkes:
+            hstats = _hawkes_seed_stats(result, config)
+            for key_, val_ in hstats.items():
                 per_seed.setdefault(key_, []).append(val_)
         del result, obs, step_r, rv_daily
         print(f"      シード {seed} ({i + 1}/{n_seeds}) 完了", flush=True)
@@ -478,6 +526,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         for name in (
             "hill_alpha", "leverage_corr", "jv_share", "skewness_daily",
             "dilution_sd_ratio", "dilution_corr_logiv",
+            "hawkes_n_hat_true_phi", "hawkes_fano_60s",
         ):
             info = multiseed.get(name) or {}
             if info.get("median") is not None:

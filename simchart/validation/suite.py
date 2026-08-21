@@ -25,11 +25,13 @@ from typing import Any, Mapping
 
 import numpy as np
 
+from scipy import stats as _sp_stats
+
 from ..config import TRADING_DAYS_PER_YEAR, Config
 from ..types import StageResult
 from . import chaos as chaos_val
 from . import cross, ensemble, memory, micro, scaling, seasonality, tails
-from .base import na, safe_call
+from .base import na, num, ok, safe_call
 
 __all__ = ["run_all", "collect_errors", "flatten", "standardized_returns"]
 
@@ -463,6 +465,10 @@ def run_all(result: StageResult, config: Config | None = None) -> dict[str, Any]
     metrics["book"] = _book_metrics(result, cfg)
 
     # ------------------------------------------------------------------
+    # hawkes: 符号対称 Hawkes 注文流 (S7)。分岐比 3 経路・残差検定・過分散。
+    metrics["hawkes"] = _hawkes_metrics(result, cfg)
+
+    # ------------------------------------------------------------------
     # chaos: 決定論的カオス成分 chi_2 (S5)。
     metrics["chaos"] = _chaos_metrics(result, cfg, r_daily)
 
@@ -746,6 +752,174 @@ def _book_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
         out["mid_vs_trade_signature"] = {"status": "ok", "value": rows.get("ratio_60_over_1800"), **rows}
     else:
         out["mid_vs_trade_signature"] = na("約定が足りません")
+
+    return out
+
+
+def _hawkes_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
+    """S7 の測定群。Hawkes が無効なら全枝 ``not_applicable``。
+
+    中心は分岐比の 3 経路再推定 (raw / true-φ / est-φ̂) — S4 の脱季節化機構が
+    無いと n̂ が系統的に過大になる (Filimonov–Sornette) ことの実証と、
+    その対策が効いていることの確認を同時に行う。
+    """
+    keys = (
+        "three_way", "rescaling", "overdispersion", "intraday_shape",
+        "volume_acf", "guards", "realized_rates", "fano_reestimate",
+    )
+    if not cfg.enable_hawkes:
+        return {k: na("enable_hawkes=False") for k in keys}
+
+    from . import hawkes as hk
+
+    times, marks = hk.marks_from_eventlog(result.events)
+    session = float(result.observation.session_seconds)
+    t_end = cfg.n_days * session
+    burn_sec = cfg.book_burn_in_days * session
+    a_mat = np.asarray(cfg.hawkes_a, dtype=np.float64)
+    betas = 1.0 / np.asarray(cfg.hawkes_tau_seconds, dtype=np.float64)  # [1/秒]
+    w = np.asarray(cfg.hawkes_weights, dtype=np.float64)
+    n_design = float(np.max(np.abs(np.linalg.eigvals(a_mat))))
+
+    # 真の φ_λ テーブル (エンジンが消費するのと同じ 4096 格子)
+    true_phi: np.ndarray | None = None
+    if cfg.enable_seasonality:
+        from ..layers.l0_calendar import build_calendar
+        from ..rng import RNGRegistry
+
+        cal = build_calendar(cfg, RNGRegistry(cfg.seed))
+        m_phi = 4096
+        u_grid = (np.arange(m_phi, dtype=np.float64) + 0.5) / m_phi
+        true_phi = np.asarray(cal.phi_lambda_of_u(u_grid), dtype=np.float64)
+
+    out: dict[str, Any] = {}
+
+    # --- 分岐比の 3 経路 (中心ゲート) ---
+    block_days = 50.0 if cfg.n_days >= 200 else max(10.0, cfg.n_days / 4.0)
+    out["three_way"] = safe_call(
+        hk.branching_three_ways, times, marks, t_end, betas, w, session,
+        true_phi, n_design, block_days=block_days,
+    )
+
+    # --- 残差検定 (真の φ を与えた当てはめモデルで時間再スケーリング) ---
+    def _rescaling() -> dict[str, Any]:
+        fit = hk.hawkes_mle(
+            times, marks, t_end, betas, w,
+            phi_table=true_phi, session_seconds=session if true_phi is not None else None,
+        )
+        res = hk.time_rescaling_test(
+            times, marks, t_end, betas, w, fit["mu_hat_per_sec"], fit["a_hat"],
+            phi_table=true_phi, session_seconds=session if true_phi is not None else None,
+        )
+        res["fit_converged"] = bool(fit["converged"])
+        return res
+
+    out["rescaling"] = safe_call(_rescaling)
+
+    # --- 過分散 (バーンイン後)。Fano は複数窓、間隔は CV² と KS ---
+    def _overdispersion() -> dict[str, Any]:
+        t_b = times[times >= burn_sec]
+        rows: dict[str, Any] = {}
+        for win in (60.0, 300.0, 1800.0):
+            edges = np.arange(burn_sec, t_end + win, win)
+            c, _ = np.histogram(t_b, bins=edges)
+            rows[f"fano_{int(win)}s"] = num(c.var() / c.mean()) if c.mean() > 0 else None
+        d = np.diff(t_b)
+        d = d[d > 0]
+        cv2 = float(d.var() / d.mean() ** 2)
+        ks_stat, ks_p = _sp_stats.kstest(d / d.mean(), "expon")
+        rows.update({
+            "interevent_cv2": num(cv2),
+            "ks_stat_vs_exponential": num(ks_stat),
+            # p は指数分布の**棄却**を期待する側 (小さいほど良い)
+            "ks_pvalue_vs_exponential": num(ks_p),
+            "n_events": int(t_b.size),
+        })
+        return ok(rows["fano_60s"], **rows)
+
+    out["overdispersion"] = safe_call(_overdispersion)
+
+    # --- 日内 U 字がベースラインに乗っているか (φ_λ との相関) ---
+    def _intraday() -> dict[str, Any]:
+        if true_phi is None:
+            return na("enable_seasonality=False (φ_λ ≡ 1)")
+        t_b = times[times >= burn_sec]
+        u = np.mod(t_b / session, 1.0)
+        n_bins = 26
+        counts, edges = np.histogram(u, bins=np.linspace(0.0, 1.0, n_bins + 1))
+        centers = ((edges[:-1] + edges[1:]) / 2.0 * true_phi.size).astype(int)
+        phi_c = true_phi[np.minimum(centers, true_phi.size - 1)]
+        c = float(np.corrcoef(counts, phi_c)[0, 1])
+        return ok(num(c), corr=num(c), n_bins=n_bins,
+                  counts_ratio_max_min=num(counts.max() / max(counts.min(), 1)))
+
+    out["intraday_shape"] = safe_call(_intraday)
+
+    # --- 出来高の分単位 ACF (活動度クラスタリング → 出来高クラスタリング) ---
+    def _volume_acf() -> dict[str, Any]:
+        meta = result.events.meta if isinstance(result.events.meta, dict) else {}
+        agg_t = np.asarray(meta.get("agg_trade_t", np.empty(0)), dtype=np.float64)
+        agg_sz = np.asarray(meta.get("agg_trade_size", np.empty(0)), dtype=np.float64)
+        keep = agg_t >= burn_sec
+        if int(keep.sum()) < 5000:
+            return na("約定が足りません")
+        edges = np.arange(burn_sec, t_end + 60.0, 60.0)
+        vol, _ = np.histogram(agg_t[keep], bins=edges, weights=agg_sz[keep])
+        d = vol - vol.mean()
+        denom = float(d @ d)
+        lags = {}
+        for k in (1, 2, 3, 5, 10, 30):
+            lags[f"lag{k}"] = num(float(d[:-k] @ d[k:]) / denom)
+        se = 1.0 / math.sqrt(vol.size)
+        return ok(lags["lag1"], **lags, se=num(se), n_minutes=int(vol.size),
+                  z_lag1=num(lags["lag1"] / se if lags["lag1"] is not None else None))
+
+    out["volume_acf"] = safe_call(_volume_acf)
+
+    # --- ガード発動 (§5.3) と受理率 ---
+    def _guards() -> dict[str, Any]:
+        h = (result.meta.get("l3") or {}).get("hawkes") or {}
+        cand = float(h.get("candidates") or 0)
+        cap_rate = (h.get("cap_hits", 0) / cand) if cand > 0 else None
+        return ok(
+            num(cap_rate),
+            cap_hits=int(h.get("cap_hits", -1)),
+            cap_hit_rate=num(cap_rate),
+            daycap_hits=int(h.get("daycap_hits", -1)),
+            cx_noop=int(h.get("cx_noop", -1)),
+            acceptance_rate=num(h.get("acceptance_rate")),
+            candidates=int(cand),
+        )
+
+    out["guards"] = safe_call(_guards)
+
+    # --- 実現レート vs 定常目標 ---
+    def _rates() -> dict[str, Any]:
+        from ..layers.l1_activity import HawkesActivity
+
+        targets = HawkesActivity(cfg, None).stationary_rates()
+        keep = times >= burn_sec
+        days = cfg.n_days - cfg.book_burn_in_days
+        rows: dict[str, Any] = {}
+        rels = []
+        for y, name in ((0, "mo"), (1, "lo"), (2, "cx")):
+            rate = float(((marks == y) & keep).sum()) / days
+            rel = rate / float(targets[y]) - 1.0
+            rows[f"{name}_per_day"] = num(rate)
+            rows[f"{name}_target"] = num(targets[y])
+            rows[f"{name}_rel_diff"] = num(rel)
+            rels.append(abs(rel))
+        rows["max_abs_rel_diff"] = num(max(rels))
+        return ok(rows["max_abs_rel_diff"], **rows)
+
+    out["realized_rates"] = safe_call(_rates)
+
+    # --- Fano 法の n̂ (カーネル形状フリーの相互参照 — 記録のみ) ---
+    # ★φ の U 字も Fano を膨らませる (raw 経路と同じ罠) ので、ゲートには使わず
+    # S8〜S11 での経年比較の記録として残す。
+    out["fano_reestimate"] = safe_call(
+        micro.branching_ratio_reestimate, times[times >= burn_sec], target=n_design
+    )
 
     return out
 
