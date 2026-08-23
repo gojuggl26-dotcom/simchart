@@ -58,7 +58,7 @@ def fig_signs(r8, cfg8, r7) -> None:
               label=r"$C(1)\,\ell^{-(\alpha-1)}$, $\alpha$=1.6")
     ax.set_xlabel("lag (aggressor orders, log)")
     ax.set_ylabel("sign ACF (log; positive values)")
-    ax.set_title("⑪ arrives: power-law sign memory from metaorder splitting\n"
+    ax.set_title("stylized fact #11 arrives: power-law sign memory from metaorder splitting\n"
                  "(S7's points are just noise scatter around zero)", fontsize=9.5)
     ax.legend(fontsize=8)
     ax.set_ylim(1e-4, 0.5)
@@ -115,13 +115,16 @@ def fig_deficit(r8, cfg8, r7, m8) -> None:
     rv = np.array([np.nan if v is None else v for v in resp["values"]]) * 1e4
     gv = np.array([np.nan if v is None else v for v in prop["propagator"]]) * 1e4
     ax.plot(lags, rv, color=BLUE, lw=1.4, label=r"response $R(\ell)$")
-    ax.plot(lags, gv, color=GREEN, lw=1.4, label=r"propagator $G(\ell)$ (solved)")
+    # G は打ち切りラグ近傍 (>170) に NNLS の端点アーティファクトが出るので表示を切る
+    show = lags <= 170
+    ax.plot(lags[show], gv[show], color=GREEN, lw=1.4,
+            label=r"propagator $G(\ell)$ (solved)")
     gtar = gv[4] * (lags / 5.0) ** (-(1 - 0.585) / 2)
     ax.plot(lags[4:], gtar[4:], "--", color=ORANGE, lw=1.4,
             label=r"efficient target $\ell^{-(1-\gamma)/2}$")
     ax.set_xlabel("lag (aggressor orders)")
     ax.set_ylabel("bp")
-    ax.set_title("⑮ deficit: impact should DECAY like the orange line to keep\n"
+    ax.set_title("propagator (#15) deficit: impact should DECAY like the orange line to keep\n"
                  "prices diffusive — instead G is flat-to-rising (β̂ ≈ −0.25 vs\n"
                  "target +0.21) and R grows without saturating", fontsize=9.5)
     ax.legend(fontsize=8.5)
@@ -159,7 +162,7 @@ def fig_deficit(r8, cfg8, r7, m8) -> None:
               label="slope 0.5 (sqrt law — S10 goal)")
     ax.set_xlabel("metaorder size N (children, log)")
     ax.set_ylabel("mean signed impact (bp, log)")
-    ax.set_title("⑯ deficit: impact is ~linear in size (slope 0.91) because\n"
+    ax.set_title("square-root law (#16) deficit: impact is ~linear in size (slope 0.91) because\n"
                  "each child adds a constant kick — no liquidity response yet",
                  fontsize=9.5)
     ax.legend(fontsize=8.5)
