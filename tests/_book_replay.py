@@ -13,9 +13,16 @@ from collections import defaultdict, deque
 from simchart.types import EventLog, EventType
 
 
-def replay_and_verify(ev: EventLog) -> int:
-    """全イベントをリプレイして照合し、検証した TRADE 行数を返す。"""
+def replay_and_verify(ev: EventLog, refill_tail: bool = True) -> int:
+    """全イベントをリプレイして照合し、検証した TRADE 行数を返す。
+
+    S8: アイスバーグ対応 — LIMIT_ADD 行はメタ列 ``iceberg_display`` が正なら
+    表示量だけをキューに載せ、MODIFY(3) 行 (補充) で ``refill_tail`` に応じて
+    末尾 (時間優先を失う) か先頭 (優先保持 — 表示切れで一旦 pop された分の復元)
+    に再投入する。
+    """
     queues: dict[float, deque] = defaultdict(deque)  # price -> deque[[oid, rem]]
+    ice_display = ev.meta.get("iceberg_display")
     n_trades_checked = 0
     for i in range(ev.t.size):
         et = int(ev.event_type[i])
@@ -23,8 +30,16 @@ def replay_and_verify(ev: EventLog) -> int:
         px = float(ev.price[i])
         if et == int(EventType.LIMIT_ADD):
             rest = float(ev.size[i]) - float(ev.meta["exec_size"][i])
+            if ice_display is not None and float(ice_display[i]) > 0:
+                rest = min(rest, float(ice_display[i]))
             if oid >= 0 and rest > 0:
                 queues[px].append([oid, rest])
+        elif et == int(EventType.MODIFY):
+            # アイスバーグ補充
+            if refill_tail:
+                queues[px].append([oid, float(ev.size[i])])
+            else:
+                queues[px].appendleft([oid, float(ev.size[i])])
         elif et == int(EventType.TRADE):
             q = queues[px]
             assert q, f"約定 {i}: 価格 {px} のキューが空 (リプレイ破綻)"

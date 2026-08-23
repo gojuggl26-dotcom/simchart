@@ -121,6 +121,7 @@ class ZIBook:
             EV_DASK,
             EV_DBID,
             EV_EXEC,
+            EV_META,
             EV_OID,
             EV_PRICE,
             EV_PSTAR,
@@ -203,10 +204,56 @@ class ZIBook:
             rng_hawkes = np.random.default_rng(0)
         max_orders = int(n_res * 20) + 50_000
 
+        # ---------------- S8: メタオーダーとアイスバーグの引数 ----------------
+        use_meta = bool(cfg.enable_metaorder)
+        use_ice = bool(cfg.enable_iceberg)
+        if use_meta:
+            from scipy.special import zeta as _zeta
+
+            # 成行の総レート [件/日]: Hawkes の定常解、または S6 の定数レート
+            if use_hawkes:
+                lam_mo_total = float(r_vec[0])
+            else:
+                lam_mo_total = 2.0 * cfg.book_mu_mo
+            # E[N] は**実際のサンプラー** N = floor(N_min·(1−u)^{-1/α}) の期待値。
+            # ★連続 Pareto の α·N_min/(α−1) を使ってはならない (N_min=1, α=1.6 で
+            # 2.67 vs 実サンプラー ζ(1.6)=2.286 — 15% ずれて釣り合いが狂う)。
+            # E[N] = Σ_{n≥1} P(N≥n)、P(N≥n) = min(1, (N_min/n)^α)。
+            nm = int(cfg.meta_n_min)
+            alpha = float(cfg.meta_alpha)
+            partial = sum(k ** (-alpha) for k in range(1, nm + 1))
+            e_len = nm + (nm**alpha) * (float(_zeta(alpha)) - partial)
+            # 子の需要 ψ·λ_MO に対し供給 λ_meta·E[N] を ρ (< 1) 倍で与える。
+            # ★ρ=1 の厳密な釣り合いは臨界負荷 (E[N²]=∞) でプール占有が
+            # さまよい定常にならない — 不足分は空プール時の即時生成が埋める。
+            meta_lambda_day = (
+                0.0
+                if cfg.meta_sequential
+                else float(cfg.meta_supply_ratio) * float(cfg.meta_psi)
+                * lam_mo_total / e_len
+            )
+            meta_log_cap = int(cfg.n_days * cfg.meta_psi * lam_mo_total) + 50_000
+            meta_args = dict(
+                psi=float(cfg.meta_psi), lam=meta_lambda_day, alpha=alpha,
+                n_min=float(nm), sequential=bool(cfg.meta_sequential),
+                log_cap=meta_log_cap, pool_cap=int(cfg.meta_pool_cap),
+                e_len=e_len, lam_mo_total=lam_mo_total,
+            )
+            rng_meta = self._rng.get("l3.metaorder")
+        else:
+            meta_args = dict(
+                psi=0.0, lam=0.0, alpha=1.5, n_min=1.0, sequential=False,
+                log_cap=8, pool_cap=8, e_len=0.0, lam_mo_total=0.0,
+            )
+            rng_meta = np.random.default_rng(0)
+        if use_ice:
+            # MODIFY (補充) 行のぶんイベントログの余白を広げる
+            ev_capacity = int(ev_capacity * 1.2)
+
         # JIT ウォームアップ (コンパイル / キャッシュロードを計測から外す)。
         # ★使い捨ての Generator を使う — レジストリのストリームを消費すると
         # 決定論が壊れる。出力は捨てる。
-        _warm = [np.random.default_rng(i) for i in range(5)]
+        _warm = [np.random.default_rng(i) for i in range(6)]
         run_zi_book(
             _warm[0], _warm[1], _warm[2], _warm[3],
             0.2, float(session),
@@ -225,10 +272,22 @@ class ZIBook:
             use_hawkes, _warm[4],
             h_a, h_beta_day, h_w, h_mu_mo, h_mu_lo, h_delta0,
             phi_tab, phi_max, h_cap, h_day_cap,
+            use_meta, _warm[5],
+            meta_args["psi"], meta_args["lam"], meta_args["alpha"],
+            meta_args["n_min"], meta_args["sequential"],
+            10_000, 1_000,
+            use_ice, float(cfg.book_iceberg_frac),
+            float(cfg.book_iceberg_display_lots), bool(cfg.book_iceberg_refill_tail),
         )
 
         started = time.perf_counter()
-        ev, n_events, mid_grid, snap_t, snap_px, snap_sz, n_snaps, counters = run_zi_book(
+        (
+            ev, n_events, mid_grid, snap_t, snap_px, snap_sz, n_snaps, counters,
+            pool_grid,
+            m_sign, m_ntotal, m_nexec, m_t_created, m_t_first, m_t_last,
+            m_mid_first, m_mid_last, m_vol_first, m_vol_last, m_spawned_empty,
+            n_meta,
+        ) = run_zi_book(
             self._rng.get("l3.order_type"),
             self._rng.get("l3.order_size"),
             self._rng.get("l3.order_price"),
@@ -249,6 +308,12 @@ class ZIBook:
             use_hawkes, rng_hawkes,
             h_a, h_beta_day, h_w, h_mu_mo, h_mu_lo, h_delta0,
             phi_tab, phi_max, h_cap, h_day_cap,
+            use_meta, rng_meta,
+            meta_args["psi"], meta_args["lam"], meta_args["alpha"],
+            meta_args["n_min"], meta_args["sequential"],
+            meta_args["log_cap"], meta_args["pool_cap"],
+            use_ice, float(cfg.book_iceberg_frac),
+            float(cfg.book_iceberg_display_lots), bool(cfg.book_iceberg_refill_tail),
         )
         engine_runtime = time.perf_counter() - started
 
@@ -263,6 +328,17 @@ class ZIBook:
                 "ZI ミッドが板の絶対ティック窓から逸脱しました。"
                 " book_window_half_ticks を広げるか期間を見直すこと。"
             )
+        if use_meta:
+            from .book_engine import C_META_LOG_FULL, C_META_POOL_FULL
+
+            if counters[C_META_LOG_FULL] > 0 or counters[C_META_POOL_FULL] > 0:
+                raise RuntimeError(
+                    f"メタオーダーの容量が不足しました"
+                    f" (log_full={counters[C_META_LOG_FULL]:.0f},"
+                    f" pool_full={counters[C_META_POOL_FULL]:.0f})。"
+                    f" プールが発散していないか (meta_supply_ratio > 1 相当の"
+                    f" 釣り合い崩れ) を先に疑うこと。"
+                )
 
         tick = cfg.tick_size
         base_price = cfg.p0 - p0_tick * tick  # 絶対ティック → 価格
@@ -285,6 +361,17 @@ class ZIBook:
         side = ev[EV_SIDE, :n_events].astype(np.int8)
         px_ticks = ev[EV_PRICE, :n_events]
         px = np.where(px_ticks >= 0, base_price + px_ticks * tick, np.nan)
+        # S8: EV_META は行種別で意味が変わる (book_engine の定義参照)。
+        # agent_id には**成行/約定行のメタオーダー行番号**を移す (ノイズ・非該当 -1)。
+        # LIMIT_ADD 行の値 (アイスバーグ表示量) は別キーへ分離する。
+        meta_col = ev[EV_META, :n_events]
+        is_mo_or_trade = (etype == int(EventType.MARKET)) | (
+            etype == int(EventType.TRADE)
+        )
+        agent = np.where(is_mo_or_trade, meta_col, -1.0).astype(np.int64)
+        ice_display_col = np.where(
+            etype == int(EventType.LIMIT_ADD), meta_col, -1.0
+        )
         events = EventLog(
             t=t_arr,
             event_type=etype,
@@ -292,7 +379,7 @@ class ZIBook:
             price=px,
             size=ev[EV_SIZE, :n_events].copy(),
             order_id=ev[EV_OID, :n_events].astype(np.int64),
-            agent_id=np.full(n_events, -1, dtype=np.int64),
+            agent_id=agent,
             meta={
                 "exec_size": ev[EV_EXEC, :n_events].copy(),
                 "best_bid_tick": ev[EV_BB, :n_events].astype(np.int64),
@@ -300,10 +387,26 @@ class ZIBook:
                 "depth_bid": ev[EV_DBID, :n_events].copy(),
                 "depth_ask": ev[EV_DASK, :n_events].copy(),
                 "log_pstar": ev[EV_PSTAR, :n_events].copy(),
+                "iceberg_display": ice_display_col,
                 "tick_size": tick,
                 "base_price": base_price,
             },
         )
+        if use_meta:
+            events.meta["pool_grid"] = pool_grid
+            events.meta["metaorders"] = {
+                "sign": m_sign[:n_meta].copy(),
+                "n_total": m_ntotal[:n_meta].copy(),
+                "n_exec": m_nexec[:n_meta].copy(),
+                "t_created": m_t_created[:n_meta].copy(),
+                "t_first": m_t_first[:n_meta].copy(),
+                "t_last": m_t_last[:n_meta].copy(),
+                "mid_first": m_mid_first[:n_meta].copy(),
+                "mid_last": m_mid_last[:n_meta].copy(),
+                "vol_first": m_vol_first[:n_meta].copy(),
+                "vol_last": m_vol_last[:n_meta].copy(),
+                "spawned_empty": m_spawned_empty[:n_meta].copy(),
+            }
 
         # --- BookSnapshot (top-K レベル、-1 = 空)。★n_snaps で必ず切る —
         # 容量いっぱいの配列をそのまま渡すと末尾のゼロ行が「価格 = 窓下端」の
@@ -341,9 +444,25 @@ class ZIBook:
             events.meta["agg_trade_log_vwap"] = np.log(
                 np.add.reduceat(tr_sz * tr_px, starts) / agg_size
             )
+            # S8: 攻撃注文ごとのメタオーダー行番号 (-1 = ノイズ)。⑪ の帰属分解用。
+            events.meta["agg_trade_meta"] = agent[tr_mask][starts]
+            # propagator 用: 各攻撃注文**直前**のミッド (ティック)。
+            # ★EV_BB/BA は「イベント後」の値で、攻撃注文の行 (最初の TRADE の
+            # 1 つ前) は既に約定後の板を映している。直前状態は**前のイベント束の
+            # 最終行** = 最初の TRADE 行の 2 つ前にある (MO/LO 行が必ず TRADE の
+            # 直前に 1 行入る構造による)。
+            bb_f = ev[EV_BB, :n_events]
+            ba_f = ev[EV_BA, :n_events]
+            mid_row = np.where(
+                (bb_f >= 0) & (ba_f >= 0), 0.5 * (bb_f + ba_f), np.nan
+            )
+            trade_idx = np.flatnonzero(tr_mask)
+            pre_idx = np.maximum(trade_idx[starts] - 2, 0)
+            events.meta["agg_trade_prev_mid_tick"] = mid_row[pre_idx]
         else:
             for key in ("agg_trade_t", "agg_trade_side", "agg_trade_size",
-                        "agg_trade_log_vwap"):
+                        "agg_trade_log_vwap", "agg_trade_meta",
+                        "agg_trade_prev_mid_tick"):
                 events.meta[key] = np.empty(0)
 
         n_trades = int((etype == int(EventType.TRADE)).sum())
@@ -387,6 +506,55 @@ class ZIBook:
                 "cx_noop": int(counters[C_CX_NOOP]),
                 "phi_lambda_max": phi_max,
             }
+        if use_meta:
+            from .book_engine import (
+                C_META_ARRIVALS,
+                C_META_CHILD,
+                C_META_COMPLETED,
+                C_META_NOISE,
+                C_META_SPAWN_EMPTY,
+            )
+
+            n_child = float(counters[C_META_CHILD])
+            n_noise = float(counters[C_META_NOISE])
+            n_mo_meta = n_child + n_noise
+            self.last_diagnostics["meta"] = {
+                "n_metaorders": int(n_meta),
+                "arrivals": int(counters[C_META_ARRIVALS]),
+                "spawned_on_empty": int(counters[C_META_SPAWN_EMPTY]),
+                "completed": int(counters[C_META_COMPLETED]),
+                "children": int(n_child),
+                "noise_trades": int(n_noise),
+                "child_fraction": (n_child / n_mo_meta) if n_mo_meta > 0 else None,
+                "psi_config": meta_args["psi"],
+                "lambda_meta_per_day": meta_args["lam"],
+                "e_len_theoretical": meta_args["e_len"],
+                "lam_mo_total_target": meta_args["lam_mo_total"],
+                "supply_ratio_config": float(cfg.meta_supply_ratio),
+                "sequential": bool(cfg.meta_sequential),
+                "pool_mean": float(pool_grid.mean()),
+                "pool_median": float(np.median(pool_grid)),
+                "pool_max": float(pool_grid.max()),
+            }
+        if use_ice:
+            from .book_engine import (
+                C_ICE_HIDDEN_IN,
+                C_ICE_ORDERS,
+                C_ICE_REFILLS,
+                C_ICE_REFILL_VOL,
+                C_SUBMITTED_LO,
+            )
+
+            self.last_diagnostics["iceberg"] = {
+                "n_iceberg_orders": int(counters[C_ICE_ORDERS]),
+                "refills": int(counters[C_ICE_REFILLS]),
+                "refill_volume": float(counters[C_ICE_REFILL_VOL]),
+                "hidden_volume_in": float(counters[C_ICE_HIDDEN_IN]),
+                "iceberg_share_of_lo": (
+                    float(counters[C_ICE_ORDERS])
+                    / max(float(counters[C_SUBMITTED_LO]), 1.0)
+                ),
+            }
         return observation, events, book
 
 
@@ -396,8 +564,6 @@ def build_book_layer(
     calendar: ConstantCalendar,
     activity: ConstantActivity,
 ) -> PassThroughBook | ZIBook:
-    if config.enable_metaorder:
-        raise NotImplementedError("メタオーダー分割は S8 で実装します。")
     if config.enable_queue_reactive or config.enable_uncertainty_zones:
         raise NotImplementedError("queue-reactive 板 / uncertainty zones は S9 で実装します。")
     if config.kappa != 0.0:

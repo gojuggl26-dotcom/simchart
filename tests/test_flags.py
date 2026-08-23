@@ -66,10 +66,10 @@ def test_multi_asset_raises_for_s13() -> None:
 
 
 def test_unimplemented_stage_raises() -> None:
-    # 実装が進んだら「次の未実装段階」へ更新する (S7 の実装で S7 -> S8)。
+    # 実装が進んだら「次の未実装段階」へ更新する (S8 の実装で S8 -> S9)。
     with pytest.raises(NotImplementedError) as excinfo:
-        Config(stage="S8")
-    assert "S8" in str(excinfo.value)
+        Config(stage="S9")
+    assert "S9" in str(excinfo.value)
 
 
 def test_unknown_stage_is_a_value_error() -> None:
@@ -109,8 +109,8 @@ def _force(config: Config, **changes: object) -> Config:
 @pytest.mark.parametrize(
     "flag,builder,stage",
     [
-        # enable_chaos_vol (S5)・enable_book (S6)・enable_hawkes (S7) は実装済みなので外した。
-        ("enable_metaorder", "book", "S8"),
+        # enable_chaos_vol (S5)・enable_book (S6)・enable_hawkes (S7)・
+        # enable_metaorder (S8) は実装済みなので外した。
         ("enable_queue_reactive", "book", "S9"),
     ],
 )

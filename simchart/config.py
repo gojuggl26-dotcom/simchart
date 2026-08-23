@@ -37,7 +37,7 @@ __all__ = [
 STAGES: tuple[str, ...] = tuple(f"S{i}" for i in range(14))
 
 #: 現時点で実装が存在する段階。段階を進めるたびにここへ追加する。
-IMPLEMENTED_STAGES: tuple[str, ...] = ("S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7")
+IMPLEMENTED_STAGES: tuple[str, ...] = ("S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8")
 
 #: 年率ボラを 1 ステップ分に落とすときの営業日数。
 TRADING_DAYS_PER_YEAR: int = 252
@@ -52,7 +52,6 @@ SESSION_SECONDS: float = 6.5 * 3600.0
 UNIMPLEMENTED_FLAGS: dict[str, tuple[str, str, str]] = {
     "enable_chaos_lambda": ("S12", "カオス的強度変調 chi_1", "simchart/layers/l1_activity.py"),
     "enable_chaos_branching": ("S12", "カオス的分岐比変調 chi_3", "simchart/layers/l1_activity.py"),
-    "enable_metaorder": ("S8", "メタオーダー分割と符号自己相関", "simchart/layers/l3_book.py"),
     "enable_queue_reactive": ("S9", "queue-reactive な板ダイナミクス", "simchart/layers/l3_book.py"),
     "enable_uncertainty_zones": ("S9", "uncertainty zones による価格離散化", "simchart/layers/l3_book.py"),
     "enable_feedback": ("S11", "RV から L1/L3 へのフィードバック", "simchart/pipeline.py"),
@@ -74,6 +73,10 @@ IMPLEMENTED_FLAGS: tuple[str, ...] = (
     "book_allow_inspread",  # S6 (板の従属 bool — improvement の許可)
     "book_debug_invariants",  # S6 (板の従属 bool — 毎イベント検証)
     "enable_hawkes",  # S7
+    "enable_metaorder",  # S8
+    "meta_sequential",  # S8 (従属 bool — 逐次版の相互検証モード)
+    "enable_iceberg",  # S8
+    "book_iceberg_refill_tail",  # S8 (従属 bool — 補充の優先順位規則)
 )
 
 #: フラグ以外 (数値パラメータ) の未実装条件。
@@ -492,7 +495,51 @@ class Config:
     book_window_half_ticks: int = 8000
     #: 毎イベントの完全検証 (テスト用。本番は 5 万イベントごとの抜き取り §9)。
     book_debug_invariants: bool = False
+
+    # --- L3 / S8: メタオーダー分割 (⑪ 約定符号の長期記憶) ---
+    # Hawkes が「いつ」を決め、メタオーダーは「どちらの符号か」だけを決める
+    # (指示書 §3.1 の役割分離 — タイミング統計と分岐比は S7 から不変であること)。
     enable_metaorder: bool = False  # S8
+    #: Pareto 長さの裾指数。★定義域は開区間 (1, 2) — α≤1 は E[N] 発散で
+    #: プールが定常にならず、α≥2 は Var(N) 有限で長期記憶が消える (指示書 §4.3)。
+    #: 符号 ACF の減衰指数は γ = α − 1 (§4.2)。
+    meta_alpha: float = 1.6
+    #: 最小子注文数。γ の理論対応が最も素直な 1 を既定とする (§11 診断)。
+    #: 長さは N = floor(N_min·u^{-1/α}) で引く — 離散裾 P(N≥n) = (N_min/n)^α が厳密。
+    meta_n_min: int = 1
+    #: 成行のうちメタオーダー由来の割合 (残り 1−ψ は iid 50/50 のノイズ)。
+    #: ψ は C(1) の**水準**を動かし、減衰指数 γ は動かさない (§4.4 — 別々に同定)。
+    meta_psi: float = 0.6
+    #: Poisson 到着の供給率 ρ = λ_meta·E[N] / (ψ·λ_MO)。
+    #: ★厳密に 1 にしてはならない: 子需要と供給が釣り合う臨界負荷では、E[N²]=∞
+    #: (α<2) のプール占有が帰無再帰的にさまよい「定常」ゲートが成立しない
+    #: (M/G/1 の標準的事実)。1 未満に置き、不足分は空プール時の即時生成
+    #: (下記) が需要駆動で埋める — 実現フローは ψ·λ_MO に厳密一致する。
+    #: ★ρ は C(1) の水準レバー (プール平均 A を決め、C(1) ≈ ψ²·f(A) — §4.4)。
+    #: 60 日プローブ実測: ρ=0.85 → A中央値17・C(1)=0.075 / ρ=0.7 → 8・0.105 /
+    #: **ρ=0.5 → 3・0.136 (採用: 帯 [0.05,0.20] の中央、複数執行者の実態も維持)** /
+    #: ρ=0.3 → 1・0.167 (プールが逐次版に退化するので不採用)。
+    meta_supply_ratio: float = 0.5
+    #: 子注文を出そうとしてプールが空だったとき、新規メタオーダーを即時生成して
+    #: それを使う (発生数はカウンタに記録)。これが供給の調整弁になる。
+    meta_pool_cap: int = 100_000
+    #: 相互検証モード (§3.4): Poisson 到着を止め、常に 1 本だけを最後まで実行して
+    #: から次を生成する逐次版。γ = α−1 はこちらでも成立する — プール実装の
+    #: バグ検出用で、本番は必ず False (プール版)。
+    meta_sequential: bool = False
+
+    # --- L3 / S8: アイスバーグ (表示量 + 隠れ量) ---
+    #: γ の主要因は分割であり、アイスバーグは補助 (§6.2 — 二重計上禁止)。
+    #: on/off アブレーションで γ が ±0.05 以内に収まる規模に留めること。
+    enable_iceberg: bool = False  # S8
+    #: 表示上限 (ロット) を超える指値がアイスバーグ候補になり、この確率で採用。
+    book_iceberg_frac: float = 0.15
+    #: 表示量 (ロット)。約定で表示が尽きるたび隠れ量から補充する。
+    book_iceberg_display_lots: float = 2.0
+    #: 補充時にキュー末尾へ回る (時間優先を失う — 標準的な取引所ルール)。
+    #: False で時間優先を保持する取引所の変種 (指示書 §6.1)。
+    book_iceberg_refill_tail: bool = True
+
     enable_queue_reactive: bool = False  # S9
     enable_uncertainty_zones: bool = False  # S9
     kappa: float = 0.0  # S10 p* 結合強度
@@ -590,6 +637,13 @@ class Config:
         "hawkes_mu_mo", "hawkes_mu_lo", "hawkes_delta0", "hawkes_nbar_ref",
         "hawkes_intensity_cap_mult", "hawkes_daily_event_cap",
     )
+    _S8_META_PARAMS = (
+        "meta_alpha", "meta_n_min", "meta_psi", "meta_supply_ratio",
+        "meta_pool_cap", "meta_sequential",
+    )
+    _S8_ICEBERG_PARAMS = (
+        "book_iceberg_frac", "book_iceberg_display_lots", "book_iceberg_refill_tail",
+    )
     _S6_BOOK_PARAMS = (
         "tick_size", "book_mu_mo", "book_alpha_lo", "book_delta_cancel",
         "book_mu_place", "book_place_offset", "book_max_place_ticks",
@@ -614,6 +668,8 @@ class Config:
             ("enable_chaos_vol", self._S5_CHAOS_PARAMS),
             ("enable_book", self._S6_BOOK_PARAMS),
             ("enable_hawkes", self._S7_HAWKES_PARAMS),
+            ("enable_metaorder", self._S8_META_PARAMS),
+            ("enable_iceberg", self._S8_ICEBERG_PARAMS),
         ):
             if not getattr(self, flag):
                 changed = [n for n in params if getattr(self, n) != defaults[n]]
@@ -863,6 +919,37 @@ class Config:
                     f" 較正は板を枯渇させる。scripts/calibrate_s7_hawkes.py で"
                     f" S6 の実測レートから較正し直すこと。"
                 )
+        if self.enable_metaorder:
+            if not self.enable_book:
+                raise ValueError(
+                    "enable_metaorder=True には enable_book=True が必要です"
+                    " (メタオーダーの符号は板の成行イベントに乗る)"
+                )
+            if not (1.0 < self.meta_alpha < 2.0):
+                raise ValueError(
+                    f"meta_alpha = {self.meta_alpha} は開区間 (1, 2) の外です。"
+                    f" α ≤ 1 は E[N] が発散してプールが定常にならず、α ≥ 2 は"
+                    f" Var(N) 有限で長期記憶が消える (γ = α−1 ≥ 1 で ACF 可和 —"
+                    f" 指示書 §4.3)。"
+                )
+            if self.meta_n_min < 1:
+                raise ValueError("meta_n_min は 1 以上である必要があります")
+            if not (0.0 < self.meta_psi <= 1.0):
+                raise ValueError(f"meta_psi = {self.meta_psi} は (0, 1] の外です")
+            if not (0.0 < self.meta_supply_ratio <= 1.0):
+                raise ValueError(
+                    f"meta_supply_ratio = {self.meta_supply_ratio} は (0, 1] の外です。"
+                    f" 1 超は供給過剰でプールが線形発散する (指示書 §3.2)。"
+                )
+            if self.meta_pool_cap < 1000:
+                raise ValueError("meta_pool_cap が小さすぎます (>= 1000)")
+        if self.enable_iceberg:
+            if not self.enable_book:
+                raise ValueError("enable_iceberg=True には enable_book=True が必要です")
+            if not (0.0 <= self.book_iceberg_frac < 1.0):
+                raise ValueError(f"book_iceberg_frac = {self.book_iceberg_frac} は [0, 1) の外です")
+            if self.book_iceberg_display_lots < 1.0:
+                raise ValueError("book_iceberg_display_lots は 1 ロット以上である必要があります")
         if self.vol_var_budget_total <= 0:
             raise ValueError("vol_var_budget_total は正である必要があります")
         allocated = (
@@ -893,7 +980,12 @@ class Config:
         defaults = {f.name: f.default for f in dataclasses.fields(type(self))}
         resets = {name: defaults[name] for name in self._S6_BOOK_PARAMS}
         resets.update({name: defaults[name] for name in self._S7_HAWKES_PARAMS})
-        return self.replace(enable_book=False, enable_hawkes=False, **resets)
+        resets.update({name: defaults[name] for name in self._S8_META_PARAMS})
+        resets.update({name: defaults[name] for name in self._S8_ICEBERG_PARAMS})
+        return self.replace(
+            enable_book=False, enable_hawkes=False,
+            enable_metaorder=False, enable_iceberg=False, **resets,
+        )
 
     @property
     def total_steps(self) -> int:
