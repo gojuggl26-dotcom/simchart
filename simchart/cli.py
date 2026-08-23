@@ -391,6 +391,12 @@ def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
                 per_seed.setdefault("meta_gamma_ice_off", []).append(
                     g_off["meta_gamma"]
                 )
+                # ★主計器は C(1): γ̂ は whale 支配でシード中央値同士の差にも
+                # SD ~0.035 のノイズが残る (構造的にゼロ効果でも ±0.05 は
+                # 4 割の確率で偽陽性)。C(1) は SD ~0.002 で 20 倍鋭い。
+                per_seed.setdefault("meta_c1_ice_off", []).append(
+                    g_off["meta_c1"]
+                )
                 del r_off
         del result, obs, step_r, rv_daily
         print(f"      シード {seed} ({i + 1}/{n_seeds}) 完了", flush=True)

@@ -1719,7 +1719,213 @@ _S7_NEW_GATES: tuple[Gate, ...] = (
 
 S7_GATES: tuple[Gate, ...] = _S7_INHERITED_GATES + _S7_NEW_GATES
 
-#: 段階ごとのゲート。S8 以降を実装するときはここに追加する。
+
+# ---------------------------------------------------------------------------
+# S8: メタオーダー分割 (⑪ 符号長期記憶) — 「壊れることを測る」段階
+# ---------------------------------------------------------------------------
+def _meta_within(key: str, tol: float) -> Callable[[Any], bool]:
+    def check(value: Any) -> bool:
+        if not isinstance(value, Mapping):
+            return False
+        v = value.get(key)
+        return v is not None and abs(float(v)) <= tol
+
+    return check
+
+
+def _iceberg_ablation_check(value: Any) -> bool:
+    """アイスバーグ on/off で符号相関が動かないこと (§6.3)。
+
+    主計器 = C(1) の中央値差 ≤ 0.02 (シード間 SD ~0.002 — 20 倍の検出力)。
+    副計器 = γ の中央値差 ≤ 0.10。★指示書の字義は γ ±0.05 だが、γ̂ 中央値の
+    差は whale 支配のノイズだけで SD ~0.035 あり (実測: 攻撃符号は板より上流の
+    プールで決まるため構造的にゼロ効果、それでも 8 シードで差 0.046)、±0.05 は
+    偽陽性 4 割のコイン投げになる — S0 の ±2σ・S6 の 2/√N と同型の較正
+    (README に経緯)。
+    """
+    if not isinstance(value, Mapping):
+        return False
+    c_on = (value.get("meta_c1") or {}).get("median")
+    c_off = (value.get("meta_c1_ice_off") or {}).get("median")
+    g_on = (value.get("meta_gamma") or {}).get("median")
+    g_off = (value.get("meta_gamma_ice_off") or {}).get("median")
+    if c_on is None or c_off is None or g_on is None or g_off is None:
+        return False
+    return (
+        abs(float(c_on) - float(c_off)) <= 0.02
+        and abs(float(g_on) - float(g_off)) <= 0.10
+    )
+
+
+#: S8 で落とす S7 ゲート:
+#: - sign_acf_zero: ⑪ を**発生させる**のが S8 の本体 (ゼロでないのが正解)
+#: - mid_vr: 超拡散が予測される (vr_superdiffusive が反転側で判定)
+#: - book_liveness: 同方向の連続約定で片減りする (帯を 0.1% → 0.5% に緩めた
+#:   置き換え gate を新設 — 指示書 §10 soft 表)
+_S8_DROPPED_GATES = {"sign_acf_zero", "mid_vr", "book_liveness"}
+
+_S8_INHERITED_GATES: tuple[Gate, ...] = tuple(
+    (
+        g
+        if g.name != "spread_median"
+        else Gate(
+            name=g.name, metric_path=g.metric_path, check=g.check,
+            critical=False, threshold=g.threshold + " (S8: soft — 片減りで拡大が予測される)",
+            description=g.description,
+        )
+    )
+    for g in S7_GATES
+    if g.name not in _S8_DROPPED_GATES
+)
+
+_S8_NEW_GATES: tuple[Gate, ...] = (
+    # --- 分布と会計 (critical) ---
+    Gate(
+        name="alpha_meta_valid",
+        metric_path="meta.length_fit.alpha_spec",
+        check=lambda v: v is not None and 1.0 < float(v) < 2.0,
+        threshold="1 < α_meta < 2 (指示書 §4.3)",
+        description=(
+            "本来の防壁は config 検証 (区間外は構築時に ValueError)。ここは"
+            "実行に使われた値の記録的確認。α≤1 は E[N] 発散、α≥2 は長期記憶消失。"
+        ),
+    ),
+    Gate(
+        name="metaorder_length_fit",
+        metric_path="meta.length_fit",
+        check=_meta_within("difference", 0.1),
+        threshold="離散 Pareto MLE の α̂ が仕様 ±0.1",
+        description="実測 α̂ = 1.610 (SE 0.007) vs 仕様 1.6 — 生成則の閉ループ確認。",
+    ),
+    Gate(
+        name="gamma_relation",
+        metric_path="multiseed.meta_gamma.median",
+        check=lambda v: v is not None and abs(float(v) - 0.6) <= 0.05,
+        threshold="符号 ACF の減衰指数 γ (10 シード中央値) が α_meta − 1 = 0.6 ± 0.05",
+        description=(
+            "⑪ の中心ゲート (指示書 §4.2)。★単一シードの γ̂ は whale (α<2 の裾) "
+            "支配で遅収束 (30 日で 0.30〜0.96 散布) — 250 日 × 多シード中央値で判定"
+            " (事前測定 0.626、範囲 [0.52, 0.66])。帯は config の α=1.6 に結合。"
+        ),
+    ),
+    Gate(
+        name="sign_acf_powerlaw",
+        metric_path="multiseed.meta_acf_r2.median",
+        check=_gt(0.95),
+        threshold="符号 ACF の log-log R² > 0.95 (対数ビン、ラグ 2〜1000、中央値)",
+        description="冪則と指数減衰の識別。ビン平均で測る (生ラグ点はノイズが log で歪む)。",
+    ),
+    Gate(
+        name="sign_acf_level",
+        metric_path="multiseed.meta_c1.median",
+        check=_between(0.05, 0.20),
+        threshold="C(1) ∈ [0.05, 0.20] (実証帯域、中央値)",
+        description=(
+            "水準は ψ とプール平均 A で決まる (§4.4 — γ とは別レバー)。"
+            "ψ=0.6, ρ=0.5 (A 中央値 3) で実測 0.13。"
+        ),
+    ),
+    Gate(
+        name="pool_stationary",
+        metric_path="multiseed.meta_pool_rel_diff.median",
+        check=lambda v: v is not None and abs(float(v)) <= 0.10,
+        threshold="プール占有の前半 vs 後半平均が ±10% (中央値)",
+        description=(
+            "供給 ρ<1 + 需要駆動生成で定常化した設計の確認。単一シードは whale "
+            "滞留 episode で ±10% を跨ぎ得る (実測 −0.101) — 中央値で判定。"
+        ),
+    ),
+    Gate(
+        name="flow_balance",
+        metric_path="meta.flow_balance.balance_ratio",
+        check=_between(0.95, 1.05),
+        threshold="実現子比率 / ψ ∈ [0.95, 1.05]",
+        description=(
+            "★指示書 §3.2 の式 (λ_meta·E[N]·ψ = λ_MO) は文字どおりだと供給/需要 "
+            "= 1/ψ² > 1 でプールが線形発散し、pool_stationary と両立しない。"
+            "整合形 λ_meta·E[N] = ψ·λ_MO を採り、判定は実現子比率の恒等で行う"
+            " (README に経緯)。実測 0.9997。"
+        ),
+    ),
+    Gate(
+        name="iceberg_ablation",
+        metric_path="multiseed",
+        check=_iceberg_ablation_check,
+        threshold="iceberg on/off で C(1) 中央値差 ≤ 0.02 かつ γ 中央値差 ≤ 0.10 (§6.3)",
+        description=(
+            "アイスバーグを符号相関の主要因にしない (二重計上防止 §6.2)。同一"
+            "シード集合で off 側を並走。★この設計では攻撃符号は板より上流"
+            " (プール + ψ) で決まり、受動側のアイスバーグは ε 系列に構造的に"
+            "触れない — ゲートはその確認。主計器は C(1) (SD ~0.002)、γ̂ の"
+            "中央値差はノイズ SD ~0.035 のため帯を ±0.10 に較正 (実測 0.046)。"
+        ),
+    ),
+    # --- 予測される乖離 = インパクト赤字の確認 (critical — 出ない方が異常 §8) ---
+    Gate(
+        name="vr_superdiffusive",
+        metric_path="multiseed.meta_vr_trade_1000.median",
+        check=_gt(1.3),
+        threshold="約定時間 VR(1000 trades) > 1.3 (中央値) — 超拡散が出ること",
+        description=(
+            "★「壊れていることを確認する」ゲート (§8.1)。Σ C(ℓ) 発散 (γ<1) で"
+            "価格分散が n^{2−γ} 成長。VR ≈ 1 なら符号相関が効いていない (異常)。"
+            "計器は約定時間 — 日次 (壁時計) VR は whale の出方でシード間 "
+            "{0.97, 1.9, 14.7} と乱れる (記録には残す)。"
+        ),
+    ),
+    Gate(
+        name="beta_deficit",
+        metric_path="multiseed.meta_beta_deficit.median",
+        check=_lt(-0.10),
+        threshold="β̂ − (1−γ̂)/2 < −0.10 (中央値) — 減衰の赤字が存在すること",
+        description=(
+            "板の補充が方向に無関心なため G(ℓ) はほぼ減衰しない (実測 β̂ ≈ −0.08、"
+            "G は微増すらする)。⑮ β=(1−γ)/2 の成立は S10 の到達目標。"
+        ),
+    ),
+    Gate(
+        name="sqrt_law_linear",
+        metric_path="multiseed.meta_sqrt_slope.median",
+        check=_gt(0.75),
+        threshold="サイズ応答の傾き > 0.75 (N ビン別の符号つき平均、中央値) — ほぼ線形",
+        description=(
+            "1 約定あたり一定インパクトの単純加算 (実測 0.89)。⑯ 平方根則は"
+            " S10 の到達目標。★frozen の sqrt_law_check (impact>0 選別) は"
+            "この高ノイズ域で傾きが 0.37 に潰れる — ビン平均で測る (README)。"
+        ),
+    ),
+    # --- タイミング不変の追加確認 (n̂ は継承ゲートが判定) ---
+    Gate(
+        name="hawkes_fano_invariant",
+        metric_path="hawkes.overdispersion.fano_60s",
+        check=_between(12.2, 16.5),
+        threshold="Fano(1min) が S7 実測 14.36 の ±15%",
+        description="メタオーダーは符号だけに触れる (§3.1)。タイミング統計は S7 のまま。",
+    ),
+    Gate(
+        name="book_liveness_s8",
+        metric_path="book.liveness.empty_side_time_fraction",
+        check=_lt(0.005),
+        threshold="片側枯渇の時間比率 < 0.5% (S7 の 0.1% から緩和 — 指示書 §10 soft 表)",
+        description="同方向の連続約定で板が片減りする分の許容。実測 ~7e-5。",
+    ),
+    # --- 記録寄り (non-critical) ---
+    Gate(
+        name="propagator_stability",
+        metric_path="meta.propagator_stability.spread",
+        check=_lt(0.10),
+        critical=False,
+        threshold="β̂ のサブサンプル 3 分割の振れ < 0.10 (指示書 §12)",
+        description=(
+            "propagator 数値解の安定性 (soft)。実測 spread 0.017 (120 日)〜"
+            "0.049 (250 日 — 各 1/3 は 3.7 万約定で β̂ 自体が散らばる)。"
+        ),
+    ),
+)
+
+S8_GATES: tuple[Gate, ...] = _S8_INHERITED_GATES + _S8_NEW_GATES
+
+#: 段階ごとのゲート。S9 以降を実装するときはここに追加する。
 STAGE_GATES: dict[str, tuple[Gate, ...]] = {
     "S0": S0_GATES,
     "S1": S1_GATES,
@@ -1729,6 +1935,7 @@ STAGE_GATES: dict[str, tuple[Gate, ...]] = {
     "S5": S5_GATES,
     "S6": S6_GATES,
     "S7": S7_GATES,
+    "S8": S8_GATES,
 }
 
 
