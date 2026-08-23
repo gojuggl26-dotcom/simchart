@@ -415,7 +415,30 @@ def baseline_invariance_check(
     # 測定は同一 run 内のアブレーション (chi は決定論なので厳密に引ける —
     # without_chi 系列は同一シードの S4 潜在 log σ と機械精度で一致する)。
     abl = get(metrics, "chaos.latent_gph_ablation")
-    if isinstance(abl, dict) and abl.get("delta_bw050") is not None:
+    base_lat = get(bm, "daily.latent_gph_d.d")
+    cur_lat = get(metrics, "daily.latent_gph_d.d")
+    same_horizon = (
+        (base.get("config") or {}).get("n_days") is not None
+        and int((base.get("config") or {}).get("n_days")) == int(config.n_days)
+    )
+    if same_horizon and base_lat is not None and cur_lat is not None:
+        # ★同一視野なら潜在 d の**直接比較**が最強 (L2 凍結段階ではビット一致
+        # するはず)。アブレーション計器 (bw050 の χ 差分) は視野 5000 日で較正
+        # されたもので、250 日では帯域が 30 日の設計線を含んで Δ=-0.17 を出す
+        # (計器の適用範囲外 — S9 で実測)。短視野では使わない。
+        tol = min(float(v.inv_tol_gph_d_abs), 0.03)
+        checks["gph_d"] = {
+            "passed": bool(abs(cur_lat - base_lat) <= tol),
+            "basis": "latent_direct (同一視野)",
+            "baseline": base_lat,
+            "current": cur_lat,
+            "diff": cur_lat - base_lat,
+            "tol": tol,
+            "ablation_delta_bw050_recorded": (
+                abl.get("delta_bw050") if isinstance(abl, dict) else None
+            ),
+        }
+    elif isinstance(abl, dict) and abl.get("delta_bw050") is not None:
         delta = float(abl["delta_bw050"])
         tol = min(float(v.inv_tol_gph_d_abs), 0.03)
         checks["gph_d"] = {
@@ -427,8 +450,8 @@ def baseline_invariance_check(
             "d_without_chi_bw050": abl.get("d_without_chi_bw050"),
             # 帯域 0.65 は設計線を含むため記録のみ (汚染ではなく設計の帰結)。
             "delta_bw065_recorded": abl.get("delta_bw065"),
-            "baseline_latent_bw065": get(bm, "daily.latent_gph_d.d"),
-            "current_latent_bw065": get(metrics, "daily.latent_gph_d.d"),
+            "baseline_latent_bw065": base_lat,
+            "current_latent_bw065": cur_lat,
         }
     elif (
         get(bm, "daily.latent_gph_d.d") is not None
