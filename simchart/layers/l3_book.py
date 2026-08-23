@@ -285,7 +285,8 @@ class ZIBook:
             ev, n_events, mid_grid, snap_t, snap_px, snap_sz, n_snaps, counters,
             pool_grid,
             m_sign, m_ntotal, m_nexec, m_t_created, m_t_first, m_t_last,
-            m_mid_first, m_mid_last, m_vol_first, m_vol_last, m_spawned_empty,
+            m_mid_first, m_mid_last, m_vol_first, m_vol_last, m_own_vol,
+            m_spawned_empty,
             n_meta,
         ) = run_zi_book(
             self._rng.get("l3.order_type"),
@@ -405,6 +406,7 @@ class ZIBook:
                 "mid_last": m_mid_last[:n_meta].copy(),
                 "vol_first": m_vol_first[:n_meta].copy(),
                 "vol_last": m_vol_last[:n_meta].copy(),
+                "own_vol": m_own_vol[:n_meta].copy(),
                 "spawned_empty": m_spawned_empty[:n_meta].copy(),
             }
 

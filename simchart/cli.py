@@ -251,6 +251,32 @@ def _hawkes_seed_stats(result, config: Config) -> dict[str, float | None]:
     }
 
 
+def _meta_seed_stats(result, config: Config) -> dict[str, float | None]:
+    """S8 のシード別メタオーダー統計 (multiseed の中央値判定用)。
+
+    γ・VR・β は whale (α<2 の裾) に支配され単一シードで大きく散らばる
+    (γ̂: 250 日で [0.52, 0.66]、日次 VR: {0.97, 1.9, 14.7} を実測)。
+    量的ゲートは全てここからの多シード中央値で判定する (S3 §8 のインフラ)。
+    """
+    from .validation.suite import _meta_metrics
+
+    m = _meta_metrics(result, config)
+    g = m["sign_acf_gamma"]
+    dfc = m["impact_deficit"]
+    return {
+        "meta_gamma": g.get("gamma"),
+        "meta_c1": g.get("c1"),
+        "meta_acf_r2": g.get("r2"),
+        "meta_beta": dfc.get("beta_measured"),
+        "meta_beta_deficit": dfc.get("beta_deficit"),
+        "meta_vr_trade_1000": dfc.get("vr_s8_trade_1000"),
+        "meta_vr_daily_max": dfc.get("vr_s8_daily_max"),
+        "meta_sqrt_slope": dfc.get("sqrt_law_exponent"),
+        "meta_sqrt_qv": dfc.get("sqrt_law_exponent_qv"),
+        "meta_pool_rel_diff": m["pool"].get("rel_diff"),
+    }
+
+
 def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
     """ノイズの大きい指標をシードを変えて測り、中央値・IQR を返す (S3 指示書 §8)。
 
@@ -346,6 +372,26 @@ def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
             hstats = _hawkes_seed_stats(result, config)
             for key_, val_ in hstats.items():
                 per_seed.setdefault(key_, []).append(val_)
+        if config.enable_metaorder:
+            mstats = _meta_seed_stats(result, seed_config)
+            for key_, val_ in mstats.items():
+                per_seed.setdefault(key_, []).append(val_)
+            if config.enable_iceberg:
+                # §6.3 アブレーション: 同一シードで iceberg off。単一シードの
+                # on/off 差は経路分岐で SD ~0.06 になるため、中央値同士で判定する。
+                import dataclasses as _dc
+
+                defaults_ = {f.name: f.default for f in _dc.fields(type(config))}
+                resets_ = {
+                    n: defaults_[n] for n in type(config)._S8_ICEBERG_PARAMS
+                }
+                cfg_off = seed_config.replace(enable_iceberg=False, **resets_)
+                r_off = run_pipeline(cfg_off)
+                g_off = _meta_seed_stats(r_off, cfg_off)
+                per_seed.setdefault("meta_gamma_ice_off", []).append(
+                    g_off["meta_gamma"]
+                )
+                del r_off
         del result, obs, step_r, rv_daily
         print(f"      シード {seed} ({i + 1}/{n_seeds}) 完了", flush=True)
 
@@ -532,6 +578,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             "hill_alpha", "leverage_corr", "jv_share", "skewness_daily",
             "dilution_sd_ratio", "dilution_corr_logiv",
             "hawkes_n_hat_true_phi", "hawkes_fano_60s",
+            "meta_gamma", "meta_c1", "meta_vr_trade_1000", "meta_beta_deficit",
         ):
             info = multiseed.get(name) or {}
             if info.get("median") is not None:

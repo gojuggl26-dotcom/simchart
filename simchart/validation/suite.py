@@ -469,6 +469,10 @@ def run_all(result: StageResult, config: Config | None = None) -> dict[str, Any]
     metrics["hawkes"] = _hawkes_metrics(result, cfg)
 
     # ------------------------------------------------------------------
+    # meta: メタオーダー分割 (S8)。γ・プール・propagator・インパクト赤字。
+    metrics["meta"] = _meta_metrics(result, cfg)
+
+    # ------------------------------------------------------------------
     # chaos: 決定論的カオス成分 chi_2 (S5)。
     metrics["chaos"] = _chaos_metrics(result, cfg, r_daily)
 
@@ -921,6 +925,289 @@ def _hawkes_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
         micro.branching_ratio_reestimate, times[times >= burn_sec], target=n_design
     )
 
+    return out
+
+
+def _meta_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
+    """S8 の測定群。メタオーダーが無効なら全枝 ``not_applicable``。
+
+    中心は 3 つ:
+    1. ⑪ 符号 ACF の γ (対数ビン回帰 — 生ラグ点は whale 支配で暴れる) と C(1)
+    2. propagator の**実測** (課さない、測る — §7.1)。イベント時間 (約定
+       インデックス)、系列は各攻撃注文**直前**のミッド (VWAP は bounce が乗る)
+    3. インパクト赤字の 4 値 (§8.3 — S9/S10 の到達目標として記録)
+    """
+    keys = (
+        "sign_acf_gamma", "length_fit", "pool", "flow_balance", "iceberg",
+        "response_mid", "propagator_mid", "propagator_stability",
+        "sqrt_law", "impact_vs_size", "impact_deficit",
+    )
+    if not cfg.enable_metaorder:
+        return {k: na("enable_metaorder=False") for k in keys}
+
+    ev = result.events
+    meta = ev.meta if isinstance(ev.meta, dict) else {}
+    obs = result.observation
+    session = float(obs.session_seconds)
+    burn_sec = cfg.book_burn_in_days * session
+    out: dict[str, Any] = {}
+
+    s_all = np.asarray(meta.get("agg_trade_side", np.empty(0)), dtype=np.float64)
+    t_all = np.asarray(meta.get("agg_trade_t", np.empty(0)), dtype=np.float64)
+    keep = t_all >= burn_sec
+    s = s_all[keep]
+
+    # --- ⑪ γ と C(1)。γ の量的判定はこの対数ビン推定を正とする ---
+    gamma_theory = float(cfg.meta_alpha) - 1.0
+
+    def _gamma() -> dict[str, Any]:
+        if s.size < 20_000:
+            return na(f"攻撃注文が足りません (n={s.size})")
+        fit = memory.acf_powerlaw_fit(s, (2, 1000), max_lag=1000)
+        if fit["status"] != "ok":
+            return fit
+        d = s - s.mean()
+        c1 = float(d[:-1] @ d[1:]) / float(d @ d)
+        return ok(
+            num(fit["gamma"]),
+            gamma=num(fit["gamma"]),
+            gamma_theory=num(gamma_theory),
+            gamma_minus_theory=num(fit["gamma"] - gamma_theory),
+            r2=num(fit.get("r2")),
+            c1=num(c1),
+            n=int(s.size),
+            fit_lag_range=[2, 1000],
+        )
+
+    out["sign_acf_gamma"] = safe_call(_gamma)
+
+    # --- 長さ分布・プール・フロー ---
+    mo_rec = meta.get("metaorders") or {}
+    out["length_fit"] = safe_call(
+        micro.metaorder_length_check,
+        mo_rec.get("n_total", np.empty(0)), float(cfg.meta_alpha), int(cfg.meta_n_min),
+    )
+    steps_per_day = int(round(session / obs.step_seconds)) if obs.step_seconds else 0
+    out["pool"] = safe_call(
+        micro.pool_stationarity,
+        meta.get("pool_grid", np.empty(0)),
+        int(cfg.book_burn_in_days * steps_per_day),
+    )
+
+    def _flow() -> dict[str, Any]:
+        d = (result.meta.get("l3") or {}).get("meta") or {}
+        children = float(d.get("children", 0))
+        noise = float(d.get("noise_trades", 0))
+        total = children + noise
+        if total <= 0:
+            return na("成行イベントがありません")
+        child_frac = children / total
+        ratio = child_frac / float(cfg.meta_psi)
+        arrivals = float(d.get("arrivals", 0))
+        spawns = float(d.get("spawned_on_empty", 0))
+        return ok(
+            num(ratio),
+            realized_child_fraction=num(child_frac),
+            psi=num(cfg.meta_psi),
+            balance_ratio=num(ratio),
+            arrivals=int(arrivals),
+            spawned_on_empty=int(spawns),
+            poisson_supply_share=num(
+                arrivals / (arrivals + spawns) if arrivals + spawns > 0 else None
+            ),
+            supply_ratio_config=num(cfg.meta_supply_ratio),
+            note=(
+                "判定は実現子比率/ψ (Bernoulli 混合の恒等)。指示書 §3.2 の式は"
+                " 文字どおりだと供給/需要 = 1/ψ² で発散する — README 参照"
+            ),
+        )
+
+    out["flow_balance"] = safe_call(_flow)
+    out["iceberg"] = safe_call(
+        micro.iceberg_stats, (result.meta.get("l3") or {}).get("iceberg")
+    )
+
+    # --- propagator (イベント時間・直前ミッド基準) ---
+    base_price = float(meta.get("base_price", 0.0))
+    tick = float(meta.get("tick_size", cfg.tick_size))
+    pm = np.asarray(meta.get("agg_trade_prev_mid_tick", np.empty(0)), dtype=np.float64)
+    sizes_all = np.asarray(meta.get("agg_trade_size", np.empty(0)), dtype=np.float64)
+    pm_k = pm[keep]
+    fin = np.isfinite(pm_k)
+    s_f = s[fin]
+    logmid_f = np.log(base_price + tick * pm_k[fin]) if fin.any() else np.empty(0)
+    sizes_f = sizes_all[keep][fin]
+
+    out["response_mid"] = safe_call(micro.response_function, s_f, logmid_f, 200)
+    prop = safe_call(
+        micro.propagator_fit, s_f, sizes_f, logmid_f, 200, (5, 150)
+    )
+    out["propagator_mid"] = prop
+
+    def _prop_stability() -> dict[str, Any]:
+        """§12: サブサンプル (3 分割) で β を再推定して安定性を見る。"""
+        n = s_f.size
+        if n < 60_000:
+            return na(f"3 分割には標本が足りません (n={n})")
+        betas = []
+        third = n // 3
+        for i in range(3):
+            sl = slice(i * third, (i + 1) * third)
+            f = micro.propagator_fit(s_f[sl], sizes_f[sl], logmid_f[sl], 200, (5, 150))
+            betas.append(f.get("beta") if f["status"] == "ok" else None)
+        vals = [b for b in betas if b is not None]
+        if not vals:
+            return na("サブサンプル推定が全て失敗")
+        return ok(
+            num(max(vals) - min(vals)),
+            betas=[num(b) if b is not None else None for b in betas],
+            spread=num(max(vals) - min(vals)),
+        )
+
+    out["propagator_stability"] = safe_call(_prop_stability)
+
+    # --- 平方根則 (完走・子 2 本以上のメタオーダー) ---
+    def _sqrt_records() -> list[dict[str, float]]:
+        n_tot = np.asarray(mo_rec.get("n_total", np.empty(0)))
+        n_exec = np.asarray(mo_rec.get("n_exec", np.empty(0)))
+        own = np.asarray(mo_rec.get("own_vol", np.empty(0)))
+        v_first = np.asarray(mo_rec.get("vol_first", np.empty(0)))
+        v_last = np.asarray(mo_rec.get("vol_last", np.empty(0)))
+        mid_a = np.asarray(mo_rec.get("mid_first", np.empty(0)))
+        mid_b = np.asarray(mo_rec.get("mid_last", np.empty(0)))
+        t_a = np.asarray(mo_rec.get("t_first", np.empty(0)))
+        t_b = np.asarray(mo_rec.get("t_last", np.empty(0)))
+        sgn = np.asarray(mo_rec.get("sign", np.empty(0)))
+        sel = (
+            (n_exec >= 2)
+            & (n_exec >= n_tot)  # 完走のみ (右打ち切りを混ぜない)
+            & (t_a >= burn_sec)
+            & (own > 0)
+            & (mid_a > 0)
+            & (mid_b > 0)
+        )
+        if not sel.any():
+            return []
+        # σ: 観測ミッドの分単位実現ボラ (prefix 和で O(1)/件)。短スパンは
+        # 最低 30 分の対称窓に広げる (単児の σ=0 を避ける)。
+        stride = max(int(round(60.0 / obs.step_seconds)), 1)
+        lp_min = obs.log_price[::stride]
+        r2 = np.diff(lp_min) ** 2
+        prefix = np.concatenate([[0.0], np.cumsum(r2)])
+        minutes_a = np.clip((t_a[sel] / 60.0).astype(np.int64), 0, r2.size)
+        minutes_b = np.clip((t_b[sel] / 60.0).astype(np.int64), 0, r2.size)
+        half_pad = np.maximum(0, 15 - (minutes_b - minutes_a) // 2)
+        a_idx = np.clip(minutes_a - half_pad, 0, r2.size)
+        b_idx = np.clip(minutes_b + half_pad, 0, r2.size)
+        n_min_bars = np.maximum(b_idx - a_idx, 1)
+        sigma = np.sqrt((prefix[b_idx] - prefix[a_idx]) / n_min_bars)
+        v_mkt = v_last[sel] - v_first[sel] + own[sel]
+        impact = sgn[sel] * np.log(
+            (base_price + tick * mid_b[sel]) / (base_price + tick * mid_a[sel])
+        )
+        rows = []
+        for q, v, sg, imp in zip(own[sel], v_mkt, sigma, impact):
+            rows.append({"q": float(q), "v": float(v), "sigma": float(sg),
+                         "impact": float(imp)})
+        return rows
+
+    records = _sqrt_records()
+    out["sqrt_law"] = safe_call(lambda: micro.sqrt_law_check(records))
+
+    # ★「サイズに線形か」のゲートは **N ビン別の符号つき平均インパクトの傾き**で
+    # 判定する。frozen の sqrt_law_check (log-log + impact>0 選別) は S8 の
+    # 高ノイズ域で歪む: (a) Q/V 形式は V が Q と共変して混雑度の回帰になる
+    # (実測 δ=−0.47)、(b) 生 Q でも「正のみ」選別が小 N を上方バイアスして
+    # 傾きが 0.37 に潰れる。ビン平均は符号つきでノイズを殺し選別を使わない —
+    # 実測 0.888 (子 1 本あたり一定インパクトの加算にほぼ線形 ✓ §8.1)。
+    def _impact_vs_size() -> dict[str, Any]:
+        n_tot = np.asarray(mo_rec.get("n_total", np.empty(0)))
+        n_exec = np.asarray(mo_rec.get("n_exec", np.empty(0)))
+        mid_a = np.asarray(mo_rec.get("mid_first", np.empty(0)))
+        mid_b = np.asarray(mo_rec.get("mid_last", np.empty(0)))
+        t_a = np.asarray(mo_rec.get("t_first", np.empty(0)))
+        sgn = np.asarray(mo_rec.get("sign", np.empty(0)))
+        sel = (
+            (n_exec >= 1) & (n_exec >= n_tot) & (t_a >= burn_sec) & (mid_a > 0)
+        )
+        if int(sel.sum()) < 5000:
+            return na(f"完走メタオーダーが足りません (n={int(sel.sum())})")
+        imp = sgn[sel] * np.log(
+            (base_price + tick * mid_b[sel]) / (base_price + tick * mid_a[sel])
+        )
+        n_ex = n_exec[sel]
+        edges = np.array([1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 400])
+        xs, ys, table = [], [], []
+        for a, b in zip(edges[:-1], edges[1:]):
+            m = (n_ex >= a) & (n_ex < b)
+            cnt = int(m.sum())
+            if cnt < 50:
+                continue
+            mean_i = float(imp[m].mean())
+            gm = float(np.exp(np.mean(np.log(n_ex[m]))))
+            table.append({
+                "n_lo": int(a), "n_hi": int(b - 1), "count": cnt,
+                "mean_impact": num(mean_i),
+                "se": num(float(imp[m].std() / np.sqrt(cnt))),
+            })
+            if mean_i > 0:
+                xs.append(np.log(gm))
+                ys.append(np.log(mean_i))
+        if len(xs) < 4:
+            return na("正の平均インパクトを持つビンが足りません", bins=table)
+        slope, intercept = np.polyfit(np.array(xs), np.array(ys), 1)
+        return ok(
+            num(slope),
+            slope=num(slope),
+            intercept=num(intercept),
+            n_bins=len(xs),
+            n_metaorders=int(sel.sum()),
+            bins=table,
+        )
+
+    out["impact_vs_size"] = safe_call(_impact_vs_size)
+
+    # --- インパクト赤字の 4 値 (§8.3 — S9/S10 の到達目標) ---
+    def _deficit() -> dict[str, Any]:
+        daily = obs.to_bars(session).log_price_flat()
+        vr = scaling.variance_ratio(
+            daily[int(cfg.book_burn_in_days):], (2, 4, 8, 16, 32, 64)
+        )
+        # ★超拡散の主計器は**約定時間**の VR (指示書 §8.1 の機構そのもの:
+        # Var[n 約定のミッド変化] ~ n^{2−γ})。日次 (壁時計) VR は whale の
+        # 出方でシード間 {0.97, 1.9, 14.7} と乱れ、標本平均の除去が
+        # 標本長スケールの成分を食う — 記録して S10 の目標値の座標系に使う。
+        vr_tt: dict[str, Any] = {}
+        if s_f.size > 20_000:
+            r1 = np.diff(logmid_f)
+            v1 = float(r1.var())
+            for n_tr in (10, 100, 1000):
+                rn = logmid_f[n_tr:] - logmid_f[:-n_tr]
+                vr_tt[f"n{n_tr}"] = num(float(rn.var() / (n_tr * v1)))
+        g = out["sign_acf_gamma"].get("gamma")
+        beta_t = (1.0 - g) / 2.0 if g is not None else None
+        beta_m = prop.get("beta")
+        return ok(
+            vr_tt.get("n1000"),
+            vr_s8_trade_1000=vr_tt.get("n1000"),
+            vr_trade_time=vr_tt,
+            vr_s8_daily_max=num(vr.get("max_vr") if vr["status"] == "ok" else None),
+            vr_daily_table=vr.get("table"),
+            beta_measured=num(beta_m),
+            beta_target=num(beta_t),
+            beta_deficit=num(
+                beta_m - beta_t if beta_m is not None and beta_t is not None else None
+            ),
+            sqrt_law_exponent=num(out["impact_vs_size"].get("slope")),
+            sqrt_law_exponent_qv=num(out["sqrt_law"].get("delta")),
+            targets_for_s10={
+                "vr_daily": "0.90〜1.10",
+                "beta": "(1−γ)/2 ± 0.05",
+                "sqrt_law_exponent_qv": "0.4〜0.7",
+            },
+        )
+
+    out["impact_deficit"] = safe_call(_deficit)
     return out
 
 

@@ -401,6 +401,7 @@ def run_zi_book(
     m_mid_last = np.zeros(meta_log_cap, dtype=np.float64)  # 最終子の**直後**ミッド
     m_vol_first = np.zeros(meta_log_cap, dtype=np.float64)  # 初子直前の累積攻撃約定量
     m_vol_last = np.zeros(meta_log_cap, dtype=np.float64)  # 最終子直後の同
+    m_own_vol = np.zeros(meta_log_cap, dtype=np.float64)  # 自身の子の約定量合計 (Q)
     m_spawned_empty = np.zeros(meta_log_cap, dtype=np.float64)  # 空プール生成なら 1
     n_meta = 0
     act_meta = np.empty(meta_pool_cap, dtype=np.int64)
@@ -758,6 +759,7 @@ def run_zi_book(
                 m_t_last[cur_meta] = t_now
                 m_mid_last[cur_meta] = 0.5 * (pb + pa)
                 m_vol_last[cur_meta] = counters[C_VOL_AGGR]
+                m_own_vol[cur_meta] += size - remaining
 
         elif kind == 1:
             # ---------------- 指値 ----------------
@@ -1090,6 +1092,7 @@ def run_zi_book(
         ev, n_events, mid_grid, snap_t, snap_px, snap_sz, n_snaps, counters,
         pool_grid,
         m_sign, m_ntotal, m_nexec, m_t_created, m_t_first, m_t_last,
-        m_mid_first, m_mid_last, m_vol_first, m_vol_last, m_spawned_empty,
+        m_mid_first, m_mid_last, m_vol_first, m_vol_last, m_own_vol,
+        m_spawned_empty,
         n_meta,
     )

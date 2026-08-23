@@ -41,6 +41,10 @@ __all__ = [
     "book_liveness",
     "interevent_times",
     "obi",
+    # --- S8 ---
+    "metaorder_length_check",
+    "pool_stationarity",
+    "iceberg_stats",
 ]
 
 _NO_FLOW = (
@@ -267,6 +271,115 @@ def sqrt_law_check(metaorders: Sequence[Mapping[str, Any]] | None) -> dict:
         n=len(ratio_list),
         deviation_from_half=num(slope - 0.5),
         z_vs_half=num((slope - 0.5) / stderr) if stderr > 0 else None,
+    )
+
+
+def metaorder_length_check(
+    lengths, alpha_spec: float, n_min: int = 1
+) -> dict:
+    """メタオーダー長の離散 Pareto 適合と α の MLE (S8)。
+
+    生成則は ``N = floor(N_min·(1−u)^{-1/α})`` で、離散裾
+    ``P(N ≥ n) = (N_min/n)^α`` が厳密に成り立つ。推定は連続近似 (Hill) ではなく
+    **離散モデルの MLE**: ``P(N = n) = (N_min/n)^α − (N_min/(n+1))^α``。
+    SE は対数尤度の数値曲率から。あわせて固定点の裾確率の二項 z も返す
+    (MLE が壊れても裾のずれを直接見られるように)。
+    """
+    arr = np.asarray(lengths, dtype=np.float64).ravel()
+    arr = arr[np.isfinite(arr) & (arr >= n_min)]
+    m = arr.size
+    if m < 1000:
+        return na(f"メタオーダーが足りません (n={m})")
+
+    def negll(a: float) -> float:
+        if a <= 1.0001 or a >= 5.0:
+            return 1e300
+        p = (n_min / arr) ** a - (n_min / (arr + 1.0)) ** a
+        if (p <= 0).any():
+            return 1e300
+        return -float(np.sum(np.log(p)))
+
+    res = optimize.minimize_scalar(negll, bounds=(1.01, 4.0), method="bounded")
+    a_hat = float(res.x)
+    h = 1e-4
+    curv = (negll(a_hat + h) - 2.0 * negll(a_hat) + negll(a_hat - h)) / h**2
+    se = float(1.0 / np.sqrt(curv)) if curv > 0 else None
+
+    tail_z = {}
+    for n0 in (2, 5, 20, 100):
+        p_th = (n_min / n0) ** alpha_spec
+        if p_th * m < 20:
+            continue
+        obs = float((arr >= n0).mean())
+        tail_z[f"z_at_{n0}"] = num(
+            (obs - p_th) / np.sqrt(p_th * (1 - p_th) / m)
+        )
+    return ok(
+        num(a_hat),
+        alpha_hat=num(a_hat),
+        alpha_spec=num(alpha_spec),
+        difference=num(a_hat - alpha_spec),
+        se=num(se),
+        n=m,
+        mean_length=num(arr.mean()),
+        max_length=num(arr.max()),
+        **tail_z,
+    )
+
+
+def pool_stationarity(pool_grid, burn_points: int = 0) -> dict:
+    """メタオーダー・プール占有 (グリッド標本) の定常性 (S8)。
+
+    ゲートは「前半と後半の平均が ±10% 以内・増加トレンドなし」(指示書 §10)。
+    前後半比較そのものがトレンドの計器なので、OLS 勾配は記録に留める
+    (系列は強く自己相関しており naive な傾き検定の p 値は意味を持たない)。
+    ★α<2 の Pareto 長では占有の裾が重く (whale 滞留)、平均は少数の episode に
+    引かれる — 中央値と分位も併記する。
+    """
+    arr = np.asarray(pool_grid, dtype=np.float64).ravel()[burn_points:]
+    if arr.size < 1000:
+        return na(f"標本が足りません (n={arr.size})")
+    half = arr.size // 2
+    m1 = float(arr[:half].mean())
+    m2 = float(arr[half:].mean())
+    overall = float(arr.mean())
+    rel = (m2 - m1) / m1 if m1 > 0 else None
+    x = np.arange(arr.size, dtype=np.float64)
+    slope = float(np.polyfit(x, arr, 1)[0])
+    trend_frac = slope * arr.size / overall if overall > 0 else None
+    return ok(
+        num(rel),
+        mean_first_half=num(m1),
+        mean_second_half=num(m2),
+        rel_diff=num(rel),
+        mean=num(overall),
+        median=num(float(np.median(arr))),
+        p95=num(float(np.percentile(arr, 95))),
+        max=num(float(arr.max())),
+        min=num(float(arr.min())),
+        trend_frac_of_mean=num(trend_frac),
+        n=int(arr.size),
+    )
+
+
+def iceberg_stats(diag: Mapping[str, Any] | None) -> dict:
+    """アイスバーグの比率・隠れ量・補充回数 (S8。l3 診断の整形)。"""
+    if not diag:
+        return na("アイスバーグが無効か、診断がありません")
+    n_ice = float(diag.get("n_iceberg_orders", 0))
+    if n_ice <= 0:
+        return na("アイスバーグ注文が 0 件です")
+    refills = float(diag.get("refills", 0))
+    hidden = float(diag.get("hidden_volume_in", 0.0))
+    return ok(
+        num(diag.get("iceberg_share_of_lo")),
+        share_of_lo=num(diag.get("iceberg_share_of_lo")),
+        n_orders=int(n_ice),
+        refills=int(refills),
+        refills_per_order=num(refills / n_ice),
+        hidden_volume_in=num(hidden),
+        hidden_per_order=num(hidden / n_ice),
+        refill_volume=num(diag.get("refill_volume")),
     )
 
 
