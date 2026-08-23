@@ -171,5 +171,5 @@ def test_compare_needs_two_stages(run_dir: Path) -> None:
 
 
 def test_cli_refuses_an_unimplemented_stage(run_dir: Path) -> None:
-    # 実装が進んだら「次の未実装段階」へ更新する (S8 の実装で S8 -> S9)。
-    assert main(["run", "--stage", "S9", "--results-dir", str(run_dir), *SMALL_RUN]) == 3
+    # 実装が進んだら「次の未実装段階」へ更新する (S9 の実装で S9 -> S10)。
+    assert main(["run", "--stage", "S10", "--results-dir", str(run_dir), *SMALL_RUN]) == 3

@@ -250,6 +250,9 @@ class ZIBook:
             # MODIFY (補充) 行のぶんイベントログの余白を広げる
             ev_capacity = int(ev_capacity * 1.2)
 
+        # ---------------- S9: queue-reactive (意思決定層のみ — §3.2) ----------------
+        use_qr = bool(cfg.enable_queue_reactive)
+
         # JIT ウォームアップ (コンパイル / キャッシュロードを計測から外す)。
         # ★使い捨ての Generator を使う — レジストリのストリームを消費すると
         # 決定論が壊れる。出力は捨てる。
@@ -278,6 +281,12 @@ class ZIBook:
             10_000, 1_000,
             use_ice, float(cfg.book_iceberg_frac),
             float(cfg.book_iceberg_display_lots), bool(cfg.book_iceberg_refill_tail),
+            use_qr,
+            float(cfg.qr_inspread_slope), float(cfg.qr_spread_ref),
+            float(cfg.qr_inspread_cap),
+            float(cfg.qr_cx_dist_decay), float(cfg.qr_cx_w_floor),
+            float(cfg.qr_cx_len_pow), float(cfg.qr_cx_back),
+            float(cfg.qr_mo_depth_frac), float(cfg.qr_obi_bias),
         )
 
         started = time.perf_counter()
@@ -315,6 +324,12 @@ class ZIBook:
             meta_args["log_cap"], meta_args["pool_cap"],
             use_ice, float(cfg.book_iceberg_frac),
             float(cfg.book_iceberg_display_lots), bool(cfg.book_iceberg_refill_tail),
+            use_qr,
+            float(cfg.qr_inspread_slope), float(cfg.qr_spread_ref),
+            float(cfg.qr_inspread_cap),
+            float(cfg.qr_cx_dist_decay), float(cfg.qr_cx_w_floor),
+            float(cfg.qr_cx_len_pow), float(cfg.qr_cx_back),
+            float(cfg.qr_mo_depth_frac), float(cfg.qr_obi_bias),
         )
         engine_runtime = time.perf_counter() - started
 
@@ -345,14 +360,25 @@ class ZIBook:
         base_price = cfg.p0 - p0_tick * tick  # 絶対ティック → 価格
 
         # --- Observation: グリッド上のミッド (対数価格) ---
-        mid_px = base_price + mid_grid * tick
+        obs_source = "l3.zi_book(mid)"
+        obs_mid_ticks = mid_grid
+        if cfg.enable_uncertainty_zones:
+            # S9 §8.2 の fallback。観測系列だけを離散化し、板・イベントログは
+            # 生のまま (UZ は「刷り値」の層であって板の動学ではない)。
+            from .book_engine import uz_transform
+
+            obs_mid_ticks = uz_transform(
+                np.ascontiguousarray(mid_grid, dtype=np.float64), float(cfg.uz_eta)
+            )
+            obs_source = "l3.zi_book(mid+uz)"
+        mid_px = base_price + obs_mid_ticks * tick
         t_grid = np.arange(mid_px.shape[0], dtype=np.float64) * step_sec
         observation = Observation(
             t=t_grid,
             log_price=np.log(mid_px),
             session_seconds=session,
             step_seconds=step_sec,
-            source="l3.zi_book(mid)",
+            source=obs_source,
         )
 
         # --- EventLog ---
@@ -566,8 +592,6 @@ def build_book_layer(
     calendar: ConstantCalendar,
     activity: ConstantActivity,
 ) -> PassThroughBook | ZIBook:
-    if config.enable_queue_reactive or config.enable_uncertainty_zones:
-        raise NotImplementedError("queue-reactive 板 / uncertainty zones は S9 で実装します。")
     if config.kappa != 0.0:
         raise NotImplementedError("p* との結合 (kappa) は S10 で実装します。")
     if config.enable_book:

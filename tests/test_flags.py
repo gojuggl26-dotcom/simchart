@@ -9,12 +9,7 @@ from __future__ import annotations
 import pytest
 
 from simchart.config import IMPLEMENTED_FLAGS, STAGES, UNIMPLEMENTED_FLAGS, Config
-from simchart.layers import (
-    build_activity,
-    build_book_layer,
-    build_calendar,
-    build_price_layer,
-)
+from simchart.layers import build_activity, build_calendar
 from simchart.rng import RNGRegistry
 
 
@@ -66,10 +61,10 @@ def test_multi_asset_raises_for_s13() -> None:
 
 
 def test_unimplemented_stage_raises() -> None:
-    # 実装が進んだら「次の未実装段階」へ更新する (S8 の実装で S8 -> S9)。
+    # 実装が進んだら「次の未実装段階」へ更新する (S9 の実装で S9 -> S10)。
     with pytest.raises(NotImplementedError) as excinfo:
-        Config(stage="S9")
-    assert "S9" in str(excinfo.value)
+        Config(stage="S10")
+    assert "S10" in str(excinfo.value)
 
 
 def test_unknown_stage_is_a_value_error() -> None:
@@ -97,39 +92,10 @@ def test_defaults_are_all_off() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 層のビルダー側の二重チェック。Config を経由せずに直接構築されても止まること。
+# 層ビルダー側の二重チェックは S9 で対象が尽きた (板・活動度系の未実装フラグは
+# 全て実装済み。S11 feedback は pipeline、S12 chaos は Config 検証が防壁)。
+# Config 側の防壁は test_unimplemented_flag_raises_with_stage_name が引き続き検査する。
 # ---------------------------------------------------------------------------
-def _force(config: Config, **changes: object) -> Config:
-    """frozen dataclass の検証を迂回してフラグを立てる (テスト専用)。"""
-    for key, value in changes.items():
-        object.__setattr__(config, key, value)
-    return config
-
-
-@pytest.mark.parametrize(
-    "flag,builder,stage",
-    [
-        # enable_chaos_vol (S5)・enable_book (S6)・enable_hawkes (S7)・
-        # enable_metaorder (S8) は実装済みなので外した。
-        ("enable_queue_reactive", "book", "S9"),
-    ],
-)
-def test_layer_builders_reject_unimplemented_flags(flag: str, builder: str, stage: str) -> None:
-    config = _force(Config(n_days=2, steps_per_day=234), **{flag: True})
-    rng = RNGRegistry(config.seed)
-    calendar = build_calendar(Config(n_days=2, steps_per_day=234), rng)
-    activity = build_activity(Config(n_days=2, steps_per_day=234), rng, calendar)
-
-    with pytest.raises(NotImplementedError) as excinfo:
-        if builder == "calendar":
-            build_calendar(config, rng)
-        elif builder == "activity":
-            build_activity(config, rng, calendar)
-        elif builder == "price":
-            build_price_layer(config, rng, calendar, activity)
-        else:
-            build_book_layer(config, rng, calendar, activity)
-    assert stage in str(excinfo.value)
 
 
 def test_l1_event_generation_refuses_instead_of_returning_empty() -> None:

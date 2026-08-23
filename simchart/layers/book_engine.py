@@ -194,6 +194,29 @@ def _check_level(lv_head, ord_next, ord_seq, ord_rem, lv_vol, tick):
 
 
 @njit(cache=True)
+def uz_transform(mid_ticks, eta):
+    """Robert–Rosenbaum 型 uncertainty zones の観測離散化 (S9 §8.2 の fallback)。
+
+    刷り値 P [tick] は、ミッドが P から (0.5+η) tick を超えて離れたときだけ
+    1 tick ずつ更新する (ヒステリシス)。更新直後のミッドは新しい P から
+    ~(η−0.5) の位置にあり、反転には 2η・継続には 1 tick の移動で足りるため、
+    η < 0.5 で交替過多 (負の自己相関) が生じる — R-R の η と同じ向き。
+    ★常用しない: queue-reactive の較正で届かない場合の非常口 (README 記録必須)。
+    """
+    out = np.empty_like(mid_ticks)
+    p = np.round(mid_ticks[0])
+    thr = 0.5 + eta
+    for i in range(mid_ticks.size):
+        m = mid_ticks[i]
+        while m - p > thr:
+            p += 1.0
+        while p - m > thr:
+            p -= 1.0
+        out[i] = p
+    return out
+
+
+@njit(cache=True)
 def _meta_spawn(
     rng_meta, meta_alpha, meta_n_min, t, spawned_empty,
     m_sign, m_ntotal, m_nexec, m_t_created, m_spawned_empty,
@@ -272,6 +295,14 @@ def run_zi_book(
     ice_frac,  # 表示上限超の指値がアイスバーグになる確率
     ice_display,  # 表示量 [ロット]
     ice_refill_tail,  # True: 補充でキュー末尾へ / False: 時間優先を保持
+    # --- S9: queue-reactive の意思決定層 (use_qr=False なら無視) ---
+    # ★強度には触れない: Hawkes の時刻・種別・サイドを所与として
+    # 「どこに置くか」「どれを取り消すか」だけを板の状態から決める (§3.2)。
+    use_qr,
+    qr_inspread_slope, qr_spread_ref, qr_inspread_cap,  # §5 配置 m(s)
+    qr_cx_dist, qr_cx_w_floor, qr_cx_len_pow, qr_cx_back,  # §6 取消重み
+    qr_mo_frac,  # 成行サイズのデプス上限 (0 = 無効)
+    qr_obi_bias,  # ノイズ成行の OBI 符号バイアス (0 = 無効。§7.2)
 ):
     """ZI 板を最後まで走らせ、(イベントログ, グリッドミッド, スナップショット,
     カウンタ) を返す。単一スレッド・固定消費順で決定論。"""
@@ -408,6 +439,8 @@ def run_zi_book(
     n_act = 0
     # プール占有のグリッド標本 (定常性ゲート用。mid_grid と同じ格子)
     pool_grid = np.zeros(n_grid, dtype=np.float64)
+    # S9: 取消の重み付き選択のスクラッチ (生存注文数ぶんの重み)
+    qr_w = np.zeros(max_orders, dtype=np.float64)
     # Poisson 到着スケジュール (逐次モードや到着率 0 では発火しない)
     next_meta_t = horizon_sec * 2.0
     if use_meta and (not meta_sequential) and meta_lambda_day > 0.0:
@@ -627,11 +660,40 @@ def run_zi_book(
             else:
                 side = 1 if rng_meta.random() < 0.5 else -1
                 counters[C_META_NOISE] += 1.0
+
+        # ---------------- S9: OBI 符号バイアス (§7.2 — 既定は無効) ----------------
+        # ★メタオーダーの子には触れない (⑪ の系譜を汚さない)。ノイズ成行のみ、
+        # best レベルの不均衡 I に比例した確率で薄い側へ寄せる。使用時は on/off の
+        # γ アブレーションが必須 (指示書 §7.2)。
+        if use_qr and qr_obi_bias > 0.0 and kind == 0 and cur_meta < 0:
+            if best_bid >= 0 and best_ask >= 0:
+                qb = lv_vol[best_bid]
+                qa = lv_vol[best_ask]
+                tot_q = qb + qa
+                if tot_q > 0.0:
+                    imb = (qb - qa) / tot_q
+                    if rng_meta.random() < qr_obi_bias * abs(imb):
+                        side = 1 if imb > 0.0 else -1
         ev_row = n_events
 
         if kind == 0:
             # ---------------- 成行 ----------------
             size = _draw_size(rng_size, w_round, lot_cum, lot_vals, pareto_alpha)
+            # S9: 利用可能デプスへのサイズ適応 (§3.2 表 — 既定は無効)。
+            # ★有効化するとサイズ分布ゲート (仕様適合) と衝突するため、まず
+            # 配置・取消の状態依存だけで届くかを測る方針 (config の注記)。
+            if use_qr and qr_mo_frac > 0.0:
+                ob_q = best_ask if side == 1 else best_bid
+                if ob_q >= 0:
+                    dep = _depth_within(
+                        lv_vol, ob_q, 1 if side == 1 else -1,
+                        depth_ticks, lo_tick, hi_tick,
+                    )
+                    cap_sz = qr_mo_frac * dep
+                    if cap_sz < 1.0:
+                        cap_sz = 1.0
+                    if size > cap_sz:
+                        size = np.floor(cap_sz)
             remaining = size
             counters[C_SUBMITTED_MO] += 1.0
             opp_best = best_ask if side == 1 else best_bid
@@ -779,17 +841,28 @@ def run_zi_book(
                 max_impr = inspread_cap
             if not allow_inspread:
                 max_impr = 0
-            # in-spread 部分の重み和 (小さいので都度合算)
+            # in-spread 部分の重み和 (小さいので都度合算)。
+            # S9 (§5): スプレッド依存の乗法変調 m(s) — スプレッドが広いほど
+            # 内側への配置確率が上がる。これが平均回帰の主要な源で、S8 の
+            # インパクト赤字を縮める本体。m(s)=1 (use_qr=False) では従来と
+            # ビット単位で同一 (×1.0 は恒等)。
+            m_s = 1.0
+            if use_qr:
+                m_s = 1.0 + qr_inspread_slope * (spread - qr_spread_ref)
+                if m_s < 1.0:
+                    m_s = 1.0
+                elif m_s > qr_inspread_cap:
+                    m_s = qr_inspread_cap
             wneg_total = 0.0
             for d in range(1, max_impr + 1):
-                wneg_total += wneg[d - 1]
+                wneg_total += wneg[d - 1] * m_s
             u_place = rng_price.random() * (wneg_total + place_total_pos)
             if u_place < wneg_total:
                 # improvement: best から d ティック内側
                 acc = 0.0
                 d_sel = 1
                 for d in range(1, max_impr + 1):
-                    acc += wneg[d - 1]
+                    acc += wneg[d - 1] * m_s
                     if u_place < acc:
                         d_sel = d
                         break
@@ -982,9 +1055,49 @@ def run_zi_book(
                     counters[C_CX_NOOP] += 1.0
                 continue
             u_pick = rng_cancel.random()
-            idx = int(u_pick * n_live)
-            if idx >= n_live:
+            if use_qr:
+                # S9 (§6): 重み付き取消選択。w = exp(−dist·Δ)·L^p·(1 + back·b)。
+                # 遠い注文は取り消されにくく、長い列・後方ほど取り消されやすい —
+                # デプスのハンプを鋭くする (⑳)。後方度 b は同一レベルの
+                # 先頭/末尾 seq からの相対位置で O(1) 近似 (rank 単調)。
+                wtot = 0.0
+                for j in range(n_live):
+                    o = live_ids[j]
+                    px_o = ord_price[o]
+                    if ord_side[o] == 1:
+                        ob2 = best_bid if best_bid >= 0 else ref_bid
+                        dist = ob2 - px_o
+                    else:
+                        oa2 = best_ask if best_ask >= 0 else ref_ask
+                        dist = px_o - oa2
+                    if dist < 0:
+                        dist = 0
+                    lq = lv_cnt[px_o]
+                    if lq < 1:
+                        lq = 1
+                    sh = ord_seq[lv_head[px_o]]
+                    st = ord_seq[lv_tail[px_o]]
+                    denom_b = st - sh + 1
+                    b = (ord_seq[o] - sh) / denom_b
+                    w = (
+                        (qr_cx_w_floor + (1.0 - qr_cx_w_floor) * np.exp(-qr_cx_dist * dist))
+                        * lq**qr_cx_len_pow
+                        * (1.0 + qr_cx_back * b)
+                    )
+                    qr_w[j] = w
+                    wtot += w
+                target = u_pick * wtot
+                acc_w = 0.0
                 idx = n_live - 1
+                for j in range(n_live):
+                    acc_w += qr_w[j]
+                    if target < acc_w:
+                        idx = j
+                        break
+            else:
+                idx = int(u_pick * n_live)
+                if idx >= n_live:
+                    idx = n_live - 1
             oid = live_ids[idx]
             tick = ord_price[oid]
             side = ord_side[oid]

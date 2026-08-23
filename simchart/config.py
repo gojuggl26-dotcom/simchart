@@ -37,7 +37,9 @@ __all__ = [
 STAGES: tuple[str, ...] = tuple(f"S{i}" for i in range(14))
 
 #: 現時点で実装が存在する段階。段階を進めるたびにここへ追加する。
-IMPLEMENTED_STAGES: tuple[str, ...] = ("S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8")
+IMPLEMENTED_STAGES: tuple[str, ...] = (
+    "S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9",
+)
 
 #: 年率ボラを 1 ステップ分に落とすときの営業日数。
 TRADING_DAYS_PER_YEAR: int = 252
@@ -52,8 +54,6 @@ SESSION_SECONDS: float = 6.5 * 3600.0
 UNIMPLEMENTED_FLAGS: dict[str, tuple[str, str, str]] = {
     "enable_chaos_lambda": ("S12", "カオス的強度変調 chi_1", "simchart/layers/l1_activity.py"),
     "enable_chaos_branching": ("S12", "カオス的分岐比変調 chi_3", "simchart/layers/l1_activity.py"),
-    "enable_queue_reactive": ("S9", "queue-reactive な板ダイナミクス", "simchart/layers/l3_book.py"),
-    "enable_uncertainty_zones": ("S9", "uncertainty zones による価格離散化", "simchart/layers/l3_book.py"),
     "enable_feedback": ("S11", "RV から L1/L3 へのフィードバック", "simchart/pipeline.py"),
 }
 
@@ -77,6 +77,8 @@ IMPLEMENTED_FLAGS: tuple[str, ...] = (
     "meta_sequential",  # S8 (従属 bool — 逐次版の相互検証モード)
     "enable_iceberg",  # S8
     "book_iceberg_refill_tail",  # S8 (従属 bool — 補充の優先順位規則)
+    "enable_queue_reactive",  # S9
+    "enable_uncertainty_zones",  # S9 (fallback — 常用禁止 §8.2)
 )
 
 #: フラグ以外 (数値パラメータ) の未実装条件。
@@ -540,8 +542,52 @@ class Config:
     #: False で時間優先を保持する取引所の変種 (指示書 §6.1)。
     book_iceberg_refill_tail: bool = True
 
+    # --- L3 / S9: queue-reactive (状態依存の意思決定層) ---
+    # ★強度は状態依存にしない (指示書 §3.2 の採用案)。Hawkes が「いつ・種別・
+    # サイド」を決め、S9 は種別を所与として「どこに置くか・どれを取り消すか」
+    # だけを板の状態から決める — 分岐比 n̂ は構造的に S7 のまま。
+    # §3.3 の平均 1 乗法変調 g_m は**使っていない** (意思決定層で足りることを
+    # 実測で確認してから、必要になったときに限り導入する)。
     enable_queue_reactive: bool = False  # S9
-    enable_uncertainty_zones: bool = False  # S9
+    #: スプレッド依存の板内配置 (§5 — small tick レジームの主役):
+    #: in-spread 側の総重みを m(s) = min(1 + slope·max(0, s − ref), cap) 倍する。
+    #: スプレッドが広がるほど内側への指値が増える = 平均回帰の主要な源。
+    #: これが S8 のインパクト赤字を縮める本体 (縮め切らないこと — §9.2)。
+    #: ★ref はスプレッド中央値 (2) では**なく 1** に置く: 中央値を基準にすると
+    #: 変調が半分の時間しか効かず、η・VR が動かない (較正グリッドで実測)。
+    #: ref=1 なら s=2 (中央値) でも m=1+slope が掛かり、常時の復元力になる。
+    qr_inspread_slope: float = 3.0
+    qr_spread_ref: float = 1.0
+    qr_inspread_cap: float = 8.0
+    #: キュー依存の取消選択 (§6): 一様選択を重み付きに置き換える。
+    #: w = [floor + (1−floor)·exp(−dist·Δ)] · L^len_pow · (1 + back·b)
+    #: (Δ = own best からの距離 [tick]、L = そのレベルのキュー長、
+    #:  b = キュー内の相対後方度 ∈ [0,1] — seq の先頭/末尾比から O(1) で近似)。
+    #: 遠い注文ほど取り消されにくく (置いたまま)、長い列・後方ほど取り消され
+    #: やすい — デプスのハンプを鋭くする (⑳)。
+    #: ★floor > 0 は安定性の要 (実測事故): 遠方重みを 0 に潰すと遠方注文が
+    #: 永久滞留して N が増え、取消レート (δ0·N) の増加分が**全て前方に落ちて**
+    #: 板の前面が殲滅される正帰還が起きる (スプレッド中央値 3,718 tick を実測)。
+    #: floor は遠方にも最低限の回転を残して蓄積を止める。
+    qr_cx_dist_decay: float = 0.10
+    qr_cx_w_floor: float = 0.25
+    qr_cx_len_pow: float = 0.3
+    qr_cx_back: float = 1.0
+    #: 成行サイズのデプス依存 (§3.2 表の 3 行目)。0 = 無効。
+    #: ★既定で無効: サイズ分布ゲート (仕様適合) と衝突するため、まず配置と
+    #: 取消だけで η・OBI・赤字方向が届くかを測る (届いた — README)。
+    qr_mo_depth_frac: float = 0.0
+    #: OBI による成行符号バイアス (§7.2)。0 = 無効。
+    #: ★まず機構的創発 (§7.1) で corr(I, Δm) を測る。使う場合は on/off で
+    #: γ ±0.05 のアブレーションが必須 (⑪ の二重計上リスク)。
+    qr_obi_bias: float = 0.0
+
+    #: S9 fallback (§8.2): 明示的な uncertainty zones 層。板は既にティック
+    #: 格子上で動くので**常用しない** — queue-reactive の較正で η が範囲に
+    #: 入らない場合の非常口。有効化したら「板の動学が実証と合っていない」
+    #: 警告として README に記録すること。
+    enable_uncertainty_zones: bool = False  # S9 (fallback)
+    uz_eta: float = 0.15
     kappa: float = 0.0  # S10 p* 結合強度
 
     # --- フィードバック ---
@@ -644,6 +690,12 @@ class Config:
     _S8_ICEBERG_PARAMS = (
         "book_iceberg_frac", "book_iceberg_display_lots", "book_iceberg_refill_tail",
     )
+    _S9_QR_PARAMS = (
+        "qr_inspread_slope", "qr_spread_ref", "qr_inspread_cap",
+        "qr_cx_dist_decay", "qr_cx_w_floor", "qr_cx_len_pow", "qr_cx_back",
+        "qr_mo_depth_frac", "qr_obi_bias",
+    )
+    _S9_UZ_PARAMS = ("uz_eta",)
     _S6_BOOK_PARAMS = (
         "tick_size", "book_mu_mo", "book_alpha_lo", "book_delta_cancel",
         "book_mu_place", "book_place_offset", "book_max_place_ticks",
@@ -670,6 +722,8 @@ class Config:
             ("enable_hawkes", self._S7_HAWKES_PARAMS),
             ("enable_metaorder", self._S8_META_PARAMS),
             ("enable_iceberg", self._S8_ICEBERG_PARAMS),
+            ("enable_queue_reactive", self._S9_QR_PARAMS),
+            ("enable_uncertainty_zones", self._S9_UZ_PARAMS),
         ):
             if not getattr(self, flag):
                 changed = [n for n in params if getattr(self, n) != defaults[n]]
@@ -950,6 +1004,36 @@ class Config:
                 raise ValueError(f"book_iceberg_frac = {self.book_iceberg_frac} は [0, 1) の外です")
             if self.book_iceberg_display_lots < 1.0:
                 raise ValueError("book_iceberg_display_lots は 1 ロット以上である必要があります")
+        if self.enable_queue_reactive:
+            if not self.enable_book:
+                raise ValueError(
+                    "enable_queue_reactive=True には enable_book=True が必要です"
+                )
+            if self.qr_inspread_slope < 0 or self.qr_cx_dist_decay < 0:
+                raise ValueError("qr の傾き・減衰係数は非負である必要があります")
+            if self.qr_inspread_cap < 1.0:
+                raise ValueError("qr_inspread_cap は 1 以上 (1 = 変調なし)")
+            if self.qr_spread_ref < 1.0:
+                raise ValueError("qr_spread_ref は 1 tick 以上")
+            if self.qr_cx_len_pow < 0 or self.qr_cx_back < 0:
+                raise ValueError("qr_cx_len_pow / qr_cx_back は非負である必要があります")
+            if not (0.0 < self.qr_cx_w_floor <= 1.0):
+                raise ValueError(
+                    f"qr_cx_w_floor = {self.qr_cx_w_floor} は (0, 1] の外です。"
+                    f" 0 は遠方注文の永久滞留 → 前面殲滅の正帰還を起こす (実測)。"
+                )
+            if not (0.0 <= self.qr_mo_depth_frac <= 10.0):
+                raise ValueError("qr_mo_depth_frac は [0, 10] (0 = 無効)")
+            if not (0.0 <= self.qr_obi_bias < 1.0):
+                raise ValueError("qr_obi_bias は [0, 1) (0 = 無効。使用時は §7.2 の"
+                                 " アブレーションが必須)")
+        if self.enable_uncertainty_zones:
+            if not self.enable_book:
+                raise ValueError(
+                    "enable_uncertainty_zones=True には enable_book=True が必要です"
+                )
+            if not (0.0 < self.uz_eta < 0.5):
+                raise ValueError(f"uz_eta = {self.uz_eta} は (0, 0.5) の外です")
         if self.vol_var_budget_total <= 0:
             raise ValueError("vol_var_budget_total は正である必要があります")
         allocated = (
@@ -982,9 +1066,13 @@ class Config:
         resets.update({name: defaults[name] for name in self._S7_HAWKES_PARAMS})
         resets.update({name: defaults[name] for name in self._S8_META_PARAMS})
         resets.update({name: defaults[name] for name in self._S8_ICEBERG_PARAMS})
+        resets.update({name: defaults[name] for name in self._S9_QR_PARAMS})
+        resets.update({name: defaults[name] for name in self._S9_UZ_PARAMS})
         return self.replace(
             enable_book=False, enable_hawkes=False,
-            enable_metaorder=False, enable_iceberg=False, **resets,
+            enable_metaorder=False, enable_iceberg=False,
+            enable_queue_reactive=False, enable_uncertainty_zones=False,
+            **resets,
         )
 
     @property
