@@ -309,9 +309,19 @@ def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
     cross_seed_paths: list[np.ndarray] = []
     chi_hashes: list[str] = []
     seeds = [config.seed + i for i in range(n_seeds)]
+    skipped_seeds: list[dict[str, str]] = []
     for i, seed in enumerate(seeds):
         seed_config = config.replace(seed=seed)
-        result = run_pipeline(seed_config)
+        # ★S8+: 超拡散ミッドは重い裾のトレンドを引き、稀に板窓 (価格正値性で
+        # 上限あり) から逸脱して RuntimeError で止まる。多シード判定では該当
+        # シードを**記録の上でスキップ**し、残りの中央値で判定する (欠落は
+        # 最大トレンド側の打ち切りなので中央値への影響は片側・軽微 — README)。
+        try:
+            result = run_pipeline(seed_config)
+        except RuntimeError as exc:
+            skipped_seeds.append({"seed": str(seed), "leg": "main", "error": str(exc)})
+            print(f"      シード {seed} ({i + 1}/{n_seeds}) スキップ: {exc}", flush=True)
+            continue
         obs = result.observation
         r_daily = obs.to_bars(obs.session_seconds).returns()
         steps_per_day = int(round(obs.session_seconds / obs.step_seconds))
@@ -386,22 +396,34 @@ def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
                     n: defaults_[n] for n in type(config)._S8_ICEBERG_PARAMS
                 }
                 cfg_off = seed_config.replace(enable_iceberg=False, **resets_)
-                r_off = run_pipeline(cfg_off)
-                g_off = _meta_seed_stats(r_off, cfg_off)
-                per_seed.setdefault("meta_gamma_ice_off", []).append(
-                    g_off["meta_gamma"]
-                )
-                # ★主計器は C(1): γ̂ は whale 支配でシード中央値同士の差にも
-                # SD ~0.035 のノイズが残る (構造的にゼロ効果でも ±0.05 は
-                # 4 割の確率で偽陽性)。C(1) は SD ~0.002 で 20 倍鋭い。
-                per_seed.setdefault("meta_c1_ice_off", []).append(
-                    g_off["meta_c1"]
-                )
-                del r_off
+                try:
+                    r_off = run_pipeline(cfg_off)
+                except RuntimeError as exc:
+                    skipped_seeds.append(
+                        {"seed": str(seed), "leg": "iceberg_off", "error": str(exc)}
+                    )
+                    print(f"      シード {seed} (ice-off) スキップ: {exc}", flush=True)
+                else:
+                    g_off = _meta_seed_stats(r_off, cfg_off)
+                    per_seed.setdefault("meta_gamma_ice_off", []).append(
+                        g_off["meta_gamma"]
+                    )
+                    # ★主計器は C(1): γ̂ は whale 支配でシード中央値同士の差にも
+                    # SD ~0.035 のノイズが残る (構造的にゼロ効果でも ±0.05 は
+                    # 4 割の確率で偽陽性)。C(1) は SD ~0.002 で 20 倍鋭い。
+                    per_seed.setdefault("meta_c1_ice_off", []).append(
+                        g_off["meta_c1"]
+                    )
+                    del r_off
         del result, obs, step_r, rv_daily
         print(f"      シード {seed} ({i + 1}/{n_seeds}) 完了", flush=True)
 
-    out: dict[str, Any] = {"n_seeds": n_seeds, "seeds": seeds}
+    out: dict[str, Any] = {
+        "n_seeds": n_seeds,
+        "seeds": seeds,
+        "skipped_seeds": skipped_seeds,
+        "n_completed": n_seeds - sum(1 for s in skipped_seeds if s["leg"] == "main"),
+    }
     if config.enable_chaos_vol and cross_seed_paths:
         from .validation.scaling import cross_seed_correlation
 

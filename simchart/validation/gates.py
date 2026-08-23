@@ -1909,6 +1909,18 @@ _S8_NEW_GATES: tuple[Gate, ...] = (
         threshold="片側枯渇の時間比率 < 0.5% (S7 の 0.1% から緩和 — 指示書 §10 soft 表)",
         description="同方向の連続約定で板が片減りする分の許容。実測 ~7e-5。",
     ),
+    Gate(
+        name="multiseed_coverage",
+        metric_path="multiseed.n_completed",
+        check=lambda v: v is not None and int(v) >= 8,
+        threshold="窓逸脱スキップ後の有効シード数 ≥ 8 / 10",
+        description=(
+            "超拡散ミッドの重い裾トレンドは稀に板窓 (価格正値性上限 9,900) から"
+            "逸脱する。該当シードは記録の上でスキップし中央値で判定 — その"
+            "打ち切りが多すぎないことの保証。逸脱は最大トレンド側の片側打ち切り"
+            "なので中央値バイアスは軽微 (README)。"
+        ),
+    ),
     # --- 記録寄り (non-critical) ---
     Gate(
         name="propagator_stability",

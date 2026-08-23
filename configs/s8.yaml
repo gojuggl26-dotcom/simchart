@@ -62,7 +62,7 @@ book_depth_ticks: 10
 book_burn_in_days: 5.0      # 統計収集から除外 (§8.1)
 book_init_levels: 30
 book_init_size: 20.0
-book_window_half_ticks: 9500  # S8: 超拡散ミッドの余白 (上限は価格正値性 <10000)  # ±$80。ZI ミッドの 500 日ウォーク SD ~220 tick に十分
+book_window_half_ticks: 9900  # S8: 超拡散の余白を正値性の上限 (<10000) まで確保  # ±$80。ZI ミッドの 500 日ウォーク SD ~220 tick に十分
 
 # --- L0 カレンダー (S4 ★) ---
 enable_seasonality: true
@@ -286,7 +286,10 @@ validation:
   si_tol_kurtosis_rel: 0.25
   si_tol_gph_d_abs: 0.10
   si_tol_acf1_abs: 0.07
-  si_tol_var_logvol_abs: 0.025
+  # ★S8 (250 日) で再較正: OU (半減期 30 日) が ~8 本しか入らず、解像度間で
+  # 独立な実現差が Var(log σ) に |diff| 平均 0.044・最大 0.079 を残す (6 シード実測。
+  # 500 日較正の 0.025 は ~0.6σ でコイン投げ)。mean+3sd = 0.105 から 0.11。
+  si_tol_var_logvol_abs: 0.11
 
   # --- S2 追加: 粗さ H の測定器と S1 不変性トレランス ---
   # ★H の測定窓 (5 分〜4 時間) と GPH の測定窓 (1〜100 日) を重ねない (指示書 §7)
