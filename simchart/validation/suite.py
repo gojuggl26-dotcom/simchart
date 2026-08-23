@@ -473,6 +473,10 @@ def run_all(result: StageResult, config: Config | None = None) -> dict[str, Any]
     metrics["meta"] = _meta_metrics(result, cfg)
 
     # ------------------------------------------------------------------
+    # qr: queue-reactive (S9)。η・OBI・戻り曲線・状態依存の実測。
+    metrics["qr"] = _qr_metrics(result, cfg)
+
+    # ------------------------------------------------------------------
     # chaos: 決定論的カオス成分 chi_2 (S5)。
     metrics["chaos"] = _chaos_metrics(result, cfg, r_daily)
 
@@ -1208,6 +1212,203 @@ def _meta_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
         )
 
     out["impact_deficit"] = safe_call(_deficit)
+    return out
+
+
+def _qr_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
+    """S9 の測定群。queue-reactive が無効なら全枝 ``not_applicable``。
+
+    η は**取引価格**系列で判定する (Robert–Rosenbaum の枠組み自体が取引価格の
+    離散化モデルで、経験値 0.1〜0.3 もそこの値)。ミッド版は別枝で記録。
+    ② (短期の負の自己相関) は**イベント時間**のミッド変化方向相関で判定 —
+    壁時計 (1 分) の ACF(1) は whale トレンドの出方でシード間 ±0.13 揺れて
+    符号すら安定しない (S8 の VR と同じ理由の計器選択。1 分版は記録)。
+    """
+    keys = (
+        "eta_trade", "eta_trade_rows", "eta_mid", "mid_return_acf",
+        "signature_mid", "obi", "state_diag", "reversion",
+        "depth_tick_profile",
+    )
+    if not cfg.enable_queue_reactive:
+        return {k: na("enable_queue_reactive=False") for k in keys}
+
+    from ..types import EventType
+
+    ev = result.events
+    meta = ev.meta if isinstance(ev.meta, dict) else {}
+    obs = result.observation
+    session = float(obs.session_seconds)
+    burn_sec = cfg.book_burn_in_days * session
+    tick = float(meta.get("tick_size", cfg.tick_size))
+    base_price = float(meta.get("base_price", 0.0))
+    out: dict[str, Any] = {}
+
+    et = ev.event_type
+    tr_mask = et == int(EventType.TRADE)
+    tr_t = ev.t[tr_mask]
+    tr_px = np.round((ev.price[tr_mask] - base_price) / tick)
+    keep_tr = tr_t >= burn_sec
+
+    # --- η: 攻撃注文ごとの最終約定価格 (ゲート系列) と補助系列 ---
+    ends = np.flatnonzero(np.concatenate([np.diff(tr_t) > 0, [True]]))
+    last_px = tr_px[ends]
+    last_t = tr_t[ends]
+    eta_gate = safe_call(micro.estimate_eta, last_px[last_t >= burn_sec])
+    eta_gate["uz_enabled"] = bool(cfg.enable_uncertainty_zones)
+    out["eta_trade"] = eta_gate
+    out["eta_trade_rows"] = safe_call(micro.estimate_eta, tr_px[keep_tr])
+
+    bb = np.asarray(meta.get("best_bid_tick", np.empty(0)))
+    ba = np.asarray(meta.get("best_ask_tick", np.empty(0)))
+    okm = (bb >= 0) & (ba >= 0) & (ev.t >= burn_sec)
+    mid_ev = 0.5 * (bb[okm] + ba[okm]).astype(np.float64)
+    eta_mid = safe_call(micro.estimate_eta, mid_ev)
+    out["eta_mid"] = eta_mid
+
+    # --- ② ミッドリターンの 1 次自己相関 ---
+    def _acf() -> dict[str, Any]:
+        # 判定: イベント時間 (ゼロでないミッド変化の方向相関 = η_mid の恒等変換)
+        cs = eta_mid.get("change_sign_corr")
+        # 記録: 1 分バー ACF(1) — whale トレンド汚染つき
+        stride = max(1, int(round(60.0 / obs.step_seconds)))
+        lp_min = obs.log_price[::stride]
+        rm = np.diff(lp_min[int(burn_sec / 60.0):])
+        acf1_min = (
+            float(np.corrcoef(rm[:-1], rm[1:])[0, 1]) if rm.size > 1000 else None
+        )
+        if cs is None:
+            return na("η_mid が計算できていません")
+        return ok(
+            num(cs),
+            change_sign_corr_event=num(cs),
+            acf1_1min_recorded=num(acf1_min),
+            note="判定はイベント時間 (1 分版は whale トレンドで符号不安定 — 記録)",
+        )
+
+    out["mid_return_acf"] = safe_call(_acf)
+
+    # --- signature plot (ミッド): サンプリング間隔別の分散/秒 ---
+    def _signature() -> dict[str, Any]:
+        step = obs.step_seconds
+        lp = obs.log_price[int(burn_sec / step):]
+        rows = {}
+        for sec in (1.0, 5.0, 15.0, 60.0, 300.0, 900.0):
+            stride = int(round(sec / step))
+            if stride < 1 or lp.size // stride < 1000:
+                continue
+            rr = np.diff(lp[::stride])
+            rows[f"s{int(sec)}"] = num(float(rr.var() / sec))
+        if len(rows) < 3:
+            return na("有効なサンプリングが足りません")
+        vals = [v for v in rows.values() if v is not None]
+        ratio = vals[0] / vals[-1] if vals[-1] and vals[-1] > 0 else None
+        return ok(
+            num(ratio),
+            per_sec_variance=rows,
+            short_over_long=num(ratio),
+            decreasing=bool(ratio is not None and ratio > 1.0),
+        )
+
+    out["signature_mid"] = safe_call(_signature)
+
+    # --- ⑩ OBI: 攻撃注文格子での予測相関 (機構創発 — バイアスなし) ---
+    def _obi() -> dict[str, Any]:
+        trade_idx = np.flatnonzero(tr_mask)
+        starts = np.flatnonzero(np.concatenate([[True], np.diff(tr_t) > 0]))
+        pre_idx = np.maximum(trade_idx[starts] - 2, 0)
+        db = np.asarray(meta.get("depth_bid"))[pre_idx].astype(np.float64)
+        da = np.asarray(meta.get("depth_ask"))[pre_idx].astype(np.float64)
+        imb = (db - da) / np.maximum(db + da, 1e-9)
+        pm = np.asarray(meta.get("agg_trade_prev_mid_tick"), dtype=np.float64)
+        t_agg = np.asarray(meta.get("agg_trade_t"))
+        keep = t_agg >= burn_sec
+        res = micro.obi_predictive(imb[keep], pm[keep], horizons=(1, 2, 5, 10))
+        if res.get("status") == "ok":
+            res["obi_bias_config"] = float(cfg.qr_obi_bias)
+        return res
+
+    out["obi"] = safe_call(_obi)
+
+    # --- 状態依存の実測 (配置と取消が実際に状態を見ているか) ---
+    def _state_diag() -> dict[str, Any]:
+        lo_mask = (et == int(EventType.LIMIT_ADD)) & (ev.t >= burn_sec)
+        bb_f = bb.astype(np.float64)
+        ba_f = ba.astype(np.float64)
+        sp_prev = np.concatenate([[np.nan], (ba_f - bb_f)[:-1]])
+        bb_prev = np.concatenate([[np.nan], bb_f[:-1]])
+        ba_prev = np.concatenate([[np.nan], ba_f[:-1]])
+        px_ticks = np.round((ev.price[lo_mask] - base_price) / tick)
+        side_lo = ev.side[lo_mask]
+        inside = (
+            np.where(side_lo == 1, px_ticks > bb_prev[lo_mask],
+                     px_ticks < ba_prev[lo_mask])
+            & np.isfinite(bb_prev[lo_mask])
+        )
+        s_at = sp_prev[lo_mask]
+        rates = {}
+        for lo_s, hi_s in ((2, 3), (3, 5), (5, 9), (9, 30)):
+            m = np.isfinite(s_at) & (s_at >= lo_s) & (s_at < hi_s)
+            if int(m.sum()) > 500:
+                rates[f"s{lo_s}_{hi_s}"] = num(float(inside[m].mean()))
+        vals = [v for v in rates.values() if v is not None]
+        cx_mask = (et == int(EventType.CANCEL)) & (ev.t >= burn_sec)
+        px_cx = np.round((ev.price[cx_mask] - base_price) / tick)
+        d_cx = np.where(
+            ev.side[cx_mask] == 1,
+            bb_prev[cx_mask] - px_cx,
+            px_cx - ba_prev[cx_mask],
+        )
+        d_cx = d_cx[np.isfinite(d_cx) & (d_cx >= 0)]
+        return ok(
+            None,
+            inspread_rate_by_spread=rates,
+            inspread_monotone=bool(
+                len(vals) >= 2 and all(b > a for a, b in zip(vals, vals[1:]))
+            ),
+            cancel_dist_median=num(float(np.median(d_cx))) if d_cx.size else None,
+            cancel_dist_p90=num(float(np.percentile(d_cx, 90))) if d_cx.size else None,
+        )
+
+    out["state_diag"] = safe_call(_state_diag)
+
+    # --- 約定後のミッド戻り (ノイズトレード条件付け — 純粋な板応答) ---
+    def _reversion() -> dict[str, Any]:
+        pm = np.asarray(meta.get("agg_trade_prev_mid_tick"), dtype=np.float64)
+        sd = np.asarray(meta.get("agg_trade_side"), dtype=np.float64)
+        mt = np.asarray(meta.get("agg_trade_meta"), dtype=np.float64)
+        t_agg = np.asarray(meta.get("agg_trade_t"))
+        keep = t_agg >= burn_sec
+        return micro.mean_reversion_profile(
+            sd[keep], pm[keep], meta_ids=mt[keep]
+        )
+
+    out["reversion"] = safe_call(_reversion)
+
+    # --- ⑳ デプスのハンプ位置 (best からの tick 距離) ---
+    def _depth_ticks() -> dict[str, Any]:
+        b = result.book
+        keep = b.t > burn_sec
+        prof: dict[int, list[float]] = {}
+        for px_side, sz_side in ((b.bid_px, b.bid_sz), (b.ask_px, b.ask_sz)):
+            px_k = px_side[keep]
+            sz_k = sz_side[keep]
+            best = px_k[:, 0:1]
+            d_ticks = np.abs(np.round((px_k - best) / tick)) + 1  # best = 距離 1
+            for dd in range(1, 31):
+                m = d_ticks == dd
+                if int(m.sum()) > 200:
+                    prof.setdefault(dd, []).append(float(np.nanmean(sz_k[m])))
+        if len(prof) < 5:
+            return na("スナップショットの距離ビンが足りません")
+        avg = {d: float(np.mean(v)) for d, v in prof.items()}
+        peak = max(avg, key=avg.get)
+        return ok(
+            num(float(peak)),
+            peak_tick_distance=int(peak),
+            profile={str(k): num(v) for k, v in sorted(avg.items())},
+        )
+
+    out["depth_tick_profile"] = safe_call(_depth_ticks)
     return out
 
 

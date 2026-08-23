@@ -277,6 +277,21 @@ def _meta_seed_stats(result, config: Config) -> dict[str, float | None]:
     }
 
 
+def _qr_seed_stats(result, config: Config) -> dict[str, float | None]:
+    """S9 のシード別 queue-reactive 統計 (multiseed の中央値判定用)。"""
+    from .validation.suite import _qr_metrics
+
+    m = _qr_metrics(result, config)
+    return {
+        "qr_eta_trade": m["eta_trade"].get("eta"),
+        "qr_eta_mid": m["eta_mid"].get("eta"),
+        "qr_change_sign_corr": m["mid_return_acf"].get("change_sign_corr_event"),
+        "qr_obi_h1": m["obi"].get("corr_h1"),
+        "qr_reversion_frac": m["reversion"].get("reversion_frac"),
+        "qr_depth_peak_tick": m["depth_tick_profile"].get("peak_tick_distance"),
+    }
+
+
 def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
     """ノイズの大きい指標をシードを変えて測り、中央値・IQR を返す (S3 指示書 §8)。
 
@@ -385,6 +400,10 @@ def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
         if config.enable_metaorder:
             mstats = _meta_seed_stats(result, seed_config)
             for key_, val_ in mstats.items():
+                per_seed.setdefault(key_, []).append(val_)
+        if config.enable_queue_reactive:
+            qstats = _qr_seed_stats(result, seed_config)
+            for key_, val_ in qstats.items():
                 per_seed.setdefault(key_, []).append(val_)
             if config.enable_iceberg:
                 # §6.3 アブレーション: 同一シードで iceberg off。単一シードの
@@ -607,6 +626,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             "dilution_sd_ratio", "dilution_corr_logiv",
             "hawkes_n_hat_true_phi", "hawkes_fano_60s",
             "meta_gamma", "meta_c1", "meta_vr_trade_1000", "meta_beta_deficit",
+            "qr_eta_trade", "qr_obi_h1", "qr_change_sign_corr",
         ):
             info = multiseed.get(name) or {}
             if info.get("median") is not None:

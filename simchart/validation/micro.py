@@ -45,6 +45,10 @@ __all__ = [
     "metaorder_length_check",
     "pool_stationarity",
     "iceberg_stats",
+    # --- S9 ---
+    "estimate_eta",
+    "obi_predictive",
+    "mean_reversion_profile",
 ]
 
 _NO_FLOW = (
@@ -380,6 +384,123 @@ def iceberg_stats(diag: Mapping[str, Any] | None) -> dict:
         hidden_volume_in=num(hidden),
         hidden_per_order=num(hidden / n_ice),
         refill_volume=num(diag.get("refill_volume")),
+    )
+
+
+def estimate_eta(price_ticks) -> dict:
+    """Robert–Rosenbaum の実効 η (S9 §8): 価格変化の継続/交替比 N_c/(2N_a)。
+
+    ティック離散の価格列から**ゼロでない変化**の方向列を作り、
+    継続 (同方向) N_c と交替 (反転) N_a から η̂ = N_c / (2 N_a)。
+    iid の ±1 変化なら η = 0.5、交替過多 (バウンス) で η < 0.5。
+    ★経験値 0.1〜0.3 は**取引価格**系列の値 (R-R の枠組み自体が取引価格の
+    離散化モデル)。ミッドに当てた値は別物として記録する — 系列を混ぜないこと。
+    """
+    arr = np.asarray(price_ticks, dtype=np.float64).ravel()
+    arr = arr[np.isfinite(arr)]
+    if arr.size < 1000:
+        return na(f"価格点が足りません (n={arr.size})")
+    ch = np.diff(arr)
+    ch = ch[ch != 0]
+    if ch.size < 500:
+        return na(f"価格変化が足りません (n={ch.size})")
+    sg = np.sign(ch)
+    cont = int((sg[1:] == sg[:-1]).sum())
+    alt = int((sg[1:] != sg[:-1]).sum())
+    if alt == 0:
+        return na("交替が 0 件です (退化系列)")
+    eta = cont / (2.0 * alt)
+    # 変化方向の 1 次相関 (= 2 状態連鎖なら (cont−alt)/(cont+alt))
+    corr_sign = (cont - alt) / (cont + alt)
+    return ok(
+        num(eta),
+        eta=num(eta),
+        n_continuations=cont,
+        n_alternations=alt,
+        n_changes=int(ch.size),
+        change_sign_corr=num(corr_sign),
+    )
+
+
+def obi_predictive(imbalance, mid, horizons=(1, 2, 5, 10)) -> dict:
+    """⑩ OBI の予測相関: corr(I_k, m_{k+h} − m_k) (S9 §7)。
+
+    ``imbalance`` と ``mid`` は同じイベント格子 (攻撃注文ごと等) に整列した列。
+    I は**その時点で観測できる**板の量、リターンは**その後**のミッド変化 —
+    時間契約 (説明変数の確定時刻 ≤ 目的変数の開始時刻) を満たす予測相関。
+    """
+    i_arr = np.asarray(imbalance, dtype=np.float64).ravel()
+    m_arr = np.asarray(mid, dtype=np.float64).ravel()
+    if i_arr.size != m_arr.size:
+        return na(f"I ({i_arr.size}) とミッド ({m_arr.size}) の長さが一致しません")
+    if i_arr.size < 5000:
+        return na(f"標本が足りません (n={i_arr.size})")
+    rows = {}
+    for h in horizons:
+        h = int(h)
+        if h < 1 or h >= i_arr.size - 10:
+            continue
+        dm = m_arr[h:] - m_arr[:-h]
+        ik = i_arr[:-h]
+        good = np.isfinite(dm) & np.isfinite(ik)
+        if good.sum() < 1000:
+            continue
+        rows[f"h{h}"] = num(float(np.corrcoef(ik[good], dm[good])[0, 1]))
+    if not rows:
+        return na("有効なホライズンがありません")
+    first = rows.get("h1")
+    return ok(first, corr_h1=first, horizons=rows, n=int(i_arr.size))
+
+
+def mean_reversion_profile(signs, mid, meta_ids=None, horizons=(1, 2, 3, 5, 10, 20, 50)) -> dict:
+    """約定後のミッド戻り曲線 R(h) = E[ε_k·(m_{k+h} − m_k)] (S9 §10)。
+
+    ★無条件の R(h) は符号の長期記憶 (将来の同符号フロー) で増加し、板の
+    復元力が見えない。``meta_ids`` を渡すと**ノイズトレード (meta_id < 0) に
+    条件付け**る — ノイズの符号は iid なので将来フローと独立で、曲線は
+    純粋な板応答 (インパクト → 部分的な戻り) になる。
+    """
+    s_arr = np.asarray(signs, dtype=np.float64).ravel()
+    m_arr = np.asarray(mid, dtype=np.float64).ravel()
+    if s_arr.size != m_arr.size:
+        return na("符号とミッドの長さが一致しません")
+    if meta_ids is not None:
+        base_idx = np.flatnonzero(np.asarray(meta_ids) < 0)
+        conditioned = "noise_trades"
+    else:
+        base_idx = np.arange(s_arr.size)
+        conditioned = "all"
+    if base_idx.size < 5000:
+        return na(f"条件付け後の標本が足りません (n={base_idx.size})")
+    prof = {}
+    vals_list = []
+    for h in horizons:
+        h = int(h)
+        sel = base_idx[base_idx + h < m_arr.size]
+        v = s_arr[sel] * (m_arr[sel + h] - m_arr[sel])
+        good = np.isfinite(v)
+        if good.sum() < 1000:
+            continue
+        mean_v = float(v[good].mean())
+        prof[f"h{h}"] = num(mean_v)
+        vals_list.append(mean_v)
+    if len(vals_list) < 4:
+        return na("有効なホライズンが足りません")
+    peak = max(vals_list[:2])
+    tail = vals_list[-1]
+    reversion_frac = (peak - tail) / peak if peak > 0 else None
+    monotone_nondecreasing = all(
+        b >= a - 1e-12 for a, b in zip(vals_list, vals_list[1:])
+    )
+    return ok(
+        num(reversion_frac),
+        profile=prof,
+        conditioned_on=conditioned,
+        impact_peak=num(peak),
+        tail=num(tail),
+        reversion_frac=num(reversion_frac),
+        monotone_nondecreasing=bool(monotone_nondecreasing),
+        n=int(base_idx.size),
     )
 
 
