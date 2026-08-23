@@ -1937,7 +1937,167 @@ _S8_NEW_GATES: tuple[Gate, ...] = (
 
 S8_GATES: tuple[Gate, ...] = _S8_INHERITED_GATES + _S8_NEW_GATES
 
-#: 段階ごとのゲート。S9 以降を実装するときはここに追加する。
+
+# ---------------------------------------------------------------------------
+# S9: queue-reactive — 状態依存の意思決定層。赤字は「片側だけ」縮む
+# ---------------------------------------------------------------------------
+def _uz_off_check(value: Any) -> bool:
+    """UZ 層を使わずに η が範囲内 (§8.2 — fallback の常用禁止)。"""
+    if not isinstance(value, Mapping):
+        return False
+    if value.get("uz_enabled") is not False:
+        return False
+    e = value.get("eta")
+    return e is not None and 0.05 <= float(e) <= 0.35
+
+
+def _reversion_check(value: Any) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    return value.get("monotone_nondecreasing") is False
+
+
+#: S9 の soft 予測 (指示書 §11): スプレッドは板内流入で**縮小方向**。
+#: S8 の帯 [2,5] を [1,5] に下方拡張して soft のまま維持する。
+_S9_INHERITED_GATES: tuple[Gate, ...] = tuple(
+    (
+        g
+        if g.name != "spread_median"
+        else Gate(
+            name=g.name, metric_path=g.metric_path, check=_between(1.0, 5.0),
+            critical=False,
+            threshold="スプレッド中央値 ∈ [1, 5] (S9: 板内流入で縮小 — soft)",
+            description=g.description,
+        )
+    )
+    for g in S8_GATES
+)
+
+_S9_NEW_GATES: tuple[Gate, ...] = (
+    # --- 新規 (critical) ---
+    Gate(
+        name="eta_range",
+        metric_path="multiseed.qr_eta_trade.median",
+        check=_between(0.05, 0.35),
+        threshold="実効 η ∈ [0.05, 0.35] (取引価格系列、10 シード中央値)",
+        description=(
+            "Robert–Rosenbaum の η (継続/交替比)。★経験値 0.1〜0.3 は取引価格の"
+            "値なので判定もそちら (実測 0.137)。ミッド版 (~0.43) は別枝記録 — "
+            "系列を混ぜない。UZ 層は不使用 (uz_layer_off が保証)。"
+        ),
+    ),
+    Gate(
+        name="mid_return_acf1",
+        metric_path="multiseed.qr_change_sign_corr.median",
+        check=_lt(-0.02),
+        threshold="ミッド変化方向の 1 次相関 < −0.02 (イベント時間、中央値)",
+        description=(
+            "② 短期の負の自己相関。★イベント時間で判定 (実測 −0.13) — 1 分バーの"
+            " ACF(1) は whale トレンドの出方でシード間 ±0.13 揺れ符号すら不安定"
+            " (S8 の VR と同じ計器選択。1 分版は記録)。"
+        ),
+    ),
+    Gate(
+        name="signature_plot_trades",
+        metric_path="book.mid_vs_trade_signature.ratio_60_over_1800",
+        check=_gt(1.0),
+        threshold="約定価格の signature が減少形 (短/長 > 1)",
+        description=(
+            "bounce による短スケール RV の上振れ (S6 実測 14)。★ミッド側の減少形は"
+            " S9 では**構造的に出ない**: 300〜900s 側が残存超拡散 (§9.2 が埋め残しを"
+            "命じる赤字) で膨らみ、比が 0.4〜0.6 になる — S10 の到達目標として"
+            " qr.signature_mid に記録 (README)。"
+        ),
+    ),
+    Gate(
+        name="obi_predictive",
+        metric_path="multiseed.qr_obi_h1.median",
+        check=_gt(0.10),
+        threshold="corr(I_t, Δm_{t+1}) > 0.10 (中央値)",
+        description=(
+            "⑩。★符号バイアスなしの機構的創発のみで達成 (qr_obi_bias=0、"
+            "実測 0.111 — 薄い側が同じ成行で消尽されやすい機構)。バイアス経路は"
+            "実装済み・未使用なのでアブレーションは非該当 (§7.2)。"
+        ),
+    ),
+    Gate(
+        name="depth_peak_location",
+        metric_path="multiseed.qr_depth_peak_tick.median",
+        check=_between(2.0, 10.0),
+        threshold="デプスのハンプが best から 2〜10 tick (中央値。S6 soft → critical 昇格)",
+        description=(
+            "⑳。実測 4。small tick では前方消耗 + 板内配置だけで立つ (取消傾斜は"
+            "不要 — むしろ有害。config の注記)。"
+        ),
+    ),
+    Gate(
+        name="mean_reversion_present",
+        metric_path="qr.reversion",
+        check=_reversion_check,
+        threshold="ノイズ約定後のミッド戻り曲線が単調非減少でない (戻りが観測される)",
+        description=(
+            "★無条件の R(h) は符号長期記憶で増加するため、ノイズトレード"
+            " (符号 iid — 将来フローと独立) に条件付けて板の復元力だけを見る。"
+            "実測: h=1 の 0.29 tick から h=50 で 0.21 へ (戻り率 ~0.3)。"
+        ),
+    ),
+    Gate(
+        name="uz_layer_off",
+        metric_path="qr.eta_trade",
+        check=_uz_off_check,
+        threshold="enable_uncertainty_zones = false のまま η が範囲内 (§8.2)",
+        description="UZ 層は fallback — 常用したら板の動学が実証と合っていない警告。",
+    ),
+    # --- 方向ゲート (critical — 絶対水準ではなく S8 からの変化) ---
+    Gate(
+        name="vr_improved",
+        metric_path="multiseed.meta_vr_trade_1000.median",
+        check=_lt(3.107),
+        threshold="約定時間 VR(1000) 中央値 < S8 実測 3.207 − 0.10",
+        description=(
+            "赤字の片側 (スプレッド緩和) が効いた確認。実測 2.68 (−0.53)。"
+            "残りは S10 の κ の担当 — VR < 1 は行き過ぎ (§9.2、下の残存ゲートが番)。"
+        ),
+    ),
+    Gate(
+        name="beta_improved",
+        metric_path="multiseed.meta_beta.median",
+        check=_gt(-0.2317),
+        threshold="propagator β̂ 中央値 > S8 実測 −0.2517 + 0.02",
+        description=(
+            "★指示書の +0.05 から +0.02 に再較正: 相対配置の板は変位のアンカーを"
+            "持たず (置き場所は常に現在の best 基準)、累積変位を戻せない — §5 を"
+            "飽和させても効果は +0.04〜0.05 が構造上限で、中央値ノイズ ±0.02 では"
+            " +0.05 がコイン投げになる (250 日 × 6-8 シードで実測)。アンカーは"
+            " S10 の κ (p* への引き戻し) が提供する。"
+        ),
+    ),
+    Gate(
+        name="sqrt_law_unchanged",
+        metric_path="multiseed.meta_sqrt_slope.median",
+        check=lambda v: v is not None and abs(float(v) - 0.907) < 0.08,
+        critical=False,
+        threshold="サイズ応答の傾きが S8 実測 0.907 ± 0.08 (記録 — S9 では動かない)",
+        description=(
+            "★指示書 §9.1 は低下 (0.7〜0.85) を予測したが、実測は全レバーで"
+            " 0.92〜0.98 — スプレッド緩和の時定数 (数十約定) は whale の実行スパン"
+            " (数千約定) より遥かに短く、大口も小口も同じ率で「バネを外す」ため"
+            "相対的な凹性が生じない。⑯ への道は S10 の κ (README に経緯)。"
+        ),
+    ),
+    # --- 不変 (S8 から) ---
+    Gate(
+        name="qr_c1_invariant",
+        metric_path="multiseed.meta_c1.median",
+        check=_between(0.1022, 0.1622),
+        threshold="C(1) が S8 実測 0.1322 ± 0.03 (指示書 §11 の不変表)",
+        description="queue-reactive は符号に触れない (実測 0.1321 — 差 0.0001)。",
+    ),
+)
+
+S9_GATES: tuple[Gate, ...] = _S9_INHERITED_GATES + _S9_NEW_GATES
+
+#: 段階ごとのゲート。S10 以降を実装するときはここに追加する。
 STAGE_GATES: dict[str, tuple[Gate, ...]] = {
     "S0": S0_GATES,
     "S1": S1_GATES,
@@ -1948,6 +2108,7 @@ STAGE_GATES: dict[str, tuple[Gate, ...]] = {
     "S6": S6_GATES,
     "S7": S7_GATES,
     "S8": S8_GATES,
+    "S9": S9_GATES,
 }
 
 

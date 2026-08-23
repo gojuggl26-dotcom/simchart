@@ -559,20 +559,27 @@ class Config:
     qr_inspread_slope: float = 3.0
     qr_spread_ref: float = 1.0
     qr_inspread_cap: float = 8.0
+    #: h(Δ, s) の形状 (§5): 板内配置の距離分布を「べき則 (0)」から「d=1 の重みで
+    #: 平坦 (1)」へ線形ブレンドする。平坦側ほど改善が深く入り (反対 best 近くまで)、
+    #: 広がったスプレッドを 1 イベントで大きく閉じる = 平均回帰が強くなる。
+    qr_inspread_flat: float = 0.0
     #: キュー依存の取消選択 (§6): 一様選択を重み付きに置き換える。
     #: w = [floor + (1−floor)·exp(−dist·Δ)] · L^len_pow · (1 + back·b)
     #: (Δ = own best からの距離 [tick]、L = そのレベルのキュー長、
     #:  b = キュー内の相対後方度 ∈ [0,1] — seq の先頭/末尾比から O(1) で近似)。
-    #: 遠い注文ほど取り消されにくく (置いたまま)、長い列・後方ほど取り消され
-    #: やすい — デプスのハンプを鋭くする (⑳)。
-    #: ★floor > 0 は安定性の要 (実測事故): 遠方重みを 0 に潰すと遠方注文が
-    #: 永久滞留して N が増え、取消レート (δ0·N) の増加分が**全て前方に落ちて**
-    #: 板の前面が殲滅される正帰還が起きる (スプレッド中央値 3,718 tick を実測)。
-    #: floor は遠方にも最低限の回転を残して蓄積を止める。
-    qr_cx_dist_decay: float = 0.10
-    qr_cx_w_floor: float = 0.25
-    qr_cx_len_pow: float = 0.3
-    qr_cx_back: float = 1.0
+    #: ★既定は**中立** (decay=0, floor=1, len=0, back=0 — 一様選択と選択・消費
+    #: ともに厳密同値)。理由 (250 日 × 6 シード実測): 前方傾斜の取消は small tick
+    #: レジームでは板の前面を薄くして**赤字指標を全て悪化**させる (ノイズ約定の
+    #: 戻り率 0.29→0.12、β −0.25→−0.27)。ハンプ (⑳) は前方消耗 + 板内配置だけで
+    #: tick 距離 4 に立つ。傾斜は §4 の表どおり large tick レジームの主役 —
+    #: 機構は実装済みで、そのレジームの config が有効化する。
+    #: ★傾斜を使う場合 floor > 0 は安定性の要 (実測事故): 遠方重みを 0 に潰すと
+    #: 遠方注文が永久滞留して N が増え、取消レート (δ0·N) の増加分が全て前方に
+    #: 落ちて前面が殲滅される正帰還 (スプレッド中央値 3,718 tick を実測)。
+    qr_cx_dist_decay: float = 0.0
+    qr_cx_w_floor: float = 1.0
+    qr_cx_len_pow: float = 0.0
+    qr_cx_back: float = 0.0
     #: 成行サイズのデプス依存 (§3.2 表の 3 行目)。0 = 無効。
     #: ★既定で無効: サイズ分布ゲート (仕様適合) と衝突するため、まず配置と
     #: 取消だけで η・OBI・赤字方向が届くかを測る (届いた — README)。
@@ -692,6 +699,7 @@ class Config:
     )
     _S9_QR_PARAMS = (
         "qr_inspread_slope", "qr_spread_ref", "qr_inspread_cap",
+        "qr_inspread_flat",
         "qr_cx_dist_decay", "qr_cx_w_floor", "qr_cx_len_pow", "qr_cx_back",
         "qr_mo_depth_frac", "qr_obi_bias",
     )
@@ -1013,6 +1021,8 @@ class Config:
                 raise ValueError("qr の傾き・減衰係数は非負である必要があります")
             if self.qr_inspread_cap < 1.0:
                 raise ValueError("qr_inspread_cap は 1 以上 (1 = 変調なし)")
+            if not (0.0 <= self.qr_inspread_flat <= 1.0):
+                raise ValueError("qr_inspread_flat は [0, 1]")
             if self.qr_spread_ref < 1.0:
                 raise ValueError("qr_spread_ref は 1 tick 以上")
             if self.qr_cx_len_pow < 0 or self.qr_cx_back < 0:

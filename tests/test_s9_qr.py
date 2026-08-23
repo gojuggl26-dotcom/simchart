@@ -104,9 +104,16 @@ def test_inspread_rate_rises_with_spread(s9_result):
     assert all(b > a for a, b in zip(rates, rates[1:])), rates
 
 
-def test_cancel_distance_tilt(s9_result):
-    """§6 の実在確認: 取消された注文は板上の注文より best 寄りに偏る。"""
-    r, cfg = s9_result
+def test_cancel_distance_tilt():
+    """§6 の実在確認: 傾斜を入れると取消が best 寄りに偏る。
+
+    ★本番 (small tick) の既定は**中立** — 前方傾斜は前面を薄くして赤字指標を
+    悪化させることが実測で判ったため (config の注記)。ここでは傾斜を明示的に
+    有効化して機構そのものの動作を確認する (large tick レジームで使う側)。
+    """
+    cfg = _s9_cfg(qr_cx_dist_decay=0.10, qr_cx_w_floor=0.25,
+                  qr_cx_len_pow=0.3, qr_cx_back=1.0)
+    r = run(cfg)
     ev = r.events
     burn = cfg.book_burn_in_days * S
     cx = (ev.event_type == int(EventType.CANCEL)) & (ev.t >= burn)

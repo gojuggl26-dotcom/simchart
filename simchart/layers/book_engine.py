@@ -300,6 +300,7 @@ def run_zi_book(
     # 「どこに置くか」「どれを取り消すか」だけを板の状態から決める (§3.2)。
     use_qr,
     qr_inspread_slope, qr_spread_ref, qr_inspread_cap,  # §5 配置 m(s)
+    qr_inspread_flat,  # §5 h の形状: 0=べき則, 1=d=1 の重みで平坦 (深い改善)
     qr_cx_dist, qr_cx_w_floor, qr_cx_len_pow, qr_cx_back,  # §6 取消重み
     qr_mo_frac,  # 成行サイズのデプス上限 (0 = 無効)
     qr_obi_bias,  # ノイズ成行の OBI 符号バイアス (0 = 無効。§7.2)
@@ -853,16 +854,21 @@ def run_zi_book(
                     m_s = 1.0
                 elif m_s > qr_inspread_cap:
                     m_s = qr_inspread_cap
+            # h(Δ, s) の形状ブレンド (§5): flat=0 でべき則そのまま (S6 と恒等)、
+            # flat=1 で全 d を wneg[0] に平坦化 — 改善が深く入り復元力が増す。
+            w0 = wneg[0]
             wneg_total = 0.0
             for d in range(1, max_impr + 1):
-                wneg_total += wneg[d - 1] * m_s
+                wd = wneg[d - 1] + qr_inspread_flat * (w0 - wneg[d - 1])
+                wneg_total += wd * m_s
             u_place = rng_price.random() * (wneg_total + place_total_pos)
             if u_place < wneg_total:
                 # improvement: best から d ティック内側
                 acc = 0.0
                 d_sel = 1
                 for d in range(1, max_impr + 1):
-                    acc += wneg[d - 1] * m_s
+                    wd = wneg[d - 1] + qr_inspread_flat * (w0 - wneg[d - 1])
+                    acc += wd * m_s
                     if u_place < acc:
                         d_sel = d
                         break
