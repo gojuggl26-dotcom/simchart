@@ -972,7 +972,26 @@ def _hawkes_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
                         np.max(np.abs(np.linalg.eigvals(
                             np.asarray(cfg.hawkes_a, dtype=np.float64))))
                     )
-                    n_factor = float(np.mean(1.0 / (1.0 - nt)) * (1.0 - n_design_))
+                    amp = 1.0 / (1.0 - nt)
+                    # ★z との結合平均 E[z/(1−n_t)] を使う — 積の平均 ≠ 平均の積:
+                    # 高ボラ期 (z 高) ⟺ u 高 ⟺ n 高の正相関が +31% の共分散を
+                    # 持つ (事前測定 #3 で全タイプ均一な残差として実測)。
+                    ev_meta_r = result.events.meta if isinstance(
+                        result.events.meta, dict) else {}
+                    zg_r = ev_meta_r.get("cvol_z_grid")
+                    if zg_r is not None:
+                        z_arr = np.asarray(zg_r, dtype=np.float64)
+                        zs_r = float(ev_meta_r.get("cvol_z_step_sec", 60.0))
+                        us_r = float(ev_meta_r.get("fb_u_step_sec", 60.0))
+                        start_r = int(cfg.book_burn_in_days * 23400.0 / us_r)
+                        idx_r = np.minimum(
+                            ((start_r + np.arange(nt.size)) * us_r / zs_r).astype(np.int64),
+                            z_arr.size - 1,
+                        )
+                        joint = float(np.mean(z_arr[idx_r] * amp) * (1.0 - n_design_))
+                        n_factor = joint / z_norm if z_norm > 0 else joint
+                    else:
+                        n_factor = float(amp.mean() * (1.0 - n_design_))
             except Exception:
                 n_factor = 1.0
         rows: dict[str, Any] = {}

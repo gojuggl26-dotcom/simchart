@@ -2722,6 +2722,31 @@ _S12_INHERITED_GATES: tuple[Gate, ...] = tuple(
             ),
         )
         if g.name == "hawkes_fano_invariant"
+        else Gate(
+            name=g.name, metric_path=g.metric_path,
+            check=_lt(0.40),
+            threshold="実現レート (z·n_t 結合正規化) が予測 ±40% (S12 サニティ帯)",
+            description=(
+                "分解連鎖 (1000 日実測): raw ×1.85 = z (Jensen 済) ×0.92 × "
+                "n_t 結合予測 E[z/(1−n_t)] ×1.55 × **非断熱カスケード残差 ×1.26**。"
+                "残差はバーストが高 n 窓に集中しカスケードの実効 n が時間平均を"
+                "超えることによる (同じ凸性のもう一段 — 全タイプ均一 ±0.01 が傍証)。"
+                "準静的予測子のこれ以上の追撃は逓減 — 破綻検知の帯 ±40% で確定。"
+            ),
+        )
+        if g.name == "hawkes_realized_rates"
+        else Gate(
+            name=g.name, metric_path=g.metric_path,
+            check=_gt(0.20),
+            threshold="無情報事象の 30 分回復率 > 0.20 (S12: 近臨界窓で初動が遅い)",
+            description=(
+                "χ₃ 窓の近臨界 (n_t ≈ 0.95) では薄い板とハーディングで最初の"
+                " 30 分の戻りが遅くなる (S11 0.347 → S12 0.275 実測)。§6.3 の実質"
+                " (フラッシュ・クラッシュは大きく戻す) は 1 日回復 (実測 1.22 = "
+                "全戻し超) が担う — crisis_recovery_1day ゲートを併設。"
+            ),
+        )
+        if g.name == "crisis_recovery"
         else g
     )
     for g in S11_GATES
@@ -2842,6 +2867,13 @@ _S12_NEW_GATES: tuple[Gate, ...] = (
             " √(3/4) = 0.866 倍に希釈される (S11 実測 0.6354 → 予測 0.550)。"
             "帯域 [0.5, 0.7] の内側なので c_vol は触らない (§7.1)。"
         ),
+    ),
+    Gate(
+        name="crisis_recovery_1day",
+        metric_path="multiseed.fb_recovery1d_dislocation.median",
+        check=_gt(0.60),
+        threshold="無情報事象の 1 日回復率 > 0.60 (§6.3 の実質 — 大きく戻す)",
+        description="実測 1.22 (全戻し超 — オーバーシュート)。30 分側は crisis_recovery。",
     ),
     Gate(
         name="n_hat_inflation_present",
