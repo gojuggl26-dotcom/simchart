@@ -1,0 +1,227 @@
+[1/6] 実行 stage=S11 seed=42 n_days=1000 steps_per_day=23400
+      完了 (13.16 秒, グリッド 23,400,001 点)
+[2/6] 決定性の確認 (同一シードで再実行)
+      ビット単位一致: True
+[3/6] RNG ストリーム安定性の確認
+      既存ストリーム不変: True / 相互に別系列: True
+      l2.diffusion 消費列の一致: True
+[3b/6] 時間スケール不変性 (steps_per_day=390 で対照実行)
+      日次統計の一致: True
+[4/6] 検証スイート
+[4b/6] S10 からの不変性照合 (results/S10/metrics.json)
+      不変性: False
+        不一致: absr_powerlaw_gamma  {'passed': False, 'obs_regime_changed': False, 'regime_note': None, 'gamma_within_tol': False, 'gated_on_gamma': False, 'baseline': 0.809815809971872, 'current': 0.9434803355175636, 'rel_diff': 0.16505546557597378, 'tol_rel': 0.1, 'r2_baseline': 0.8740549441941748, 'r2_current': 0.7050616648352024, 'r2_not_degraded': False, 'note': 'chi の 30 日振動が daily |r| ACF に乗り γ は動く (S5 設計の帰結)。判定は R² 非劣化のみ (S3 裁定の延長)。'}
+        不一致: gph_d_deseasonalized  {'passed': False, 'baseline': 0.21424864394753246, 'current': 0.33130477078630666, 'diff': 0.1170561268387742, 'tol': 0.08, 'raw_current': 0.32500251668419566, 'raw_diff': 0.1107538727366632, 'basis': 'observed_abs_r_primary_bar', 'note': 'ジャンプ抽選差が支配的なため緩い帯。厳密性はテストと多シードで判定'}
+[4c/6] 多シード判定 (10 シード — hill/leverage/JV/skew)
+      シード 42 (1/10) 完了
+      シード 43 (2/10) 完了
+      シード 44 (3/10) 完了
+      シード 45 (4/10) 完了
+      シード 46 (5/10) スキップ: ZI ミッドが板の絶対ティック窓から逸脱しました。 book_window_half_ticks を広げるか期間を見直すこと。
+      シード 47 (6/10) 完了
+      シード 48 (7/10) 完了
+      シード 49 (chaos-off) スキップ: ZI ミッドが板の絶対ティック窓から逸脱しました。 book_window_half_ticks を広げるか期間を見直すこと。
+      シード 49 (8/10) 完了
+      シード 50 (9/10) スキップ: ZI ミッドが板の絶対ティック窓から逸脱しました。 book_window_half_ticks を広げるか期間を見直すこと。
+      シード 51 (chaos-off) スキップ: ZI ミッドが板の絶対ティック窓から逸脱しました。 book_window_half_ticks を広げるか期間を見直すこと。
+      シード 51 (10/10) 完了
+      hill_alpha: median=+2.2301  IQR=1.1534
+      leverage_corr: median=-0.0041  IQR=0.2043
+      jv_share: median=+0.7412  IQR=0.0174
+      skewness_daily: median=-0.4254  IQR=1.0121
+      dilution_sd_ratio: median=+0.8691  IQR=0.0403
+      dilution_corr_logiv: median=+0.5342  IQR=1.0943
+      hawkes_n_hat_true_phi: median=+0.8559  IQR=0.0010
+      hawkes_fano_60s: median=+29.3199  IQR=4.5038
+      meta_gamma: median=+0.2652  IQR=0.0281
+      meta_c1: median=+0.2003  IQR=0.0053
+      meta_vr_trade_1000: median=+4.8333  IQR=1.1987
+      meta_beta_deficit: median=-0.8438  IQR=0.0436
+      qr_eta_trade: median=+0.1630  IQR=0.0018
+      qr_obi_h1: median=+0.1230  IQR=0.0028
+      qr_change_sign_corr: median=-0.0748  IQR=0.0035
+      cross_seed_corr: mean=0.2063 [0.0478, 0.4360] (28 対)
+      指標の算出完了 (715.97 秒, エラー 0 件)
+[5/6] 結果の書き出しと読み直し
+      results_premeasure\S11\metrics.json (570,445 バイト)
+[6/6] プロット
+      price_path.png
+      qq_normal.png
+      acf.png
+      kurtosis_by_scale.png
+      zeta_q.png
+      signature_plot.png
+      daily_absr_acf.png
+      vol_path.png
+      variance_ratio.png
+
+主要指標
+---------------------------------------------
+  基準粒度 (秒)               60
+  リターン本数                 390000
+  尖度                     723.695
+  歪度                     2.97257
+  Hill alpha (k=5%)      1.50495
+  Hill 不安定度              0.27341
+  QQ の R^2               0.463321
+  ACF(r) ラグ1             0.17366
+  ACF(|r|) ラグ1           0.349125
+  Ljung-Box p (ラグ20)     0
+  GPH d (|r|)            0.325003
+  local Whittle d (|r|)  0.378687
+  分散比 max|VR-1|          1.73368
+  尖度のスケール依存 max|k-3|     31622.8
+  zeta_q 直線性 R^2         0.986044
+  zeta_q の傾き             0.37051
+  signature plot 最大乖離    1.64094
+  ADF p (log P)          0.886848
+  ADF p (r)              0
+  日次 尖度                  19.7193
+  日次 ACF(|r|) ラグ1        0.145511
+  日次 GPH d (|r|)         0.209757
+  日次 |r| ACF べき則 R^2     0.705062
+  日次 zeta_q 直線性 R^2      -
+  尖度の減衰傾き (日次→複数日)       -
+  Var(log σ) 断面          0.248543
+  予算シェア 断面 (分母 0.25)     {"msm":0.4990417672088368,"slow_ou":0.2001572306585784,"roug
+  予算使用率 断面               0.994171
+  E[σ²]/σ̄² 断面           0.992803
+  粗さ H (潜在, 5分〜4時間)      0.13261
+  粗さ ζ_q 線形性 R²          0.999974
+  粗さ H (RV 側, 記録のみ)      -
+  ボラ増分 ACF(1) (60秒)      -0.438882
+  ラフ予算シェア (経路)           0.0989237
+
+該当なし (not_applicable) の指標
+----------------------------------------------------------------------
+  micro.impact_consistency: gamma または beta が未推定です。符号自己相関 (S8) と propagator (S8) の両方が揃って初めて判定できます。
+  micro.sqrt_law: メタオーダーの記録がありません。S8 でメタオーダー分割を実装した段階で測定できるようになります。
+  cross.hayashi_yoshida: 資産が 1 本しかないため測定できません。多資産は S13 で導入します。
+  cross.lead_lag: 資産が 1 本しかないため測定できません。多資産は S13 で導入します。
+
+ゲート判定
+---------------------------------------------------------------------------------------
+  [PASS] pipeline_runs                  true
+  [PASS] determinism                    true
+  [PASS] rng_stability                  true
+  [PASS] rng_streams_distinct           true
+  [PASS] validation_callable            true
+  [PASS] artifacts_written              true
+  [PASS] adf                            true
+  [PASS] rng_diffusion                  true
+  [PASS] var_budget                     {"msm":0.4990417672088368,"slow_ou":0.2001572306585784,"roug
+  [PASS] e_sigma2                       0.992803
+  [PASS] scale_invariance               true
+  [PASS] h_latent                       0.13261
+  [PASS] h_linearity                    0.999974
+  [PASS] vol_incr_acf_negative          -0.438882
+  [PASS] var_budget_rough               0.0989237
+  [PASS] stationarity_y                 true
+  [PASS] inv_gph_d                      true
+  [PASS] inv_absr_acf_profile           true
+  [PASS] inv_zeta_c2                    true
+  [PASS] inv_rng_s1_streams             true
+  [PASS] eta_u_valid                    56
+  [PASS] martingale_compensation        true
+  [PASS] corr_rough_realized            {"realized":-0.600180537626795,"target":-0.6}
+  [PASS] corr_slow_realized             {"realized":-0.3499232450677703,"target":-0.35}
+  [PASS] corr_mid_realized              {"realized":null,"target":null}
+  [PASS] z_no_autocorr                  {"max_abs_acf":0.0005418404665692655,"threshold_2_over_sqrt_
+  [PASS] phi_normalization              {"status":"ok","value":null,"phi_sigma_sq_mean":0.9999999999
+  [PASS] intraday_shape                 {"status":"ok","value":null,"phi_sigma_sq_mean":0.9999999999
+  [PASS] inv_jv_share                   true
+  [PASS] var_total                      0.248543
+  [PASS] chi2_lyapunov                  0.00712959
+  [PASS] chi2_dimension                 1.84773
+  [PASS] chi2_spectral_peak             {"status":"ok","value":29.997614545454546,"peak_period_days"
+  [PASS] chi2_no_daily_peak             {"status":"ok","value":29.997614545454546,"peak_period_days"
+  [PASS] var_budget_chi2                0.200418
+  [PASS] chi2_hash                      {"status":"ok","value":null,"system":"mackey_glass","sha256"
+  [PASS] determinism_across_seeds       true
+  [PASS] leverage_dilution              0.869056
+  [PASS] chi2_no_direction              0.199208
+  [PASS] invariant_no_cross             {"status":"ok","value":true,"all_passed":true,"no_cross":tru
+  [PASS] invariant_order_conservation   {"status":"ok","value":true,"all_passed":true,"no_cross":tru
+  [PASS] invariant_volume_conservation  {"status":"ok","value":true,"all_passed":true,"no_cross":tru
+  [PASS] invariant_priority             {"status":"ok","value":true,"all_passed":true,"no_cross":tru
+  [PASS] throughput                     1.4481e+06
+  [PASS] spread_median                  1
+  [PASS] spread_positive                {"status":"ok","value":1.0,"median":1.0,"mean":7.26588546701
+  [PASS] depth_front_depletion          false
+  [PASS] size_distribution              1.13627
+  [PASS] placement_distribution         {"status":"ok","value":0.9201016050475355,"mu_estimated":0.9
+  [PASS] corr_mid_pstar                 {"status":"ok","value":0.01861989469769878,"corr_returns":0.
+  [PASS] inv_l2_frozen                  true
+  [PASS] hawkes_n_true_phi              {"status":"ok","value":0.856608596604955,"n_design":0.829986
+  [PASS] hawkes_n_est_phi               {"status":"ok","value":0.856608596604955,"n_design":0.829986
+  [PASS] hawkes_raw_inflated            {"status":"ok","value":0.856608596604955,"n_design":0.829986
+  [PASS] hawkes_block_stability         {"status":"ok","value":0.856608596604955,"n_design":0.829986
+  [PASS] hawkes_residual_poisson        3.7377e-81
+  [PASS] hawkes_overdispersion          28.6485
+  [PASS] hawkes_interevent_clustered    {"status":"ok","value":28.648511257326142,"fano_60s":28.6485
+  [PASS] hawkes_intraday_u_shape        0.98732
+  [PASS] hawkes_volume_acf              {"status":"ok","value":0.5549278668865197,"lag1":0.554927866
+  [FAIL] hawkes_realized_rates          0.116898
+         期待: 実現レート (MO/LO/CX) が定常目標 ±5%
+  [PASS] hawkes_burst_guard             {"status":"ok","value":1.0023410231451679e-05,"cap_hits":126
+  [PASS] alpha_meta_valid               1.6
+  [PASS] metaorder_length_fit           {"status":"ok","value":1.6011175654656993,"alpha_hat":1.6011
+  [FAIL] sign_acf_level                 0.20031
+         期待: C(1) ∈ [0.05, 0.20] (実証帯域、中央値)
+  [PASS] pool_stationary                -0.00636139
+  [PASS] flow_balance                   1.00065
+  [PASS] iceberg_ablation               {"n_seeds":10,"seeds":[42,43,44,45,46,47,48,49,50,51],"skipp
+  [PASS] vr_superdiffusive              4.83334
+  [PASS] beta_deficit                   -0.843844
+  [PASS] hawkes_fano_invariant          28.6485
+  [PASS] book_liveness_s8               4.2159e-04
+  [FAIL] multiseed_coverage             8
+         期待: 窓逸脱スキップ後の有効シード数 ≥ 20 / 30 (1000 日は逸脱率 ~17%)
+  [PASS] propagator_stability           0.0310047
+  [PASS] eta_range                      0.162984
+  [PASS] mid_return_acf1                -0.0748443
+  [PASS] signature_plot_trades          4.81119
+  [PASS] obi_predictive                 0.123034
+  [PASS] depth_peak_location            2
+  [PASS] mean_reversion_present         {"status":"ok","value":-0.009639621342802262,"conditioned_on
+  [PASS] uz_layer_off                   {"status":"ok","value":0.16318891346792436,"eta":0.163188913
+  [PASS] qr_c1_invariant                0.125796
+  [FAIL] cpl_gap_stationary             770.552
+         期待: 乖離 d = log p* − log p_obs の AR(1) 半減期が有限で < 600 分 (中央値)
+  [PASS] cpl_tracking_daily             0.99102
+  [FAIL] cpl_transmission_daily         0.927842
+         期待: 伝達率 T(1日) ∈ 1.00 ± 0.07 — **off 対で判定** (結合忠実度)
+  [PASS] cpl_gamma_resid_preserved      0.695032
+  [PASS] cpl_vol_volume                 0.646746
+  [PASS] cpl_vol_spread                 0.465876
+  [PASS] obs_gph_d_matches_latent       -0.0355148
+  [FAIL] obs_hill_alpha                 2.23006
+         期待: 観測日次リターンの Hill α ∈ [3, 5] (⑧、中央値)
+  [PASS] obs_jv_share_5min              0.274186
+  [PASS] obs_skewness                   -0.425421
+  [PASS] impact_vr_consistency          0.992895
+  [PASS] impact_beta_consistency        -0.478559
+  [PASS] sqrt_law_target                1.01803
+  [PASS] loop_gain                      0.37841
+  [PASS] feedback_ablation              0.282894
+  [FAIL] no_divergence                  1
+         期待: 発散 0 件 (全シード、ペア判定 log(RV_on/RV_off) の持続 §10)
+  [PASS] nt_max                         0.882117
+  [PASS] nt_mean                        0.844271
+  [PASS] saturation_present             true
+  [PASS] no_l2_feedback                 true
+  [FAIL] signal_is_surprise             1.05353
+         期待: u_t の平均 ≈ 0 (中央値、§2.1 — 水準反応の否定)
+  [PASS] crisis_frequency               58.8844
+  [PASS] crisis_anatomy_spread          44.9255
+  [PASS] crisis_anatomy_depth           0.121804
+  [PASS] crisis_recovery                0.469746
+  [PASS] hill_alpha_improved            2.23006
+  [PASS] depth_variability_increased    1.42623
+  [PASS] n_hat_matches_mean             0.0120991
+  [PASS] throughput                     1.4489e+06
+  [PASS] excess_volatility              2.09289
+---------------------------------------------------------------------------------------
+  合格 104/112 / critical 101 件中 不合格あり: hawkes_realized_rates, sign_acf_level, multiseed_coverage, cpl_gap_stationary, cpl_transmission_daily, obs_hill_alpha, no_divergence, signal_is_surprise
+
+所要時間 753.6 秒

@@ -1,0 +1,6 @@
+  seed 42: DIV n=1 max_excess=5.04 (= RV_on/RV_off 最大 e^5.0)
+b=(0.6,0.6,2.0): g30_med=+0.159 hill_all=2.62 hill_ex_crisis=2.57 divs=1
+  seed 44: DIV n=1 max_excess=5.70 (= RV_on/RV_off 最大 e^5.7)
+b=(0.8,0.8,2.0): g30_med=+0.312 hill_all=2.31 hill_ex_crisis=2.80 divs=1
+  seed 45: DIV n=1 max_excess=5.99 (= RV_on/RV_off 最大 e^6.0)
+b=(1.0,1.0,2.0): g30_med=+0.368 hill_all=2.23 hill_ex_crisis=2.61 divs=1

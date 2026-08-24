@@ -328,6 +328,19 @@ def _coupling_seed_stats(result, config: Config) -> dict[str, float | None]:
     }
 
 
+def _u_time_mean(result, config: Config) -> float | None:
+    """時間加重の u 平均 (スナップショット格子、バーンイン後)。"""
+    import numpy as np
+
+    meta = result.events.meta if isinstance(result.events.meta, dict) else {}
+    u = np.asarray(meta.get("fb_u_grid", np.empty(0)), dtype=np.float64)
+    if not u.size:
+        return None
+    step = float(meta.get("fb_u_step_sec", 60.0))
+    burn = int(config.book_burn_in_days * 23400.0 / step)
+    return float(u[burn:].mean()) if u.size > burn else None
+
+
 def _feedback_seed_stats(result, config: Config, result_off) -> dict[str, float | None]:
     """S11 のシード別フィードバック統計 (multiseed の中央値判定用)。
 
@@ -373,6 +386,27 @@ def _feedback_seed_stats(result, config: Config, result_off) -> dict[str, float 
     rv_geo = float(np.exp(lon[:n_c].mean() - loff[:n_c].mean()))
     rv_ari = float(np.exp(lon[:n_c]).mean() / np.exp(loff[:n_c]).mean())
 
+    # ⑧ の判定は**危機日除外の Hill α** (指示書 §6.2 の分解そのもの)。全体 α は
+    # 増幅が whale 日に集中するため構造的に低下する (フロンティア実測 — 記録)。
+    def _hill_split():
+        from .validation.tails import hill_estimator
+
+        det_ = fbv.crisis_detect(result, config)
+        obs = result.observation
+        spd = int(round(23400.0 / obs.step_seconds))
+        r_d = np.diff(np.asarray(obs.log_price)[::spd])
+        h_all = hill_estimator(r_d, 0.05, "both").get("alpha")
+        mask = np.ones(r_d.size, dtype=bool)
+        step_snap = det_.get("step_sec") or 60.0
+        for a, b in det_.get("episodes") or []:
+            d0 = int(a * step_snap / 23400.0)
+            d1 = int(b * step_snap / 23400.0)
+            mask[max(d0 - 1, 0): min(d1 + 2, r_d.size)] = False
+        h_ex = hill_estimator(r_d[mask], 0.05, "both").get("alpha")
+        return h_all, h_ex
+
+    hill_all, hill_ex = _hill_split()
+
     # ③ の判定は危機日を**対でマスク**した gph_d 差 — 危機スパイクは日次 |r| の
     # GPH を白色希釈する (S3 で解剖済みの機構)。同じ日を両系列から除くので
     # 「観測は潜在の記憶を保存するか」を共通サポートで問える。
@@ -416,11 +450,17 @@ def _feedback_seed_stats(result, config: Config, result_off) -> dict[str, float 
         ),
         "fb_nt_mean": fb.get("nt_mean"),
         "fb_nt_max": fb.get("nt_max"),
-        "fb_u_mean": fb.get("u_mean"),
+        # ★§2.1 の定常性は**時間加重**平均で判定する。イベント加重 (エンジンの
+        # カウンタ) はイベントが高 u 状態に集積するため +1 前後になる —
+        # それ自体は「活動は驚きに集中する」という情報なので別名で記録。
+        "fb_u_mean_time": _u_time_mean(result, config),
+        "fb_u_mean_event": fb.get("u_mean"),
         "fb_T_daily_off": t_off.get("T_daily"),
         "fb_rv_excess_geo": rv_geo,
         "fb_rv_excess_ari": rv_ari,
         "fb_gph_d_diff_masked": _masked_gph_diff(),
+        "fb_hill_all": hill_all,
+        "fb_hill_ex_crisis": hill_ex,
     }
 
 

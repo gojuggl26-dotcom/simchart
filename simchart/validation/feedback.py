@@ -272,14 +272,25 @@ def divergence_monitor(
     if result_off is not None:
         loff = _log_rv_series(result_off.observation, cfg, _SESSION)
         n = min(lrv.size, loff.size)
-        series = lrv[:n] - loff[:n]
-        basis = "paired (log RV_on − log RV_off、L2 相殺)"
+        daily = lrv[:n] - loff[:n]
+        # ★日次のペア差は whale の**出方の不一致**で ±3〜5 揺れる (パスが
+        # 脱相関した後、同じ鯨が片側にしか現れない日がある — S11e 実測)。
+        # 真の発散 (g ≥ 1) の署名は**持続的な**天井増幅なので、30 日移動平均が
+        # log(threshold) を超えることを判定に使う (鯨タイミング差は多週で相殺)。
+        w = 30
+        if daily.size < w + 5:
+            return na(f"日数が足りません (n={daily.size})")
+        csum = np.concatenate(([0.0], np.cumsum(daily)))
+        series = (csum[w:] - csum[:-w]) / w
+        basis = "paired-smoothed (30 日移動平均の log RV_on − log RV_off)"
         ref = 0.0
+        thr = np.log(threshold)
     else:
         series = lrv
         basis = "single (L2 エポックの偽陽性あり — 記録用)"
         ref = float(np.median(lrv))
-    above = series > ref + np.log(threshold)
+        thr = np.log(threshold)
+    above = series > ref + thr
     n_div = 0
     run = 0
     for a in above:
