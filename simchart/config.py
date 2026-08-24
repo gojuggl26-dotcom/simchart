@@ -606,6 +606,24 @@ class Config:
     #: (N≥2) の平均実行スパン実測 430 秒。κ と積で効くので規約として固定し、
     #: 強度の探索は κ 側で行う。
     kappa_tau_meta_sec: float = 430.0
+    #: S10c: L2 の緩慢ボラ → L1 活動度のリンク (指示書 §7):
+    #:   Z_t = exp(c_vol·V_t − c_vol²/2),  V_t = (MA_w(log σ − log φ_σ) − m_V)/s_V
+    #: Z は Hawkes の**ベースラインのみ**に乗る (カーネル不変 → n 保存、φ と同じ
+    #: 扱い)。取消ベースライン δ0·N にも乗せ、フローの釣り合いを保つ。
+    #: ★V にラフ成分を含めない (§7.1) — 移動平均 (既定 3 日) がラフ (半減期
+    #: 0.75 日) を落とし、MSM 遅い成分・緩慢 OU・χ₂ を通す。
+    #: ★正規化は理論定数 (Jensen 補正 exp(−c²/2)) — 実行全体の標本平均で割ると
+    #: 早い時刻の Z が遅い時刻の情報を知る (因果性)。E[Z]=1 は近似で、実現
+    #: レートのずれは hawkes_realized_rates ゲート (±5%) が監視する。
+    c_vol: float = 0.0
+    c_vol_ma_days: float = 3.0
+    #: V の標準化スケール s_V。較正実測 (MA_3d 系列の**定常** SD — 価格層のみ
+    #: 1000〜5000 日 × 5 シードで中央値 0.41〜0.46、5000 日 0.461) を定数として
+    #: 固定 — 実行内標本で標準化すると同じ因果性問題が出る。短ホライズンでは
+    #: 実行内 Var(V) < 1 で E[Z] が数 % 下振れし、さらに緩慢成分の実現平均
+    #: (エポック効果、250 日でも SD ≈ 0.22) で実行ごとに ±20% 揺れる —
+    #: どちらも実測済みの物理で、ゲートは多シード中央値で判定する。
+    c_vol_v_scale: float = 0.45
 
     # --- フィードバック ---
     enable_feedback: bool = False  # S11
@@ -1072,6 +1090,21 @@ class Config:
                 "kappa=0 のまま kappa_tau_meta_sec が既定値から変更されています"
                 " (暗黙 no-op — 意図があるなら kappa を設定すること)"
             )
+        if self.c_vol != 0.0:
+            if self.c_vol < 0:
+                raise ValueError(f"c_vol = {self.c_vol} は負です")
+            if not self.enable_hawkes:
+                raise ValueError(
+                    "c_vol > 0 には enable_hawkes=True が必要です"
+                    " (Z は Hawkes のベースラインに乗る)"
+                )
+            if self.c_vol_ma_days <= 0 or self.c_vol_v_scale <= 0:
+                raise ValueError("c_vol_ma_days / c_vol_v_scale は正である必要があります")
+        elif self.c_vol_ma_days != 3.0 or self.c_vol_v_scale != 0.45:
+            raise ValueError(
+                "c_vol=0 のまま c_vol_ma_days / c_vol_v_scale が既定値から変更"
+                "されています (暗黙 no-op)"
+            )
         if self.vol_var_budget_total <= 0:
             raise ValueError("vol_var_budget_total は正である必要があります")
         allocated = (
@@ -1108,6 +1141,9 @@ class Config:
         resets.update({name: defaults[name] for name in self._S9_UZ_PARAMS})
         resets["kappa"] = defaults["kappa"]
         resets["kappa_tau_meta_sec"] = defaults["kappa_tau_meta_sec"]
+        resets["c_vol"] = defaults["c_vol"]
+        resets["c_vol_ma_days"] = defaults["c_vol_ma_days"]
+        resets["c_vol_v_scale"] = defaults["c_vol_v_scale"]
         return self.replace(
             enable_book=False, enable_hawkes=False,
             enable_metaorder=False, enable_iceberg=False,

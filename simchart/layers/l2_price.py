@@ -1302,14 +1302,33 @@ class GBMPriceLayer:
             del u
             log_vol += log_phi
             subsample["log_phi_sigma"] = log_phi[::stride].copy()
+            mean_log_phi = float(log_phi.mean())
             del log_phi
         else:
             subsample["log_phi_sigma"] = np.zeros(n_sub)
+            mean_log_phi = 0.0
 
         subsample["log_vol"] = log_vol[::stride].copy()
         self.last_diagnostics["vol_subsample"] = subsample
+        # S10c: E[log σ_obs] の決定論的部分。MSM は E[ΠM]=1 だが E[log M]<0
+        # (Jensen の逆側) なので、log 平均には固有の負の定数が乗る。
+        # V_t の中心化定数 m_V はこれを使う (全標本平均は使わない — 因果性)。
+        if cfg.enable_msm:
+            m0_msm = solve_m0(cfg.msm_k, cfg.vol_var_target_msm)
+            msm_log_mean = 0.5 * cfg.msm_k * 0.5 * (
+                math.log(m0_msm) + math.log(2.0 - m0_msm)
+            )
+        else:
+            msm_log_mean = 0.0
         self.last_diagnostics["composition"] = {
             "log_sigma_bar": log_sigma_bar,
+            "mean_log_vol_deterministic": (
+                log_sigma_bar + msm_log_mean
+                - var_slow - var_rough - float(subsample["c_chi"])
+                + mean_log_phi
+            ),
+            "msm_log_mean": msm_log_mean,
+            "mean_log_phi_sigma": mean_log_phi,
             "convexity_correction": -var_slow - var_rough - float(subsample["c_chi"]),
             "c_chi": float(subsample["c_chi"]),
             "enable_msm": cfg.enable_msm,
@@ -1450,6 +1469,7 @@ class GBMPriceLayer:
             steps_per_day = (n - 1) // n_days_grid
             gaps = self._simulate_overnight(log_vol, n_days_grid, steps_per_day)
 
+        comp = self.last_diagnostics.get("composition") or {}
         return PriceProcess(
             t=t,
             log_p_star=log_p,
@@ -1457,6 +1477,9 @@ class GBMPriceLayer:
             jump_times=jump_times,
             overnight_gaps=gaps,
             interpolation="linear",
+            mean_log_vol_deterministic=comp.get(
+                "mean_log_vol_deterministic", math.log(self.sigma_bar_diffusion)
+            ),
         )
 
 

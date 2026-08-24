@@ -86,6 +86,11 @@ class PriceProcess:
     #: クローズ系列は検証側でギャップと合成して作る (S4 指示書 §10 の分離)。
     overnight_gaps: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.float64))
     interpolation: str = "linear"
+    #: S10c: E[log σ_obs] の決定論的部分 (MSM の E[log M]・凸性補正・季節性の
+    #: セッション平均込み)。c_vol の V_t を中心化する定数 m_V として使う —
+    #: 全標本平均での標準化はルックアヘッドなので、生成側が定数を渡す。
+    #: ダイジェストには入らない (経路の同一性はあくまで配列群で判定)。
+    mean_log_vol_deterministic: float | None = None
 
     _SUPPORTED_INTERPOLATION = ("linear",)
     _PLANNED_INTERPOLATION = {

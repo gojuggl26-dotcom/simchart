@@ -134,7 +134,8 @@ C_ICE_ORDERS = 35  # アイスバーグとして出た指値の数
 C_ICE_REFILLS = 36  # 補充回数
 C_ICE_REFILL_VOL = 37  # 補充量の合計 (隠れ→表示へ移った量)
 C_ICE_HIDDEN_IN = 38  # 投入された隠れ量の合計 (台帳の照合用)
-N_COUNTERS = 39
+C_CVOL_TRUNC = 39  # S10c: z_up 有効域端での候補打ち切り回数 (診断のみ)
+N_COUNTERS = 40
 
 
 @njit(cache=True)
@@ -336,6 +337,12 @@ def run_zi_book(
     kappa_bias,  # tanh バイアス強度 κ
     s_scale_grid,  # σ_t·√τ_meta [log 価格単位] (log_pstar と同一グリッド)
     k_base_price, k_tick,  # ティック → log 価格の変換 (d の計算用)
+    # --- S10c: c_vol (use_cvol=False なら完全無視) ---
+    use_cvol,
+    z_grid,  # Z_t (独自の粗グリッド、E[Z] ≈ 1。3日 MA 由来なので粗くて十分)
+    z_up_grid,  # thinning 上界: ブロック前方 max (自ブロック+次ブロックの max)
+    z_step_sec,  # z グリッドの刻み [秒]
+    z_up_block,  # z_up の 1 ブロックのグリッド段数 (上界の有効域 = 2 ブロック)
 ):
     """ZI 板を最後まで走らせ、(イベントログ, グリッドミッド, スナップショット,
     カウンタ) を返す。単一スレッド・固定消費順で決定論。"""
@@ -489,13 +496,26 @@ def run_zi_book(
         #     (励起はイベント間で単調減少、φ は大域最大で抑える → 有効な上界)。
         lam_total = 0.0
         lam_bar = 0.0
+        cvol_trunc = False
         if use_hawkes:
             exc_total = 0.0
             for y in range(3):
                 for k in range(n_kern):
                     exc_total += h_states[y, k]
+            # S10c: Z_t はベースラインのみに乗る (φ と同じ扱い — n 保存)。
+            # 上界にはブロック前方 max (z_up) を使う。上界の有効域は自ブロック
+            # +次ブロックなので、候補がそれを越えたら有効域の端で打ち切って
+            # 時間だけ進める (指数分布の無記憶性により厳密な thinning のまま)。
+            z_bound = 1.0
+            zi_b = 0
+            if use_cvol:
+                zi_b = int(t_now / z_step_sec)
+                if zi_b >= z_grid.size:
+                    zi_b = z_grid.size - 1
+                z_bound = z_up_grid[zi_b]
             lam_bar = (
-                phi_lam_max * (2.0 * h_mu_mo + 2.0 * h_mu_lo + h_delta0 * n_live)
+                phi_lam_max * z_bound
+                * (2.0 * h_mu_mo + 2.0 * h_mu_lo + h_delta0 * n_live)
                 + exc_total
             )
             if lam_bar > h_cap:
@@ -503,6 +523,11 @@ def run_zi_book(
                 counters[C_H_CAP_HITS] += 1.0
             u_dt = rng_hawkes.random()
             dt_days = -np.log(1.0 - u_dt) / lam_bar
+            if use_cvol:
+                t_valid = (zi_b // z_up_block + 2) * z_up_block * z_step_sec
+                if t_now + dt_days * day_sec > t_valid:
+                    dt_days = (t_valid - t_now) / day_sec
+                    cvol_trunc = True
         else:
             lam_total = 2.0 * mu_mo + 2.0 * alpha_lo + delta_cancel * n_live
             u_dt = rng_type.random()
@@ -600,6 +625,10 @@ def run_zi_book(
                 dec = np.exp(-h_beta_day[k] * dt_days)
                 for y in range(3):
                     h_states[y, k] *= dec
+            # S10c: 上界の有効域端での打ち切りは候補ではない — 受理判定へ進まない
+            if cvol_trunc:
+                counters[C_CVOL_TRUNC] += 1.0
+                continue
             # 日内位置 u と φ_λ(u) (季節性はベースラインのみ — §3.3)
             u_day = t_now / day_sec
             u_frac = u_day - int(u_day)
@@ -607,6 +636,13 @@ def run_zi_book(
             if pi >= phi_n:
                 pi = phi_n - 1
             phi_now = phi_lam_table[pi]
+            # S10c: Z_t をベースラインへ (φ と同格の変調 — カーネルは触らない)。
+            # CX の δ0·N にも乗せてフロー均衡 (板の総量スケール) を保つ。
+            if use_cvol:
+                zi = int(t_now / z_step_sec)
+                if zi >= z_grid.size:
+                    zi = z_grid.size - 1
+                phi_now = phi_now * z_grid[zi]
             e_mo = 0.0
             e_lo = 0.0
             e_cx = 0.0

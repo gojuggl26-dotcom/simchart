@@ -266,6 +266,72 @@ class ZIBook:
         else:
             s_scale_grid = np.ones(2, dtype=np.float64)
 
+        # ---------------- S10c: c_vol (緩慢ボラ → 活動度 Z_t) ----------------
+        # Z_t = exp(c·V_t − c²/2)、V_t = (MA_w(log σ_obs) − m_V)/s_V。
+        # - MA は後方窓 (因果)。窓 = 丸 w 日ぶんなので log φ_σ(u) は日周期の
+        #   定数 (セッション平均) に落ち、rough (日未満の記憶) もほぼ消える。
+        # - m_V は決定論的定数 (価格層の composition 診断)。全標本平均での
+        #   標準化はルックアヘッドなので使わない。s_V も固定定数 (較正実測値)。
+        # - Z は 3 日 MA 由来で緩慢 → 独自の粗グリッド (〜60s) で持つ
+        #   (p* グリッド解像度で持つと本番 936MB×2 の無駄)。
+        use_cvol = float(cfg.c_vol) > 0.0
+        if use_cvol:
+            spd_full = int(round(session / step_sec))
+            stride_z = max(1, int(round(60.0 / step_sec)))
+            while spd_full % stride_z != 0:
+                stride_z -= 1
+            z_step_f = stride_z * float(step_sec)
+            spd_z = spd_full // stride_z
+            lv_z = np.ascontiguousarray(price.log_vol[::stride_z], dtype=np.float64)
+            w_z = max(1, int(round(float(cfg.c_vol_ma_days) * spd_z)))
+            csum = np.concatenate(([0.0], np.cumsum(lv_z)))
+            n_z = lv_z.size
+            hi = np.arange(1, n_z + 1)
+            lo = np.maximum(hi - w_z, 0)
+            ma_z = (csum[hi] - csum[lo]) / (hi - lo)
+            m_v = price.mean_log_vol_deterministic
+            if m_v is None:
+                raise ValueError(
+                    "c_vol > 0 には価格層が mean_log_vol_deterministic を"
+                    " 記録している必要があります (l2_price が現行版か確認)"
+                )
+            v_z = (ma_z - float(m_v)) / float(cfg.c_vol_v_scale)
+            cvf = float(cfg.c_vol)
+            z_grid = np.exp(cvf * v_z - 0.5 * cvf * cvf)
+            # thinning 上界: 4h ブロック max の前方 2 ブロック引き。カーネルは
+            # 有効域 (自+次ブロック) を越える候補を打ち切るので厳密な上界。
+            z_blk = max(1, int(round(4.0 * 3600.0 / z_step_f)))
+            n_blk = (n_z + z_blk - 1) // z_blk
+            zpad = np.full(n_blk * z_blk, -np.inf)
+            zpad[:n_z] = z_grid
+            bmax = zpad.reshape(n_blk, z_blk).max(axis=1)
+            z_up_grid = np.repeat(
+                np.maximum(bmax, np.concatenate((bmax[1:], bmax[-1:]))), z_blk
+            )[:n_z]
+            # 容量: レートは Z に比例して膨らむ。Z 経路は実行前に確定している
+            # ので、実現平均 Z で見積りを補正する (max は 2 ブロック上界の余裕)。
+            z_mean_realized = float(z_grid.mean())
+            cap_mult_z = min(4.0, max(1.0, 1.25 * z_mean_realized))
+            ev_capacity = int(ev_capacity * cap_mult_z)
+            if use_meta:
+                meta_args["log_cap"] = int(meta_args["log_cap"] * cap_mult_z)
+            cvol_diag = {
+                "m_v": float(m_v),
+                "v_mean": float(v_z.mean()),
+                "v_sd": float(v_z.std()),
+                "z_mean": float(z_grid.mean()),
+                "z_min": float(z_grid.min()),
+                "z_max": float(z_grid.max()),
+                "ma_window_days": w_z / spd_z,
+                "z_step_sec": z_step_f,
+            }
+        else:
+            z_grid = np.ones(2, dtype=np.float64)
+            z_up_grid = np.ones(2, dtype=np.float64)
+            z_step_f = 60.0
+            z_blk = 240
+            cvol_diag = None
+
         # JIT ウォームアップ (コンパイル / キャッシュロードを計測から外す)。
         # ★使い捨ての Generator を使う — レジストリのストリームを消費すると
         # 決定論が壊れる。出力は捨てる。
@@ -301,6 +367,8 @@ class ZIBook:
             float(cfg.qr_cx_len_pow), float(cfg.qr_cx_back),
             float(cfg.qr_mo_depth_frac), float(cfg.qr_obi_bias),
             kappa_f, s_scale_grid[:2].copy(), base_price_f, tick_f,
+            use_cvol, np.ones(2, dtype=np.float64), np.ones(2, dtype=np.float64),
+            60.0, 240,
         )
 
         started = time.perf_counter()
@@ -345,6 +413,7 @@ class ZIBook:
             float(cfg.qr_cx_len_pow), float(cfg.qr_cx_back),
             float(cfg.qr_mo_depth_frac), float(cfg.qr_obi_bias),
             kappa_f, s_scale_grid, base_price_f, tick_f,
+            use_cvol, z_grid, z_up_grid, float(z_step_f), int(z_blk),
         )
         engine_runtime = time.perf_counter() - started
 
@@ -549,6 +618,11 @@ class ZIBook:
                 "cx_noop": int(counters[C_CX_NOOP]),
                 "phi_lambda_max": phi_max,
             }
+        if use_cvol:
+            from .book_engine import C_CVOL_TRUNC
+
+            cvol_diag["truncations"] = int(counters[C_CVOL_TRUNC])
+            self.last_diagnostics["cvol"] = cvol_diag
         if use_meta:
             from .book_engine import (
                 C_META_ARRIVALS,
