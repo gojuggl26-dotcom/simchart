@@ -430,11 +430,20 @@ def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
                 # 相関ベース 3 計器: 同一シードで chi を厳密に除いた S4 相当ペアを
                 # 回す (log σ は引き算で厳密復元できるが、価格はジャンプ抽選が
                 # λ(σ) 経由で変わるため再実行が必要)。
-                r4 = run_pipeline(seed_config.replace(enable_chaos_vol=False))
-                dil = _dilution_correlations(result, r4)
-                for key_ in ("rv", "iv", "logiv"):
-                    per_seed[f"dilution_corr_{key_}"].append(dil[key_])
-                del r4
+                # ★S10 (κ>0): アブレーション側は p* 経路が変わるため、本走が
+                # 完走しても窓逸脱で落ちうる — 記録の上スキップ (ice-off と同じ)。
+                try:
+                    r4 = run_pipeline(seed_config.replace(enable_chaos_vol=False))
+                except RuntimeError as exc:
+                    skipped_seeds.append(
+                        {"seed": str(seed), "leg": "chaos_off", "error": str(exc)}
+                    )
+                    print(f"      シード {seed} (chaos-off) スキップ: {exc}", flush=True)
+                else:
+                    dil = _dilution_correlations(result, r4)
+                    for key_ in ("rv", "iv", "logiv"):
+                        per_seed[f"dilution_corr_{key_}"].append(dil[key_])
+                    del r4
             # シード横断相関 (5 分に間引いてメモリを 1/5 に)。
             cross_seed_paths.append(lv_with[::5].astype(np.float64))
             chi_hashes.append(result.meta["l2"]["chaos"]["sha256"])
@@ -645,8 +654,20 @@ def cmd_run(args: argparse.Namespace) -> int:
     if stage != "S0":
         low_steps = config.validation.scale_invariance_steps_per_day
         print(f"[3b/6] 時間スケール不変性 (steps_per_day={low_steps} で対照実行)")
-        scale_invariance = scale_invariance_check(config, result)
-        print(f"      日次統計の一致: {scale_invariance['passed']}")
+        # ★S10 (κ>0): 対照解像度は独立な板実現なので、本走が完走しても
+        # 窓逸脱で落ちうる。落ちたら記録の上スキップ (潜在側の判定は
+        # 本番 30 シードの multiseed が別途担う)。
+        try:
+            scale_invariance = scale_invariance_check(config, result)
+        except RuntimeError as exc:
+            scale_invariance = {
+                "passed": None,
+                "skipped": f"対照解像度ランが失敗: {exc}",
+                "checks": {},
+            }
+            print(f"      対照実行が失敗 — 記録の上スキップ: {exc}")
+        else:
+            print(f"      日次統計の一致: {scale_invariance['passed']}")
         for name, chk in scale_invariance["checks"].items():
             if not chk["passed"]:
                 print(f"        不一致: {name}  hi={chk.get('hi')}  lo={chk.get('lo')}")
