@@ -328,32 +328,37 @@ def _coupling_seed_stats(result, config: Config) -> dict[str, float | None]:
     }
 
 
-def _nt_window_means(result, config: Config, window_days: float):
-    """窓 (5 日) ごとの平均 n_t (u と χ₃ から決定論的に再構成)。
-
-    §8.1 の「脆弱性の窓は再現される」の直接検証素材 — n_t の緩慢成分は
-    全シード共通の χ₃ が支配するので、シード横断相関は高いはず。
-    """
+def _nt_series(result, config: Config):
+    """n_t の時系列 (u と χ₃ から決定論的に再構成、バーンイン後、時間格子)。"""
     import numpy as np
-
-    from .chaos import chi_window
 
     meta = result.events.meta if isinstance(result.events.meta, dict) else {}
     u = np.asarray(meta.get("fb_u_grid", np.empty(0)), dtype=np.float64)
     if not u.size:
         return None
     step = float(meta.get("fb_u_step_sec", 60.0))
-    t3_days, chi3_norm, _ = chi_window(config, float(config.n_days) + 1.0, "chi3")
-    t_days = np.arange(u.size, dtype=np.float64) * step / 23400.0
-    chi3_g = np.interp(t_days, t3_days, chi3_norm)
     th = np.tanh(u / float(config.fb_u_scale))
-    arg = float(config.fb_b_n) * th + float(config.chi3_b) * chi3_g
+    arg = float(config.fb_b_n) * th
+    if config.enable_chaos_branching and float(config.chi3_b) > 0.0:
+        from .chaos import chi_window
+
+        t3_days, chi3_norm, _ = chi_window(config, float(config.n_days) + 1.0, "chi3")
+        t_days = np.arange(u.size, dtype=np.float64) * step / 23400.0
+        arg = arg + float(config.chi3_b) * np.interp(t_days, t3_days, chi3_norm)
     sig = 1.0 / (1.0 + np.exp(-arg))
     nt = float(config.fb_n_min) + (float(config.fb_n_max) - float(config.fb_n_min)) * sig
-    burn_d = int(config.book_burn_in_days)
+    start = int(config.book_burn_in_days * 23400.0 / step)
+    return nt[start:]
+
+
+def _nt_window_means(result, config: Config, window_days: float):
+    """窓 (5 日) ごとの平均 n_t (§8.1 の「脆弱性の窓」の直接検証素材)。"""
+    meta = result.events.meta if isinstance(result.events.meta, dict) else {}
+    step = float(meta.get("fb_u_step_sec", 60.0))
+    nt_b = _nt_series(result, config)
+    if nt_b is None:
+        return None
     spw = int(round(window_days * 23400.0 / step))
-    start = int(burn_d * 23400.0 / step)
-    nt_b = nt[start:]
     n_w = nt_b.size // spw
     return nt_b[: n_w * spw].reshape(n_w, spw).mean(axis=1)
 
@@ -479,6 +484,10 @@ def _feedback_seed_stats(result, config: Config, result_off) -> dict[str, float 
             cv_on / cv_off if (cv_on is not None and cv_off) else None
         ),
         "fb_nt_mean": fb.get("nt_mean"),
+        "fb_nt_mean_time": (
+            float(np.mean(nt_s)) if (nt_s := _nt_series(result, config)) is not None
+            else None
+        ),
         "fb_nt_max": fb.get("nt_max"),
         # ★§2.1 の定常性は**時間加重**平均で判定する。イベント加重 (エンジンの
         # カウンタ) はイベントが高 u 状態に集積するため +1 前後になる —

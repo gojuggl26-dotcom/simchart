@@ -958,13 +958,30 @@ def _hawkes_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
             zm = cv.get("z_mean")
             if zm:
                 z_norm = float(zm)
+        # S12: n_t が広く振れる (χ₃、n_max=0.95) と 1/(1−n) の凸性で平均レートが
+        # 設計アンカーの ~2 倍になる — これは脆弱窓の設計帰結なので、閉ループ確認は
+        # **n_t 込みの予測** rate ∝ E[(1−n_design)/(1−n_t)]⁻¹ に対して行う。
+        n_factor = 1.0
+        if float(cfg.chi3_b) > 0.0 or float(cfg.fb_b_n) > 0.0:
+            try:
+                from ..cli import _nt_series
+
+                nt = _nt_series(result, cfg)
+                if nt is not None and nt.size:
+                    n_design_ = float(
+                        np.max(np.abs(np.linalg.eigvals(
+                            np.asarray(cfg.hawkes_a, dtype=np.float64))))
+                    )
+                    n_factor = float(np.mean(1.0 / (1.0 - nt)) * (1.0 - n_design_))
+            except Exception:
+                n_factor = 1.0
         rows: dict[str, Any] = {}
         rels = []
         raw_rels = []
         for y, name in ((0, "mo"), (1, "lo"), (2, "cx")):
             rate = float(((marks == y) & keep).sum()) / days
             rel_raw = rate / float(targets[y]) - 1.0
-            rel = rate / (float(targets[y]) * z_norm) - 1.0
+            rel = rate / (float(targets[y]) * z_norm * n_factor) - 1.0
             rows[f"{name}_per_day"] = num(rate)
             rows[f"{name}_target"] = num(targets[y])
             rows[f"{name}_rel_diff"] = num(rel)
@@ -974,6 +991,7 @@ def _hawkes_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
         rows["max_abs_rel_diff"] = num(max(rels))
         rows["max_abs_rel_diff_raw"] = num(max(raw_rels))
         rows["z_mean_norm"] = num(z_norm)
+        rows["n_factor_norm"] = num(n_factor)
         return ok(rows["max_abs_rel_diff"], **rows)
 
     out["realized_rates"] = safe_call(_rates)

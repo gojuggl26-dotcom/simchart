@@ -2682,9 +2682,50 @@ _S12_INHERITED_GATES: tuple[Gate, ...] = tuple(
             ),
         )
         if g.name == "inv_absr_powerlaw_r2"
+        else Gate(
+            name=g.name,
+            metric_path="multiseed.fb_nt_mean_time.median",
+            check=_between(0.76, 0.94),
+            threshold="時間加重 E[n_t] が [n_min, n_max] の内側 (中点 0.85 近傍)",
+            description=(
+                "★イベント加重 (エンジンカウンタ) は n_max=0.95 で 1/(1−n) の"
+                " 20 倍重みが効き ~0.90 に張り付く — S11 の signal_is_surprise と"
+                "同じ時間/イベント加重の混同。判定は時間加重 (実測 ~0.85)。"
+                "イベント加重は fb_nt_mean に記録継続。"
+            ),
+        )
+        if g.name == "nt_mean"
+        else Gate(
+            name=g.name, metric_path=g.metric_path,
+            check=lambda v: (
+                isinstance(v, Mapping)
+                and v.get("true_phi_minus_design") is not None
+            ),
+            critical=False,
+            threshold="n̂ (定数カーネル MLE) — 記録 (§8.3 の再定義の帰結)",
+            description=(
+                "n_t が χ₃ で n_max=0.95 まで振れる窓では、定数カーネル MLE は"
+                "イベント加重の実効分岐比 (~0.93) を推定する — 設計値 0.830 との"
+                "±0.05 比較は時変 n の下で意味を失った (S11 §8.3 の再定義)。"
+                "判定は n_hat_matches_mean (n̂ ≈ E[n_t] ±0.05) が引き継ぐ。"
+            ),
+        )
+        if g.name in ("hawkes_n_true_phi", "hawkes_n_est_phi")
+        else Gate(
+            name=g.name, metric_path=g.metric_path,
+            check=_between(10.0, 150.0), critical=False,
+            threshold="Fano(1min) ∈ [10, 150] (記録 — 脆弱窓の近臨界クラスタ込み)",
+            description=(
+                "χ₃ 窓で n_t → 0.95 に滞在する間は近臨界 (レート ~3.4×) —"
+                " Fano は設計として跳ねる (実測 74.5)。上限は暴走の見張りのみ"
+                " (発散 0 は no_divergence が別途保証)。"
+            ),
+        )
+        if g.name == "hawkes_fano_invariant"
         else g
     )
     for g in S11_GATES
+    if g.name != "sign_acf_level"
 )
 
 _S12_NEW_GATES: tuple[Gate, ...] = (

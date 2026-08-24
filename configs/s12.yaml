@@ -223,7 +223,7 @@ hawkes_mu_mo: 135.95        # ベースライン [件/日/側] (シェア 15.1%)
 hawkes_mu_lo: 226.49        # (15.1%)
 hawkes_delta0: 1.7061       # 取消ベースライン = φ·δ0·N(t) (シェア 34.1%)
 hawkes_nbar_ref: 238.95     # S6 本番実測の平均生存注文数 (= 597386 取消/500 日/δ5)
-hawkes_intensity_cap_mult: 50.0   # バーストガード: λ̄ ≤ 50×定常総レート
+# (hawkes_intensity_cap_mult は下の S12 ブロックで 150 — 重複キー禁止)
 hawkes_daily_event_cap: 500000    # 日次イベント数ガード (記録のみ)
 # (enable_chaos_lambda / enable_chaos_branching は下の S12 ブロックで true — 重複キー禁止)
 
@@ -303,6 +303,10 @@ fb_n_max: 0.95
 # 危機検出器の「通常」基準は χ₃ の窓 (13 日) より遅くする (2 日適応基準は
 # 窓の内側で再基準化して検出が消える — S12c の計器教訓)。
 crisis_norm_halflife_days: 30.0
+# バーストガード: 50× (S7 較正、n≈0.83 前提) は χ₃ 窓の近臨界 (局所レート
+# ~3.4×・カスケード) で常用ヒットする (0.14% 実測 — thinning が歪む)。
+# 暴走保護の役割を保ったまま 150× へ (発散 0 は no_divergence が別途保証)。
+hawkes_intensity_cap_mult: 150.0
 
 # --- L2 / S5: 決定論的カオス成分 chi_2 (★この段階の差分) ---
 # ★値は config.py の既定と**同一**にしてある (単一の情報源は config.py 側)。
