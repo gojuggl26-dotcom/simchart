@@ -477,6 +477,10 @@ def run_all(result: StageResult, config: Config | None = None) -> dict[str, Any]
     metrics["qr"] = _qr_metrics(result, cfg)
 
     # ------------------------------------------------------------------
+    # coupling: κ 結合 + c_vol (S10)。乖離 d・伝達率・残差 γ・追随・⑦。
+    metrics["coupling"] = _coupling_metrics(result, cfg)
+
+    # ------------------------------------------------------------------
     # chaos: 決定論的カオス成分 chi_2 (S5)。
     metrics["chaos"] = _chaos_metrics(result, cfg, r_daily)
 
@@ -1213,6 +1217,29 @@ def _meta_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
 
     out["impact_deficit"] = safe_call(_deficit)
     return out
+
+
+def _coupling_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
+    """S10 の測定群。κ=0 かつ c_vol=0 なら全枝 ``not_applicable``。
+
+    - gap / transmission / tracking: κ 結合の中核 (d の定常性・T(h)・日次相関)。
+    - residual_sign_acf: 生成時バイアス E[ε|d] を引いた残差符号の γ — raw の
+      C(ℓ) に重畳する情報チャネル (追跡ハーディング) は結合の物理なので、
+      ⑪ 保存の判定は残差側 (S10a の解剖 — results/S10a/DECISION.md)。
+    - vol_activity: ⑦ ボラ・出来高リンク (S10c、log-log 主計器) と §7.3/§7.4。
+    """
+    from . import coupling
+
+    keys = ("gap", "transmission", "residual_sign_acf", "tracking", "vol_activity")
+    if cfg.kappa <= 0 and cfg.c_vol <= 0:
+        return {k: na("kappa=0 かつ c_vol=0 (結合なし)") for k in keys}
+    return {
+        "gap": safe_call(coupling.gap_metrics, result, cfg),
+        "transmission": safe_call(coupling.transmission, result, cfg),
+        "residual_sign_acf": safe_call(coupling.residual_sign_acf, result, cfg),
+        "tracking": safe_call(coupling.pstar_tracking, result, cfg),
+        "vol_activity": safe_call(coupling.vol_activity_link, result, cfg),
+    }
 
 
 def _qr_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:

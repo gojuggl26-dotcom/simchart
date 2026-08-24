@@ -23,6 +23,7 @@ __all__ = [
     "transmission",
     "residual_sign_acf",
     "pstar_tracking",
+    "vol_activity_link",
 ]
 
 _SESSION = 23400.0
@@ -132,6 +133,81 @@ def residual_sign_acf(result, cfg, fit_range=(2, 1000)) -> dict[str, Any]:
         c1_raw=num(c1_raw),
         mean_abs_bias=num(float(np.mean(np.abs(mu_meta)))),
         n=int(s_k.size),
+    )
+
+
+def vol_activity_link(result, cfg) -> dict[str, Any]:
+    """⑦ ボラ・出来高リンク (S10c): 日次 RV(p_obs) と日次出来高/スプレッドの相関。
+
+    主計器は **log-log Pearson** (日次 RV は裾が重く (Hill≈3.4)、レベル相関は
+    少数の鯨日に支配される — S8/S9 で繰り返し確認した計器ノイズと同型)。
+    レベル相関・イベント数版・日内スプレッド曲線 (§7.4) も記録する。
+    """
+    from ..types import EventType
+
+    obs = result.observation
+    step = float(obs.step_seconds)
+    spd = int(round(_SESSION / step))
+    burn_d = int(cfg.book_burn_in_days)
+    n_days = int(cfg.n_days)
+
+    lp = obs.log_price
+    stride = max(1, int(round(60.0 / step)))
+    r1m = np.diff(lp[::stride])
+    day_of_r = (np.arange(r1m.size) * stride + stride) // spd
+    rv = np.bincount(day_of_r.astype(np.int64), weights=r1m**2, minlength=n_days)[:n_days]
+
+    t_ev = np.asarray(result.events.t)
+    etype = np.asarray(result.events.event_type)
+    size = np.asarray(result.events.size)
+    day_ev = (t_ev / _SESSION).astype(np.int64)
+    is_tr = etype == int(EventType.TRADE)
+    vol = np.bincount(day_ev[is_tr], weights=size[is_tr], minlength=n_days)[:n_days]
+    n_ev = np.bincount(day_ev, minlength=n_days)[:n_days].astype(np.float64)
+
+    ev_meta = result.events.meta if isinstance(result.events.meta, dict) else {}
+    sp_daily = np.full(n_days, np.nan)
+    sp_curve = None
+    if "best_bid_tick" in ev_meta:
+        bb = np.asarray(ev_meta["best_bid_tick"], dtype=np.float64)
+        ba = np.asarray(ev_meta["best_ask_tick"], dtype=np.float64)
+        ok_sp = (bb >= 0) & (ba >= 0)
+        sp = (ba - bb)[ok_sp]
+        d_sp = day_ev[ok_sp]
+        s_sum = np.bincount(d_sp, weights=sp, minlength=n_days)[:n_days]
+        s_cnt = np.bincount(d_sp, minlength=n_days)[:n_days]
+        sp_daily = np.where(s_cnt > 0, s_sum / np.maximum(s_cnt, 1), np.nan)
+        n_bins = 26
+        u_bin = np.clip(
+            ((t_ev[ok_sp] % _SESSION) / _SESSION * n_bins).astype(np.int64), 0, n_bins - 1
+        )
+        keep_b = d_sp >= burn_d
+        sp_curve = (
+            np.bincount(u_bin[keep_b], weights=sp[keep_b], minlength=n_bins)
+            / np.maximum(np.bincount(u_bin[keep_b], minlength=n_bins), 1)
+        )
+
+    k = slice(burn_d, n_days)
+    rv_k, vol_k, nev_k, spd_k = rv[k], vol[k], n_ev[k], sp_daily[k]
+    good = (rv_k > 0) & (vol_k > 0) & np.isfinite(spd_k)
+    if good.sum() < 30:
+        return na(f"日数が足りません (n={int(good.sum())})")
+
+    def _corr(a, b) -> float:
+        return float(np.corrcoef(a[good], b[good])[0, 1])
+
+    c_log = _corr(np.log(rv_k), np.log(vol_k))
+    return ok(
+        num(c_log),
+        corr_rv_volume_log=num(c_log),
+        corr_rv_volume_level=num(_corr(rv_k, vol_k)),
+        corr_rv_nevents_log=num(_corr(np.log(rv_k), np.log(nev_k))),
+        corr_rv_spread=num(_corr(np.log(rv_k), spd_k)),
+        spread_mean_ticks=num(float(np.nanmean(spd_k))),
+        spread_intraday_curve=(
+            [float(x) for x in sp_curve] if sp_curve is not None else None
+        ),
+        n_days_used=int(good.sum()),
     )
 
 
