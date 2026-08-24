@@ -49,9 +49,10 @@ def test_kappa_requires_metaorder() -> None:
     assert "enable_metaorder" in str(excinfo.value)
 
 
-def test_feedback_gain_raises_for_s11() -> None:
+def test_jump_hawkes_raises_until_s11d() -> None:
+    # S11d (任意) で要否判断 — 有効化は §7.2 の手順を踏むまで止まる。
     with pytest.raises(NotImplementedError) as excinfo:
-        Config(feedback_gain=0.1)
+        Config(enable_jump_hawkes=True)
     assert "S11" in str(excinfo.value)
 
 
@@ -62,10 +63,10 @@ def test_multi_asset_raises_for_s13() -> None:
 
 
 def test_unimplemented_stage_raises() -> None:
-    # 実装が進んだら「次の未実装段階」へ更新する (S10 の実装で S10 -> S11)。
+    # 実装が進んだら「次の未実装段階」へ更新する (S11 の実装で S11 -> S12)。
     with pytest.raises(NotImplementedError) as excinfo:
-        Config(stage="S11")
-    assert "S11" in str(excinfo.value)
+        Config(stage="S12")
+    assert "S12" in str(excinfo.value)
 
 
 def test_unknown_stage_is_a_value_error() -> None:

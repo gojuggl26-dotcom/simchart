@@ -237,7 +237,6 @@ chaos_cache_dir: cache
 
 # --- フィードバック ---
 enable_feedback: false      # S11
-feedback_gain: 0.0
 
 # --- 多資産 ---
 n_assets: 1                 # S13

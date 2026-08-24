@@ -332,6 +332,30 @@ class ZIBook:
             z_blk = 240
             cvol_diag = None
 
+        # ---------------- S11: RV フィードバックの引数 ----------------
+        # EWMA 減衰は「1 グリッド刻み (= mid_grid の刻み = step_sec) あたり」
+        # λ = 0.5^(step/半減期)。脱季節化は φ_σ² (無季節構成では 1)。
+        use_feedback = bool(cfg.enable_feedback)
+        if use_feedback:
+            hl_s_sec = float(cfg.fb_rv_short_halflife_min) * 60.0
+            hl_l_sec = float(cfg.fb_rv_long_halflife_days) * float(session)
+            fb_lam_short = float(0.5 ** (float(step_sec) / hl_s_sec))
+            fb_lam_long = float(0.5 ** (float(step_sec) / hl_l_sec))
+            if cfg.enable_seasonality and hasattr(cal, "phi_sigma_of_u"):
+                u_g2 = (np.arange(4096, dtype=np.float64) + 0.5) / 4096
+                phi_sig2 = np.asarray(cal.phi_sigma_of_u(u_g2), dtype=np.float64) ** 2
+            else:
+                phi_sig2 = np.ones(8, dtype=np.float64)
+            inv_n_design = float(1.0 / act.branching_ratio())
+            n_snap_cap_out = int(cfg.n_days * session / cfg.book_snapshot_interval_sec) + 2
+            fb_u_out = np.zeros(n_snap_cap_out, dtype=np.float64)
+        else:
+            fb_lam_short = 0.0
+            fb_lam_long = 0.0
+            phi_sig2 = np.ones(2, dtype=np.float64)
+            inv_n_design = 1.0
+            fb_u_out = np.zeros(2, dtype=np.float64)
+
         # JIT ウォームアップ (コンパイル / キャッシュロードを計測から外す)。
         # ★使い捨ての Generator を使う — レジストリのストリームを消費すると
         # 決定論が壊れる。出力は捨てる。
@@ -369,6 +393,15 @@ class ZIBook:
             kappa_f, s_scale_grid[:2].copy(), base_price_f, tick_f,
             use_cvol, np.ones(2, dtype=np.float64), np.ones(2, dtype=np.float64),
             60.0, 240, 1.0,
+            use_feedback,
+            float(cfg.fb_b_delta), float(cfg.fb_b_place), float(cfg.fb_b_n),
+            float(cfg.fb_u_scale), float(cfg.fb_u_center),
+            float(cfg.fb_n_min), float(cfg.fb_n_max),
+            fb_lam_short, fb_lam_long, phi_sig2, inv_n_design,
+            np.zeros(
+                int(0.2 * session / cfg.book_snapshot_interval_sec) + 2,
+                dtype=np.float64,
+            ),
         )
 
         started = time.perf_counter()
@@ -415,6 +448,12 @@ class ZIBook:
             kappa_f, s_scale_grid, base_price_f, tick_f,
             use_cvol, z_grid, z_up_grid, float(z_step_f), int(z_blk),
             float(z_grid.max()) if use_cvol else 1.0,
+            use_feedback,
+            float(cfg.fb_b_delta), float(cfg.fb_b_place), float(cfg.fb_b_n),
+            float(cfg.fb_u_scale), float(cfg.fb_u_center),
+            float(cfg.fb_n_min), float(cfg.fb_n_max),
+            fb_lam_short, fb_lam_long, phi_sig2, inv_n_design,
+            fb_u_out,
         )
         engine_runtime = time.perf_counter() - started
 
@@ -509,6 +548,11 @@ class ZIBook:
             # 参照できるように公開する — 再導出は単一情報源の原則に反する。
             events.meta["cvol_z_grid"] = z_grid
             events.meta["cvol_z_step_sec"] = float(z_step_f)
+        if use_feedback:
+            # S11: 驚き u_t のスナップショット格子系列 (危機解剖・n_t 分布の
+            # 検証側再構成用 — n_t/δ_t/Δ_scale は u の決定論的関数)。
+            events.meta["fb_u_grid"] = fb_u_out[:n_snaps].copy()
+            events.meta["fb_u_step_sec"] = float(cfg.book_snapshot_interval_sec)
         if use_meta:
             events.meta["pool_grid"] = pool_grid
             events.meta["metaorders"] = {
@@ -629,6 +673,32 @@ class ZIBook:
 
             cvol_diag["truncations"] = int(counters[C_CVOL_TRUNC])
             self.last_diagnostics["cvol"] = cvol_diag
+        if use_feedback:
+            from .book_engine import (
+                C_FB_NT_MAX,
+                C_FB_NT_N,
+                C_FB_NT_SUM,
+                C_FB_NT_SUMSQ,
+                C_FB_U_SUM,
+                C_FB_U_SUMSQ,
+            )
+
+            n_fb = max(counters[C_FB_NT_N], 1.0)
+            nt_mean = counters[C_FB_NT_SUM] / n_fb
+            nt_var = max(counters[C_FB_NT_SUMSQ] / n_fb - nt_mean**2, 0.0)
+            u_mean = counters[C_FB_U_SUM] / n_fb
+            u_var = max(counters[C_FB_U_SUMSQ] / n_fb - u_mean**2, 0.0)
+            self.last_diagnostics["feedback"] = {
+                "nt_mean": float(nt_mean),
+                "nt_sd": float(nt_var**0.5),
+                "nt_max": float(counters[C_FB_NT_MAX]),
+                "nt_n_events": int(counters[C_FB_NT_N]),
+                "u_mean": float(u_mean),
+                "u_sd": float(u_var**0.5),
+                "lam_short": fb_lam_short,
+                "lam_long": fb_lam_long,
+                "inv_n_design": inv_n_design,
+            }
         if use_meta:
             from .book_engine import (
                 C_META_ARRIVALS,

@@ -135,7 +135,13 @@ C_ICE_REFILLS = 36  # 補充回数
 C_ICE_REFILL_VOL = 37  # 補充量の合計 (隠れ→表示へ移った量)
 C_ICE_HIDDEN_IN = 38  # 投入された隠れ量の合計 (台帳の照合用)
 C_CVOL_TRUNC = 39  # S10c: z_up 有効域端での候補打ち切り回数 (診断のみ)
-N_COUNTERS = 40
+C_FB_NT_SUM = 40  # S11: イベント時点の n_t の和 (実現分布 §8.3)
+C_FB_NT_SUMSQ = 41
+C_FB_NT_MAX = 42
+C_FB_NT_N = 43
+C_FB_U_SUM = 44  # S11: u_t の和 (signal_is_surprise ゲート — 平均 ≈ 0)
+C_FB_U_SUMSQ = 45
+N_COUNTERS = 46
 
 
 @njit(cache=True)
@@ -344,6 +350,16 @@ def run_zi_book(
     z_step_sec,  # z グリッドの刻み [秒]
     z_up_block,  # z_up の 1 ブロックのグリッド段数 (上界の有効域 = 2 ブロック)
     z_max_meta,  # メタオーダー到着 thinning の上界 (= max Z。use_cvol=False は 1.0)
+    # --- S11: RV フィードバック (use_feedback=False なら完全無視) ---
+    use_feedback,
+    fb_b_delta, fb_b_place, fb_b_n,  # チャネル強度 (0 = そのチャネル無効)
+    fb_u_scale,  # tanh 飽和スケール u_s
+    fb_u_center,  # u の中心化定数 (クラスタ下の Jensen オフセット実測 §2.1 整合)
+    fb_n_min, fb_n_max,  # n_t のレンジ (§3.3)
+    fb_lam_short, fb_lam_long,  # RV EWMA の減衰係数 (1 グリッド刻みあたり)
+    phi_sig2_table,  # 脱季節化用 φ_σ²(u) (u_t に日内周期を入れない §11)
+    inv_n_design,  # 1/ρ(a) — n_t → 励起増分スケール変換
+    fb_u_out,  # スナップショット格子での u_t 記録 (危機解剖・n_t 分布の再構成用)
 ):
     """ZI 板を最後まで走らせ、(イベントログ, グリッドミッド, スナップショット,
     カウンタ) を返す。単一スレッド・固定消費順で決定論。"""
@@ -455,6 +471,24 @@ def run_zi_book(
     n_kern = h_beta_day.shape[0]
     h_states = np.zeros((3, n_kern), dtype=np.float64)
     phi_n = phi_lam_table.shape[0]
+
+    # S11: フィードバック状態。RV EWMA はバイアス補正つき (重み和 fb_w* で割る —
+    # 補正なしだと立ち上がりで RV_long が過小になり u が偽の正を出す)。
+    # 乗数は per-candidate で更新し、use_feedback=False では全て 1.0 のまま
+    # (×1.0 は IEEE 恒等なので S6〜S10 経路はビット単位で不変)。
+    fb_rv_s = 0.0
+    fb_rv_l = 0.0
+    fb_ws = 0.0
+    fb_wl = 0.0
+    fb_started = False
+    fb_prev_logmid = 0.0
+    fb_u = 0.0
+    fb_mult_delta = 1.0
+    fb_mult_place = 1.0
+    fb_exc_scale = 1.0
+    # thinning 上界用: δ_t ≤ δ0·e^{b_δ} (tanh 飽和の有界性がここで効く §3.2)
+    fb_delta_bound = np.exp(fb_b_delta) if use_feedback else 1.0
+    fb_phi_n = phi_sig2_table.shape[0]
     h_day_idx = -1
     h_day_events = 0
 
@@ -520,9 +554,12 @@ def run_zi_book(
                 if zi_b >= z_grid.size:
                     zi_b = z_grid.size - 1
                 z_bound = z_up_grid[zi_b]
+            # S11: 取消チャネル δ_t の上界は e^{b_δ} (定数 — 飽和の有界性)。
+            # use_feedback=False では ×1.0 でビット単位不変。
             lam_bar = (
                 phi_lam_max * z_bound
-                * (2.0 * h_mu_mo + 2.0 * h_mu_lo + h_delta0 * n_live)
+                * (2.0 * h_mu_mo + 2.0 * h_mu_lo
+                   + h_delta0 * n_live * fb_delta_bound)
                 + exc_total
             )
             if lam_bar > h_cap:
@@ -545,14 +582,39 @@ def run_zi_book(
         cur_bb = best_bid if best_bid >= 0 else ref_bid
         cur_ba = best_ask if best_ask >= 0 else ref_ask
         cur_mid = 0.5 * (cur_bb + cur_ba)
+        fb_logmid_now = 0.0
+        if use_feedback:
+            fb_logmid_now = np.log(k_base_price + k_tick * cur_mid)
         while next_grid_idx < n_grid and next_grid_idx * mid_grid_step_sec <= t_next:
             mid_grid[next_grid_idx] = cur_mid
             pool_grid[next_grid_idx] = n_act
+            # S11: RV EWMA の更新 (グリッド刻みごと)。ミッドはイベント間で不動
+            # なので、バッチ先頭の刻みだけ r ≠ 0、以降は r = 0 が正しく入る
+            # (実時間 RV の意味論)。脱季節化は φ_σ² で除す (§11 診断)。
+            if use_feedback:
+                if fb_started:
+                    r_g = fb_logmid_now - fb_prev_logmid
+                    tg = next_grid_idx * mid_grid_step_sec
+                    ug = tg / day_sec
+                    uf_g = ug - int(ug)
+                    pj = int(uf_g * fb_phi_n)
+                    if pj >= fb_phi_n:
+                        pj = fb_phi_n - 1
+                    x_g = r_g * r_g / phi_sig2_table[pj]
+                    fb_rv_s = fb_lam_short * fb_rv_s + (1.0 - fb_lam_short) * x_g
+                    fb_rv_l = fb_lam_long * fb_rv_l + (1.0 - fb_lam_long) * x_g
+                    fb_ws = fb_lam_short * fb_ws + (1.0 - fb_lam_short)
+                    fb_wl = fb_lam_long * fb_wl + (1.0 - fb_lam_long)
+                else:
+                    fb_started = True
+                fb_prev_logmid = fb_logmid_now
             next_grid_idx += 1
         while next_snap_t <= t_next and next_snap_t <= horizon_sec:
             si = int(next_snap_t / snapshot_interval_sec + 0.5)
             if si < n_snap_cap:
                 snap_t[si] = next_snap_t
+                if use_feedback:
+                    fb_u_out[si] = fb_u
                 # 買い側: best から下へ snap_levels 個の非空レベル
                 t = best_bid
                 for k in range(snap_levels):
@@ -631,6 +693,22 @@ def run_zi_book(
             frac = pos - i0
             pstar_val = log_pstar[i0] * (1.0 - frac) + log_pstar[i0 + 1] * frac
 
+        # S11: 驚き u_t = log(RV_short/RV_long) と各チャネル乗数の更新。
+        # 全て決定論 (乱数を引かない)。tanh 飽和で乗数は [e^-b, e^+b] に有界 (§3.2)。
+        if use_feedback and fb_wl > 0.0:
+            us_ = fb_rv_s / fb_ws
+            ul_ = fb_rv_l / fb_wl
+            if us_ > 0.0 and ul_ > 0.0:
+                fb_u = np.log(us_ / ul_) - fb_u_center
+            th_ = np.tanh(fb_u / fb_u_scale)
+            if fb_b_delta > 0.0:
+                fb_mult_delta = np.exp(fb_b_delta * th_)
+            if fb_b_place > 0.0:
+                fb_mult_place = np.exp(fb_b_place * th_)
+            if fb_b_n > 0.0:
+                sig_ = 1.0 / (1.0 + np.exp(-fb_b_n * th_))
+                fb_exc_scale = (fb_n_min + (fb_n_max - fb_n_min) * sig_) * inv_n_design
+
         # 種別の決定 (kind: 0=MO, 1=LO, 2=CX)
         kind = 0
         side = 1
@@ -668,7 +746,9 @@ def run_zi_book(
                 e_cx += h_states[2, k]
             lam_mo_h = phi_now * 2.0 * h_mu_mo + e_mo
             lam_lo_h = phi_now * 2.0 * h_mu_lo + e_lo
-            lam_cx_h = phi_now * h_delta0 * n_live + e_cx
+            # S11: δ_t = δ0·e^{b_δ·tanh(u/u_s)} — 取消ベースラインのみ変調
+            # (励起カーネルは触らない。use_feedback=False は ×1.0 恒等)。
+            lam_cx_h = phi_now * h_delta0 * n_live * fb_mult_delta + e_cx
             lam_tot_h = lam_mo_h + lam_lo_h + lam_cx_h
             counters[C_H_CANDIDATES] += 1.0
             u_acc = rng_hawkes.random()
@@ -988,6 +1068,15 @@ def run_zi_book(
                     else:
                         lo_i = mid_i + 1
                 delta = lo_i
+                # S11: Δ_scale = e^{b_Δ·tanh(u/u_s)} — 配置距離の乗法スケール。
+                # 乗法は距離分布の裾指数を厳密に保つ。上限は基表の打ち切り (200)
+                # のまま (S6 §6.2 の「遠方滞留を防ぐ」設計を維持 — 危機時の
+                # 拡大は [0, 200] 内の質量シフトで表現される)。
+                if use_feedback and fb_b_place > 0.0 and delta > 0:
+                    delta = int(delta * fb_mult_place + 0.5)
+                    dmax_ = place_cum.shape[0] - 1
+                    if delta > dmax_:
+                        delta = dmax_
                 tick = base - delta if side == 1 else base + delta
             if tick <= lo_tick or tick >= hi_tick:
                 counters[C_WINDOW_OVERFLOW] += 1.0
@@ -1289,11 +1378,22 @@ def run_zi_book(
         # ---------------- S7: 励起状態の跳ね (処理済みイベントのみ) ----------------
         # 型 x のイベントは h_states[y,k] += a[x,y]·w_k·β_k を加える。
         # ∫カーネル = a[x,y]·Σw = a[x,y] なので分岐比 n = ρ(a) が厳密に保たれる。
+        # S11: n_t チャネルは増分を c_t = n_t/ρ(a) 倍する (ρ(c·a) = c·ρ(a) なので
+        # 増分時点の実効分岐比が n_t に一致する)。use_feedback=False は ×1.0 恒等。
         if use_hawkes:
             for k in range(n_kern):
-                jump = h_w[k] * h_beta_day[k]
+                jump = h_w[k] * h_beta_day[k] * fb_exc_scale
                 for y in range(3):
                     h_states[y, k] += h_a[kind, y] * jump
+            if use_feedback:
+                nt_now = fb_exc_scale / inv_n_design
+                counters[C_FB_NT_SUM] += nt_now
+                counters[C_FB_NT_SUMSQ] += nt_now * nt_now
+                counters[C_FB_NT_N] += 1.0
+                if nt_now > counters[C_FB_NT_MAX]:
+                    counters[C_FB_NT_MAX] = nt_now
+                counters[C_FB_U_SUM] += fb_u
+                counters[C_FB_U_SUMSQ] += fb_u * fb_u
 
     # 終了処理
     counters[C_LIVE_ORDERS] = n_live

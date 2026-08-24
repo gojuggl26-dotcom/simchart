@@ -38,7 +38,6 @@ kappa: 0.0                     # S10: p* との結合強度
 
 # --- フィードバック ---
 enable_feedback: false      # S11
-feedback_gain: 0.0
 
 # --- 多資産 ---
 n_assets: 1                 # S13

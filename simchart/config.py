@@ -38,7 +38,7 @@ STAGES: tuple[str, ...] = tuple(f"S{i}" for i in range(14))
 
 #: 現時点で実装が存在する段階。段階を進めるたびにここへ追加する。
 IMPLEMENTED_STAGES: tuple[str, ...] = (
-    "S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10",
+    "S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "S11",
 )
 
 #: 年率ボラを 1 ステップ分に落とすときの営業日数。
@@ -54,7 +54,7 @@ SESSION_SECONDS: float = 6.5 * 3600.0
 UNIMPLEMENTED_FLAGS: dict[str, tuple[str, str, str]] = {
     "enable_chaos_lambda": ("S12", "カオス的強度変調 chi_1", "simchart/layers/l1_activity.py"),
     "enable_chaos_branching": ("S12", "カオス的分岐比変調 chi_3", "simchart/layers/l1_activity.py"),
-    "enable_feedback": ("S11", "RV から L1/L3 へのフィードバック", "simchart/pipeline.py"),
+    "enable_jump_hawkes": ("S11d", "ジャンプ自己励起 (任意 — S11a〜c 完了後に要否判断 §7)", "simchart/layers/l2_price.py"),
 }
 
 #: 実装済みの機能フラグ。UNIMPLEMENTED_FLAGS から行を移すときはこちらに追記する。
@@ -79,12 +79,11 @@ IMPLEMENTED_FLAGS: tuple[str, ...] = (
     "book_iceberg_refill_tail",  # S8 (従属 bool — 補充の優先順位規則)
     "enable_queue_reactive",  # S9
     "enable_uncertainty_zones",  # S9 (fallback — 常用禁止 §8.2)
+    "enable_feedback",  # S11
 )
 
 #: フラグ以外 (数値パラメータ) の未実装条件。
-_UNIMPLEMENTED_NUMERIC = {
-    "feedback_gain": ("S11", "フィードバック利得", "simchart/pipeline.py", 0.0),
-}
+_UNIMPLEMENTED_NUMERIC: dict[str, tuple[str, str, str, float]] = {}
 
 
 def _not_implemented(name: str, stage: str, what: str, where: str, value: Any) -> NotImplementedError:
@@ -625,9 +624,44 @@ class Config:
     #: どちらも実測済みの物理で、ゲートは多シード中央値で判定する。
     c_vol_v_scale: float = 0.45
 
-    # --- フィードバック ---
+    # --- S11: 実現ボラ → L1/L3 の負のフィードバック (内生的危機) ---
+    #: 信号は**水準ではなく驚き** (指示書 §2.1): u_t = log(RV_short/RV_long)。
+    #: 両 RV は脱季節化 (φ_σ² で除算) したミッドリターンの EWMA — L2 の σ_t は
+    #: 参照しない (§2.2、板が観測不能な情報を使わない)。定常状態で u ≈ 0 になり
+    #: フィードバックが自然に無効化される。L2 へは戻さない (§2.3 — 事前生成の維持)。
+    #: 経路 (全て tanh(u/u_s) で内側を飽和 §3.2 — 乗数は [e^-b, e^+b] に有界):
+    #:   δ_t     = δ0·exp(b_δ·tanh(u/u_s))                 取消強度 (L3)
+    #:   Δ_scale =    exp(b_Δ·tanh(u/u_s))                 指値配置距離 (L3)
+    #:   n_t     = n_min + (n_max−n_min)·sigmoid(b_n·tanh(u/u_s))  分岐比 (L1)
     enable_feedback: bool = False  # S11
-    feedback_gain: float = 0.0
+    #: S11d (任意): ジャンプ自己励起。S11a〜c 完了後に要否判断 (§7.2 —
+    #: 危機カスケードが既にジャンプ的変動を出すため、必要と実測されるまで未実装)。
+    enable_jump_hawkes: bool = False
+    fb_b_delta: float = 0.0  # b_δ (S11a で確定)
+    fb_b_place: float = 0.0  # b_Δ (S11a で確定)
+    fb_b_n: float = 0.0  # b_n (S11b で確定)
+    #: tanh の飽和スケール u_s ≈ 1.5×SD(u) (実測 SD 1.25〜1.6)。規約として固定し
+    #: 強度の探索は b 側で行う (κ/τ_meta と同じ役割分担)。
+    fb_u_scale: float = 2.0
+    #: ★u の中心化定数 (指示書 §2.1 との整合措置): クラスタしたフローでは
+    #: 大半の短期窓が 2 日平均より静かで、E[log(RV_s/RV_l)] は **−1.08 ± 0.15**
+    #: (8 ラン実測、シード/ホライズンに安定) — 生の式は自らの要件「定常で u≈0」を
+    #: 満たさない (Jensen: E[log RV_s] < log E[RV_s])。m_V (S10c) と同じく実測
+    #: 定数で中心化する。事後平均 ≈ 0 は signal_is_surprise ゲートが確認する。
+    fb_u_center: float = -1.05
+    #: n_t のレンジ (指示書 §3.3)。ハード上限 0.97 — S12 の χ₃ 変調の余地
+    #: 0.07 を残すため n_max は 0.90 を推奨値とする (0.97 に張り付けない)。
+    fb_n_min: float = 0.75
+    fb_n_max: float = 0.90
+    #: RV EWMA の半減期 (指示書 §2.1 の目安: 短 5〜30 分、長 1〜5 日)。
+    fb_rv_short_halflife_min: float = 15.0
+    fb_rv_long_halflife_days: float = 2.0
+    #: 危機検出 (§6.1): |5分リターン| > k·σ_t、スプレッド > m×通常、デプス < 通常/m。
+    crisis_k_sigma: float = 5.0
+    crisis_spread_mult: float = 3.0
+    #: 危機頻度の目標帯 [件/年] (ゲート crisis_frequency — S11c の実測で確定)。
+    crisis_freq_per_year_lo: float = 0.5
+    crisis_freq_per_year_hi: float = 50.0
 
     # --- 多資産 ---
     n_assets: int = 1  # S13
@@ -732,6 +766,13 @@ class Config:
         "qr_mo_depth_frac", "qr_obi_bias",
     )
     _S9_UZ_PARAMS = ("uz_eta",)
+    _S11_FB_PARAMS = (
+        "fb_b_delta", "fb_b_place", "fb_b_n", "fb_u_scale", "fb_u_center",
+        "fb_n_min", "fb_n_max",
+        "fb_rv_short_halflife_min", "fb_rv_long_halflife_days",
+        "crisis_k_sigma", "crisis_spread_mult",
+        "crisis_freq_per_year_lo", "crisis_freq_per_year_hi",
+    )
     _S6_BOOK_PARAMS = (
         "tick_size", "book_mu_mo", "book_alpha_lo", "book_delta_cancel",
         "book_mu_place", "book_place_offset", "book_max_place_ticks",
@@ -760,6 +801,7 @@ class Config:
             ("enable_iceberg", self._S8_ICEBERG_PARAMS),
             ("enable_queue_reactive", self._S9_QR_PARAMS),
             ("enable_uncertainty_zones", self._S9_UZ_PARAMS),
+            ("enable_feedback", self._S11_FB_PARAMS),
         ):
             if not getattr(self, flag):
                 changed = [n for n in params if getattr(self, n) != defaults[n]]
@@ -1105,6 +1147,39 @@ class Config:
                 "c_vol=0 のまま c_vol_ma_days / c_vol_v_scale が既定値から変更"
                 "されています (暗黙 no-op)"
             )
+        if self.enable_feedback:
+            if not (self.enable_book and self.enable_hawkes):
+                raise ValueError(
+                    "enable_feedback には enable_book と enable_hawkes が必要です"
+                    " (フィードバックは板の RV から L1/L3 へ)"
+                )
+            if self.fb_b_delta == 0.0 and self.fb_b_place == 0.0 and self.fb_b_n == 0.0:
+                raise ValueError(
+                    "enable_feedback=True なのに全チャネル (fb_b_*) が 0 です"
+                    " (暗黙 no-op — 少なくとも 1 つを正にすること)"
+                )
+            if min(self.fb_b_delta, self.fb_b_place, self.fb_b_n) < 0:
+                raise ValueError("fb_b_* は非負である必要があります")
+            if not (0.0 < self.fb_n_min < self.fb_n_max):
+                raise ValueError("0 < fb_n_min < fb_n_max が必要です")
+            if self.fb_n_max >= 0.97:
+                raise ValueError(
+                    f"fb_n_max = {self.fb_n_max} ≥ 0.97 (ハード上限、指示書 §3.3)。"
+                    " S12 の χ₃ 変調の余地を残すため 0.90 以下を推奨"
+                )
+            if self.fb_u_scale <= 0:
+                raise ValueError("fb_u_scale は正である必要があります")
+            if self.fb_rv_short_halflife_min <= 0 or self.fb_rv_long_halflife_days <= 0:
+                raise ValueError("fb_rv_*_halflife は正である必要があります")
+            if (self.fb_rv_short_halflife_min * 60.0
+                    >= self.fb_rv_long_halflife_days * SESSION_SECONDS):
+                raise ValueError(
+                    "RV_short の半減期が RV_long 以上です (驚き信号 u が定義できない)"
+                )
+            if self.crisis_k_sigma <= 0 or self.crisis_spread_mult <= 1.0:
+                raise ValueError("crisis_k_sigma > 0, crisis_spread_mult > 1 が必要です")
+            if not (0 < self.crisis_freq_per_year_lo < self.crisis_freq_per_year_hi):
+                raise ValueError("危機頻度帯は 0 < lo < hi が必要です")
         if self.vol_var_budget_total <= 0:
             raise ValueError("vol_var_budget_total は正である必要があります")
         allocated = (
@@ -1144,8 +1219,9 @@ class Config:
         resets["c_vol"] = defaults["c_vol"]
         resets["c_vol_ma_days"] = defaults["c_vol_ma_days"]
         resets["c_vol_v_scale"] = defaults["c_vol_v_scale"]
+        resets.update({name: defaults[name] for name in self._S11_FB_PARAMS})
         return self.replace(
-            enable_book=False, enable_hawkes=False,
+            enable_book=False, enable_hawkes=False, enable_feedback=False,
             enable_metaorder=False, enable_iceberg=False,
             enable_queue_reactive=False, enable_uncertainty_zones=False,
             **resets,
