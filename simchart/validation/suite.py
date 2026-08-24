@@ -481,6 +481,11 @@ def run_all(result: StageResult, config: Config | None = None) -> dict[str, Any]
     metrics["coupling"] = _coupling_metrics(result, cfg)
 
     # ------------------------------------------------------------------
+    # feedback: RV フィードバックと内生的危機 (S11)。ペア量 (g・発散) は
+    # multiseed 側 (off 対をシードごとに回す)。ここは単独ランで測れる分。
+    metrics["feedback"] = _feedback_metrics(result, cfg)
+
+    # ------------------------------------------------------------------
     # chaos: 決定論的カオス成分 chi_2 (S5)。
     metrics["chaos"] = _chaos_metrics(result, cfg, r_daily)
 
@@ -1268,6 +1273,44 @@ def _coupling_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
         "tracking": safe_call(coupling.pstar_tracking, result, cfg),
         "vol_activity": safe_call(coupling.vol_activity_link, result, cfg),
     }
+
+
+def _feedback_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
+    """S11 の測定群 (単独ランで測れる分)。enable_feedback=False なら全枝 na。
+
+    - nt_dist: n_t の実現分布 (§8.3 — max < 0.97 が critical)
+    - crisis / anatomy: 3 条件エピソードの頻度・継続・深さ・回復 (§6)
+    - divergence_single: 単独版の発散検出 (記録 — L2 エポックの偽陽性込み。
+      ゲートは multiseed のペア版 fb_divergences が担う)
+    - u_stats: 驚き信号の定常性 (signal_is_surprise ゲート)
+    """
+    from . import feedback as fbv
+
+    keys = ("nt_dist", "crisis", "anatomy", "divergence_single", "u_stats")
+    if not cfg.enable_feedback:
+        return {k: na("enable_feedback=False") for k in keys}
+    out: dict[str, Any] = {}
+    out["nt_dist"] = safe_call(fbv.nt_distribution, result, cfg)
+    det = safe_call(fbv.crisis_detect, result, cfg)
+    out["crisis"] = det
+    out["anatomy"] = safe_call(
+        fbv.crisis_anatomy, result, cfg,
+        detection=det if det.get("status") == "ok" else None,
+    )
+    out["divergence_single"] = safe_call(fbv.divergence_monitor, result, cfg)
+
+    def _u_stats() -> dict[str, Any]:
+        fb = (result.meta.get("l3") or {}).get("feedback") or {}
+        u_mean = fb.get("u_mean")
+        return ok(
+            num(u_mean),
+            u_mean=num(u_mean),
+            u_sd=num(fb.get("u_sd")),
+            stationary=bool(u_mean is not None and abs(float(u_mean)) < 0.5),
+        )
+
+    out["u_stats"] = safe_call(_u_stats)
+    return out
 
 
 def _qr_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:

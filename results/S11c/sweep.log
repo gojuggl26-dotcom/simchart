@@ -1,0 +1,8 @@
+off 基線 (フィードバック無しの検出率): seed42=112.5/y, seed43=126.8/y, seed44=129.8/y
+b_δ=1.0 b_Δ=0.6 b_n=2.0: g_30m=+0.195 g_daily=+0.253 crises/y=127.8 rec30=-0.07 dur=4m nt_max=0.882 sp_p99=91t div=0 (23s)
+b_δ=0.6 b_Δ=1.0 b_n=2.0: g_30m=+0.391 g_daily=+0.321 crises/y=111.5 rec30=-0.01 dur=4m nt_max=0.882 sp_p99=92t div=0 (23s)
+b_δ=1.0 b_Δ=1.0 b_n=2.0: g_30m=+0.415 g_daily=+0.371 crises/y=116.6 rec30=+0.04 dur=4m nt_max=0.882 sp_p99=128t div=0 (23s)
+b_δ=1.5 b_Δ=1.0 b_n=2.0: g_30m=+0.478 g_daily=+0.417 crises/y=121.2 rec30=+0.10 dur=4m nt_max=0.882 sp_p99=204t div=1 (25s)
+b_δ=1.0 b_Δ=0.8 b_n=3.0: g_30m=+0.425 g_daily=+0.366 crises/y=119.6 rec30=-0.01 dur=5m nt_max=0.893 sp_p99=86t div=0 (23s)
+b_δ=1.5 b_Δ=1.2 b_n=2.0: g_30m=+0.518 g_daily=+0.460 crises/y=120.7 rec30=+0.03 dur=5m nt_max=0.882 sp_p99=242t div=1 (25s)
+saved E:\模擬チャート生成\results\S11c\gain_sweep.json

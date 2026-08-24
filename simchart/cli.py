@@ -328,6 +328,36 @@ def _coupling_seed_stats(result, config: Config) -> dict[str, float | None]:
     }
 
 
+def _feedback_seed_stats(result, config: Config, result_off) -> dict[str, float | None]:
+    """S11 のシード別フィードバック統計 (multiseed の中央値判定用)。
+
+    ペア量 (ループゲイン g・発散) は同一シードの off 対で測る (§4.1 — L2 経路が
+    同一なので L2 起因が厳密に相殺する)。危機統計もここで収集。
+    """
+    from .validation import feedback as fbv
+
+    g = fbv.loop_gain_estimate(result, result_off, config)
+    div = fbv.divergence_monitor(result, config, result_off=result_off)
+    det = fbv.crisis_detect(result, config)
+    ana = fbv.crisis_anatomy(
+        result, config, detection=det if det.get("status") == "ok" else None
+    )
+    fb = (result.meta.get("l3") or {}).get("feedback") or {}
+    return {
+        "fb_g_30min": g.get("g_30min"),
+        "fb_g_daily": g.get("g_daily"),
+        "fb_divergences": div.get("n_divergences"),
+        "fb_crises_per_year": det.get("per_year"),
+        "fb_recovery_30min": ana.get("recovery_30min_median"),
+        "fb_crisis_duration_min": ana.get("duration_min_median"),
+        "fb_crisis_spread_ratio": ana.get("max_spread_ratio_median"),
+        "fb_crisis_depth_ratio": ana.get("min_depth_ratio_median"),
+        "fb_nt_mean": fb.get("nt_mean"),
+        "fb_nt_max": fb.get("nt_max"),
+        "fb_u_mean": fb.get("u_mean"),
+    }
+
+
 def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
     """ノイズの大きい指標をシードを変えて測り、中央値・IQR を返す (S3 指示書 §8)。
 
@@ -485,6 +515,27 @@ def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
             cstats = _coupling_seed_stats(result, seed_config)
             for key_, val_ in cstats.items():
                 per_seed.setdefault(key_, []).append(val_)
+        if config.enable_feedback:
+            # S11: ループゲイン・発散 (ペア判定 §4.1) — 同一シードの off 対を回す。
+            import dataclasses as _dc2
+
+            defaults2 = {f.name: f.default for f in _dc2.fields(type(config))}
+            cfg_off = seed_config.replace(
+                enable_feedback=False,
+                **{n: defaults2[n] for n in type(config)._S11_FB_PARAMS},
+            )
+            try:
+                r_off = run_pipeline(cfg_off)
+            except RuntimeError as exc:
+                skipped_seeds.append(
+                    {"seed": str(seed), "leg": "feedback_off", "error": str(exc)}
+                )
+                print(f"      シード {seed} (fb-off) スキップ: {exc}", flush=True)
+            else:
+                fstats = _feedback_seed_stats(result, seed_config, r_off)
+                for key_, val_ in fstats.items():
+                    per_seed.setdefault(key_, []).append(val_)
+                del r_off
             if config.enable_iceberg:
                 # §6.3 アブレーション: 同一シードで iceberg off。単一シードの
                 # on/off 差は経路分岐で SD ~0.06 になるため、中央値同士で判定する。
