@@ -185,6 +185,18 @@ def crisis_anatomy(result, cfg, detection: dict[str, Any] | None = None) -> dict
     sp_norm = _ewma(spread, lam)
     dp_norm = np.maximum(_ewma(depth, lam), 1e-12)
 
+    # 情報性の分類 (★この分割が回復率の解釈を決める):
+    #   catch-up (|d| 縮小) = κ ハーディングの追いつきカスケード — ミッドが
+    #     効率価格 p* **へ**動いた事件。恒久で、回復**しない**のが正しい。
+    #   dislocation (|d| 拡大) = 無情報スイープ — p* から**離れた**事件。
+    #     κ が引き戻す = フラッシュ・クラッシュ型。回復ゲートはこちらに課す。
+    ps = np.asarray(result.price.log_p_star)
+    idx_ps = np.minimum(
+        (np.asarray(book.t) / float(result.price.t[1] - result.price.t[0])).astype(np.int64),
+        ps.size - 1,
+    )
+    d_snap = ps[idx_ps] - lp_snap
+
     k30 = max(1, int(round(1800.0 / step_snap)))
     k1d = max(1, int(round(_SESSION / step_snap)))
     rows = []
@@ -203,28 +215,40 @@ def crisis_anatomy(result, cfg, detection: dict[str, Any] | None = None) -> dict
             rec1d = float((lp_snap[i1d] - extreme) / (start - extreme))
         sp_ratio = float(np.nanmax(spread[a: b + 1] / sp_norm[a: b + 1]))
         dp_ratio = float(np.nanmin(depth[a: b + 1] / dp_norm[a: b + 1]))
+        d0 = abs(float(d_snap[max(a - 1, 0)]))
+        d1 = abs(float(d_snap[b]))
         rows.append({
             "duration_min": num((b - a + 1) * step_snap / 60.0),
             "move": num(move),
             "down": bool(move < 0),
+            "dislocation": bool(d1 > d0),
+            "d_change": num(d1 - d0),
             "max_spread_ratio": num(sp_ratio),
             "min_depth_ratio": num(dp_ratio),
             "recovery_30min": num(rec30),
             "recovery_1day": num(rec1d),
         })
-    rec = [r["recovery_30min"] for r in rows if r["recovery_30min"] is not None]
-    dur = [r["duration_min"] for r in rows]
+
+    def _med(vals):
+        vv = [v for v in vals if v is not None]
+        return num(float(np.median(vv))) if vv else None
+
+    disl = [r for r in rows if r["dislocation"]]
+    catch = [r for r in rows if not r["dislocation"]]
+    rec_all = _med([r["recovery_30min"] for r in rows])
     return ok(
-        num(float(np.median(rec)) if rec else None),
+        rec_all,
         n=len(rows),
-        duration_min_median=num(float(np.median(dur)) if dur else None),
-        max_spread_ratio_median=num(float(np.median([r["max_spread_ratio"] for r in rows]))),
-        min_depth_ratio_median=num(float(np.median([r["min_depth_ratio"] for r in rows]))),
-        recovery_30min_median=num(float(np.median(rec)) if rec else None),
-        recovery_1day_median=num(
-            float(np.median([r["recovery_1day"] for r in rows if r["recovery_1day"] is not None]))
-            if any(r["recovery_1day"] is not None for r in rows) else None
-        ),
+        n_dislocation=len(disl),
+        n_catchup=len(catch),
+        duration_min_median=_med([r["duration_min"] for r in rows]),
+        max_spread_ratio_median=_med([r["max_spread_ratio"] for r in rows]),
+        min_depth_ratio_median=_med([r["min_depth_ratio"] for r in rows]),
+        recovery_30min_median=rec_all,
+        recovery_1day_median=_med([r["recovery_1day"] for r in rows]),
+        recovery_30min_dislocation=_med([r["recovery_30min"] for r in disl]),
+        recovery_1day_dislocation=_med([r["recovery_1day"] for r in disl]),
+        recovery_1day_catchup=_med([r["recovery_1day"] for r in catch]),
         down_fraction=num(float(np.mean([r["down"] for r in rows]))),
         episodes=rows[:200],
     )

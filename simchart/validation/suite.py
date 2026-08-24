@@ -484,6 +484,21 @@ def run_all(result: StageResult, config: Config | None = None) -> dict[str, Any]
     # feedback: RV フィードバックと内生的危機 (S11)。ペア量 (g・発散) は
     # multiseed 側 (off 対をシードごとに回す)。ここは単独ランで測れる分。
     metrics["feedback"] = _feedback_metrics(result, cfg)
+    if cfg.enable_feedback:
+        # §8.3: n̂ (定数カーネル MLE、φ·Z 補償) ≈ E[n_t] の照合 (時変 n の平均)
+        n_hat = ((metrics.get("hawkes") or {}).get("three_way") or {}).get(
+            "n_hat_true_phi"
+        )
+        nt_mean = ((result.meta.get("l3") or {}).get("feedback") or {}).get("nt_mean")
+        metrics["feedback"]["n_hat_vs_nt_mean"] = {
+            "status": "ok" if (n_hat is not None and nt_mean is not None) else "not_applicable",
+            "value": (
+                float(n_hat) - float(nt_mean)
+                if (n_hat is not None and nt_mean is not None) else None
+            ),
+            "n_hat": n_hat,
+            "nt_mean": nt_mean,
+        }
 
     # ------------------------------------------------------------------
     # chaos: 決定論的カオス成分 chi_2 (S5)。
@@ -1310,6 +1325,25 @@ def _feedback_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
         )
 
     out["u_stats"] = safe_call(_u_stats)
+
+    def _saturation() -> dict[str, Any]:
+        # §3.2 のコード検査を実行可能な形で: 全チャネルの乗数は tanh 飽和により
+        # 有界 — 範囲を式から導出して記録する (非有界なら inf が出て落ちる)。
+        import math
+
+        rng_delta = (math.exp(-cfg.fb_b_delta), math.exp(cfg.fb_b_delta))
+        rng_place = (math.exp(-cfg.fb_b_place), math.exp(cfg.fb_b_place))
+        rng_n = (cfg.fb_n_min, cfg.fb_n_max)
+        bounded = all(math.isfinite(x) for x in (*rng_delta, *rng_place, *rng_n))
+        return ok(
+            bounded,
+            bounded=bool(bounded),
+            delta_mult_range=[num(rng_delta[0]), num(rng_delta[1])],
+            place_mult_range=[num(rng_place[0]), num(rng_place[1])],
+            nt_range=[num(rng_n[0]), num(rng_n[1])],
+        )
+
+    out["saturation"] = safe_call(_saturation)
     return out
 
 

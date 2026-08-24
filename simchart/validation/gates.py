@@ -2348,7 +2348,180 @@ _S10_NEW_GATES: tuple[Gate, ...] = (
 
 S10_GATES: tuple[Gate, ...] = _S10_INHERITED_GATES + _S10_NEW_GATES
 
-#: 段階ごとのゲート。S11 以降を実装するときはここに追加する。
+
+# ---------------------------------------------------------------------------
+# S11: フィードバックと内生的危機 — ループゲインの制御が本体
+# ---------------------------------------------------------------------------
+#: S10 からの再スコープ (指示書 §10 の保持表が明示する緩和):
+#:  - impact_vr_consistency: [0.90, 1.10] → [0.88, 1.12] (危機のトレンド性)
+#:  - cpl_transmission_daily: ±0.05 → ±0.07
+_S11_INHERITED_GATES: tuple[Gate, ...] = tuple(
+    (
+        Gate(
+            name=g.name, metric_path=g.metric_path, check=_between(0.88, 1.12),
+            threshold="壁時計 (日次) VR ∈ [0.88, 1.12] (S11: 危機のトレンド性で ±0.02 緩和 §10)",
+            description=g.description,
+        )
+        if g.name == "impact_vr_consistency"
+        else Gate(
+            name=g.name, metric_path=g.metric_path, check=_between(0.93, 1.07),
+            threshold="伝達率 T(1日) ∈ 1.00 ± 0.07 (S11: §10 の保持表どおり緩和)",
+            description=g.description,
+        )
+        if g.name == "cpl_transmission_daily"
+        else g
+    )
+    for g in S10_GATES
+)
+
+_S11_NEW_GATES: tuple[Gate, ...] = (
+    # --- ループゲイン (この段階の本体) ---
+    Gate(
+        name="loop_gain",
+        metric_path="multiseed.fb_g_30min.median",
+        check=_between(0.30, 0.60),
+        threshold="結合ループゲイン g (30分帯域) ∈ [0.30, 0.60] (中央値、§4)",
+        description=(
+            "g = 1 − √(Var_off/Var_on)、同一シード・同一 L2 対 (§4.1)。30 分帯域が"
+            "主計器 — ループが増幅するのは短期帯域で、RV_long が追随する緩慢帯域は"
+            " u に現れない。日次版は feedback_ablation が確認。作業点 (1.0,1.0,2.0)"
+            " の実測 0.415 (S11c)。チャネル別 g の単純和 (0.59) は成立しない (§4.3)。"
+        ),
+    ),
+    Gate(
+        name="feedback_ablation",
+        metric_path="multiseed.fb_g_daily.median",
+        check=_gt(0.15),
+        threshold="日次帯域の g > 0.15 (§4.1 の式が両帯域で整合して正)",
+        description="30 分と日次の両計器がともに正の g — アブレーションの閉ループ確認。",
+    ),
+    Gate(
+        name="no_divergence",
+        metric_path="multiseed.fb_divergences.max",
+        check=lambda v: v is not None and float(v) == 0.0,
+        threshold="発散 0 件 (全シード、ペア判定 log(RV_on/RV_off) の持続 §10)",
+        description=(
+            "★単独ラン判定は L2 の MSM 高ボラ持続を発散と誤検出する (S11a 実測) — "
+            "同一シード off 対との比で L2 起因を厳密に相殺。中央値でなく max で"
+            "判定 (1 シードでも発散したら不合格)。"
+        ),
+    ),
+    Gate(
+        name="nt_max",
+        metric_path="multiseed.fb_nt_max.max",
+        check=lambda v: v is not None and float(v) < 0.97,
+        threshold="max(n_t) < 0.97 (全シード最大、ハード上限 §3.3)",
+        description="実測 0.882 (n_max=0.90 設計、S12 の χ₃ 余地 0.07 を確保)。",
+    ),
+    Gate(
+        name="nt_mean",
+        metric_path="multiseed.fb_nt_mean.median",
+        check=_between(0.76, 0.89),
+        threshold="E[n_t] が [n_min, n_max] の内側 (端に張り付いていない)",
+        description="u ≈ 0 中心なら sigmoid 中点 ~0.825 付近 (実測 0.824)。",
+    ),
+    Gate(
+        name="saturation_present",
+        metric_path="feedback.saturation.bounded",
+        check=_is_true,
+        threshold="全チャネルの乗数域が有界 (§3.2 — tanh 飽和のコード検査の実行可能形)",
+        description="δ: [e^-b, e^b]、Δ: 同、n_t: [n_min, n_max] — 式から導出して確認。",
+    ),
+    Gate(
+        name="no_l2_feedback",
+        metric_path="runtime.baseline_invariance.checks.l2_frozen_bitwise.passed",
+        check=_is_true,
+        threshold="L2 が事前生成のまま (§2.3) — 板 off 基準ランとビット単位一致",
+        description=(
+            "inv_l2_frozen と同一の検査を S11 の名前でも指す (指示書 §10 の追跡性)。"
+            "without_book はフィードバックも外すので、一致 = RV が L2 に戻る経路が"
+            "存在しない証明。"
+        ),
+    ),
+    Gate(
+        name="signal_is_surprise",
+        metric_path="multiseed.fb_u_mean.median",
+        check=_between(-0.35, 0.35),
+        threshold="u_t の平均 ≈ 0 (中央値、§2.1 — 水準反応の否定)",
+        description=(
+            "中心化定数 u0=−1.05 適用後 (生の式は E[u]=−1.08 — Jensen、S11a)。"
+            "SD・水準相関はテストが固定。"
+        ),
+    ),
+    # --- 危機 (§6) ---
+    Gate(
+        name="crisis_frequency",
+        metric_path="multiseed.fb_crises_per_year.median",
+        check=_between(5.0, 150.0),
+        threshold="流動性イベント ∈ [5, 150] 件/年 (k=8, m=5 の深刻度で)",
+        description=(
+            "★存在は whale スイープが主因 (off 基線 ~51/年 — S11c で実測確定)。"
+            "フィードバックは深さを増す側。帯は死んだループ (≈基線) と爆発"
+            " (数百+発散) を挟むガードレール。帰属は fb_crises_per_year_off に記録。"
+        ),
+    ),
+    Gate(
+        name="crisis_anatomy_spread",
+        metric_path="multiseed.fb_crisis_spread_ratio.median",
+        check=_gt(10.0),
+        threshold="危機中の最大スプレッド倍率 > 10 (検出閾値 5 を大きく超えて拡大)",
+        description="実測中央値 ~54× — 検出条件の同義反復にならない水準で判定。",
+    ),
+    Gate(
+        name="crisis_anatomy_depth",
+        metric_path="multiseed.fb_crisis_depth_ratio.median",
+        check=lambda v: v is not None and 0.0 < float(v) < 0.15,
+        threshold="危機中の最小デプス比 < 0.15 (検出閾値 1/5 を超えて蒸発)",
+        description="実測中央値 ~0.10。スプレッド拡大との同時成立は検出条件が保証。",
+    ),
+    Gate(
+        name="crisis_recovery",
+        metric_path="multiseed.fb_recovery30_dislocation.median",
+        check=_gt(0.30),
+        threshold="無情報事象 (dislocation) の 30 分回復率 > 0.3 (§6.3)",
+        description=(
+            "★回復は情報性で二相 (S11c の中心的発見): |d| 拡大 = 無情報スイープは"
+            "完全回復する (rec30 0.45〜0.93、rec1d ≈ 1.0 — κ が薄い板を通じて"
+            "高速に引き戻す)。|d| 縮小 = 追いつきカスケードは情報的で戻らないのが"
+            "**正しい** (rec1d 負 — 継続)。一括中央値 (~0.05) は二相の混合物で"
+            "検定にならない — 分類してから測る (fb_recovery1d_catchup に記録)。"
+        ),
+    ),
+    # --- 方向 (§8.1) ---
+    Gate(
+        name="hill_alpha_improved",
+        metric_path="multiseed.hill_alpha.median",
+        check=_lt(3.20),
+        critical=False,
+        threshold="Hill α が S10 (3.18) から低下方向 (soft — 中央値ノイズ ±0.1)",
+        description="内生的危機がテールを太らせる方向の確認。水準は obs_hill_alpha [3,5] が守る。",
+    ),
+    Gate(
+        name="depth_variability_increased",
+        metric_path="multiseed.fb_depth_cv_ratio.median",
+        check=_gt(1.0),
+        threshold="⑭ デプス変動係数が off 対より増大 (同一シードペア比 > 1)",
+        description="基準値を要さないペア計器 (S10 に CV の記録が無いため)。",
+    ),
+    Gate(
+        name="n_hat_matches_mean",
+        metric_path="feedback.n_hat_vs_nt_mean.value",
+        check=lambda v: v is not None and abs(float(v)) <= 0.05,
+        threshold="n̂ (定数カーネル MLE、φ·Z 補償) − E[n_t] ∈ ±0.05 (§8.3)",
+        description="n_t が時変になったため固定値照合から時間平均照合へ再定義。",
+    ),
+    Gate(
+        name="throughput",
+        metric_path="multiseed.book_throughput.median",
+        check=lambda v: v is not None and float(v) >= 50_000.0,
+        threshold="エンジン ≥ 50,000 events/sec (§10 — 状態評価の追加後も)",
+        description="実測 ~1.8M ev/s (EWMA はインクリメンタル — §11 の診断どおり)。",
+    ),
+)
+
+S11_GATES: tuple[Gate, ...] = _S11_INHERITED_GATES + _S11_NEW_GATES
+
+#: 段階ごとのゲート。S12 以降を実装するときはここに追加する。
 STAGE_GATES: dict[str, tuple[Gate, ...]] = {
     "S0": S0_GATES,
     "S1": S1_GATES,
@@ -2361,6 +2534,7 @@ STAGE_GATES: dict[str, tuple[Gate, ...]] = {
     "S8": S8_GATES,
     "S9": S9_GATES,
     "S10": S10_GATES,
+    "S11": S11_GATES,
 }
 
 

@@ -336,6 +336,8 @@ def _feedback_seed_stats(result, config: Config, result_off) -> dict[str, float 
     """
     from .validation import feedback as fbv
 
+    import numpy as np
+
     g = fbv.loop_gain_estimate(result, result_off, config)
     div = fbv.divergence_monitor(result, config, result_off=result_off)
     det = fbv.crisis_detect(result, config)
@@ -343,15 +345,34 @@ def _feedback_seed_stats(result, config: Config, result_off) -> dict[str, float 
         result, config, detection=det if det.get("status") == "ok" else None
     )
     fb = (result.meta.get("l3") or {}).get("feedback") or {}
+
+    # ⑭ デプス変動の増大 — 同一シード off 対との CV 比 (基準値不要のペア計器)
+    def _depth_cv(res) -> float | None:
+        bk = res.book
+        d = np.asarray(bk.bid_sz, dtype=np.float64).sum(axis=1) + np.asarray(
+            bk.ask_sz, dtype=np.float64
+        ).sum(axis=1)
+        d = d[d > 0]
+        return float(d.std() / d.mean()) if d.size > 100 and d.mean() > 0 else None
+
+    cv_on = _depth_cv(result)
+    cv_off = _depth_cv(result_off)
     return {
         "fb_g_30min": g.get("g_30min"),
         "fb_g_daily": g.get("g_daily"),
         "fb_divergences": div.get("n_divergences"),
         "fb_crises_per_year": det.get("per_year"),
-        "fb_recovery_30min": ana.get("recovery_30min_median"),
+        "fb_crises_per_year_off": fbv.crisis_detect(result_off, config).get("per_year"),
+        "fb_recovery30_dislocation": ana.get("recovery_30min_dislocation"),
+        "fb_recovery1d_dislocation": ana.get("recovery_1day_dislocation"),
+        "fb_recovery1d_catchup": ana.get("recovery_1day_catchup"),
+        "fb_n_dislocation": ana.get("n_dislocation"),
         "fb_crisis_duration_min": ana.get("duration_min_median"),
         "fb_crisis_spread_ratio": ana.get("max_spread_ratio_median"),
         "fb_crisis_depth_ratio": ana.get("min_depth_ratio_median"),
+        "fb_depth_cv_ratio": (
+            cv_on / cv_off if (cv_on is not None and cv_off) else None
+        ),
         "fb_nt_mean": fb.get("nt_mean"),
         "fb_nt_max": fb.get("nt_max"),
         "fb_u_mean": fb.get("u_mean"),

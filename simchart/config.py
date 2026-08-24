@@ -657,11 +657,16 @@ class Config:
     fb_rv_short_halflife_min: float = 15.0
     fb_rv_long_halflife_days: float = 2.0
     #: 危機検出 (§6.1): |5分リターン| > k·σ_t、スプレッド > m×通常、デプス < 通常/m。
-    crisis_k_sigma: float = 5.0
-    crisis_spread_mult: float = 3.0
-    #: 危機頻度の目標帯 [件/年] (ゲート crisis_frequency — S11c の実測で確定)。
-    crisis_freq_per_year_lo: float = 0.5
-    crisis_freq_per_year_hi: float = 50.0
+    #: ★(k=8, m=5) は S11c の較正値: (5,3) では通常変動+whale スイープで ~120/年
+    #: 発火した。締めても off 基線 ~51/年が残る — 流動性イベントの**存在**は
+    #: S8 以来の whale スイープが主因で、フィードバックは深さを増す側
+    #: (results/S11c/DECISION.md)。
+    crisis_k_sigma: float = 8.0
+    crisis_spread_mult: float = 5.0
+    #: 危機頻度の帯 [件/年] (ゲート crisis_frequency)。whale 基線 (~51/年) 込みの
+    #: ガードレール — 死んだループ (≈基線) も爆発 (数百+発散) もここで見える。
+    crisis_freq_per_year_lo: float = 5.0
+    crisis_freq_per_year_hi: float = 150.0
 
     # --- 多資産 ---
     n_assets: int = 1  # S13

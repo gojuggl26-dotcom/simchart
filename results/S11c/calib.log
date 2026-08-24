@@ -1,1 +1,16 @@
 seed 42: sims done
+seed 43: sims done
+seed 44: sims done
+k=5.0 m=3.0: off=126.8/y on=116.6/y rec30=+0.04 dur=4m sp_ratio=29.0 dp_ratio=0.11
+k=5.0 m=4.0: off=107.4/y on=111.5/y rec30=+0.06 dur=4m sp_ratio=33.5 dp_ratio=0.11
+k=5.0 m=5.0: off=81.5/y on=98.3/y rec30=+0.07 dur=4m sp_ratio=36.1 dp_ratio=0.10
+k=6.0 m=3.0: off=106.9/y on=100.8/y rec30=-0.03 dur=4m sp_ratio=34.7 dp_ratio=0.11
+k=6.0 m=4.0: off=94.2/y on=95.7/y rec30=-0.01 dur=4m sp_ratio=37.7 dp_ratio=0.11
+k=6.0 m=5.0: off=68.7/y on=84.0/y rec30=+0.04 dur=4m sp_ratio=41.1 dp_ratio=0.10
+k=7.0 m=3.0: off=92.1/y on=85.0/y rec30=-0.01 dur=4m sp_ratio=39.8 dp_ratio=0.11
+k=7.0 m=4.0: off=79.4/y on=80.4/y rec30=-0.01 dur=4m sp_ratio=42.5 dp_ratio=0.11
+k=7.0 m=5.0: off=60.1/y on=73.3/y rec30=+0.04 dur=3m sp_ratio=45.0 dp_ratio=0.10
+k=8.0 m=3.0: off=75.3/y on=67.2/y rec30=+0.04 dur=4m sp_ratio=49.6 dp_ratio=0.11
+k=8.0 m=4.0: off=66.7/y on=62.6/y rec30=+0.05 dur=4m sp_ratio=51.3 dp_ratio=0.10
+k=8.0 m=5.0: off=51.4/y on=58.5/y rec30=+0.10 dur=3m sp_ratio=53.8 dp_ratio=0.10
+saved E:\模擬チャート生成\results\S11c\crisis_calib.json
