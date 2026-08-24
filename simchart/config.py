@@ -38,7 +38,7 @@ STAGES: tuple[str, ...] = tuple(f"S{i}" for i in range(14))
 
 #: 現時点で実装が存在する段階。段階を進めるたびにここへ追加する。
 IMPLEMENTED_STAGES: tuple[str, ...] = (
-    "S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9",
+    "S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10",
 )
 
 #: 年率ボラを 1 ステップ分に落とすときの営業日数。
@@ -83,7 +83,6 @@ IMPLEMENTED_FLAGS: tuple[str, ...] = (
 
 #: フラグ以外 (数値パラメータ) の未実装条件。
 _UNIMPLEMENTED_NUMERIC = {
-    "kappa": ("S10", "潜在情報価格 p* と注文流の結合強度", "simchart/layers/l3_book.py", 0.0),
     "feedback_gain": ("S11", "フィードバック利得", "simchart/pipeline.py", 0.0),
 }
 
@@ -595,7 +594,18 @@ class Config:
     #: 警告として README に記録すること。
     enable_uncertainty_zones: bool = False  # S9 (fallback)
     uz_eta: float = 0.15
-    kappa: float = 0.0  # S10 p* 結合強度
+
+    # --- L3 / S10: p* との結合 (工程最大の山場) ---
+    #: メタオーダー**生成時**の符号バイアス強度 (指示書 §2.1):
+    #:   P(sign=+1) = 0.5 + 0.5·tanh(κ·d/s),  d = log p* − log mid,
+    #:   s = σ_t·√τ_meta (σ_t は L2 の現在ボラ — 高ボラ期に反応が鈍らないため)。
+    #: ★子注文は親の符号を継承 (§2.2 — 子レベルで掛けると run length が壊れ
+    #: γ = α−1 が崩れる)。0 = 切断 (S6〜S9 の状態、経路はビット単位不変)。
+    kappa: float = 0.0
+    #: s の正規化スケール τ_meta [秒]。S9 本番 (120 日) の完走メタオーダー
+    #: (N≥2) の平均実行スパン実測 430 秒。κ と積で効くので規約として固定し、
+    #: 強度の探索は κ 側で行う。
+    kappa_tau_meta_sec: float = 430.0
 
     # --- フィードバック ---
     enable_feedback: bool = False  # S11
@@ -1044,6 +1054,24 @@ class Config:
                 )
             if not (0.0 < self.uz_eta < 0.5):
                 raise ValueError(f"uz_eta = {self.uz_eta} は (0, 0.5) の外です")
+        if self.kappa != 0.0:
+            if self.kappa < 0:
+                raise ValueError(
+                    f"kappa = {self.kappa} は負です。負の結合は d を発散させる"
+                    f" (指示書 §11「符号の向きを確認」)。"
+                )
+            if not self.enable_metaorder:
+                raise ValueError(
+                    "kappa > 0 には enable_metaorder=True が必要です"
+                    " (バイアスはメタオーダー生成時の符号に乗る — §2.2)"
+                )
+            if self.kappa_tau_meta_sec <= 0:
+                raise ValueError("kappa_tau_meta_sec は正である必要があります")
+        elif self.kappa_tau_meta_sec != 430.0:
+            raise ValueError(
+                "kappa=0 のまま kappa_tau_meta_sec が既定値から変更されています"
+                " (暗黙 no-op — 意図があるなら kappa を設定すること)"
+            )
         if self.vol_var_budget_total <= 0:
             raise ValueError("vol_var_budget_total は正である必要があります")
         allocated = (
@@ -1078,6 +1106,8 @@ class Config:
         resets.update({name: defaults[name] for name in self._S8_ICEBERG_PARAMS})
         resets.update({name: defaults[name] for name in self._S9_QR_PARAMS})
         resets.update({name: defaults[name] for name in self._S9_UZ_PARAMS})
+        resets["kappa"] = defaults["kappa"]
+        resets["kappa_tau_meta_sec"] = defaults["kappa_tau_meta_sec"]
         return self.replace(
             enable_book=False, enable_hawkes=False,
             enable_metaorder=False, enable_iceberg=False,

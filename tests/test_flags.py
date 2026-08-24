@@ -42,10 +42,11 @@ def test_every_flag_is_registered() -> None:
     assert not overlap, f"両方の台帳に載っているフラグ: {sorted(overlap)}"
 
 
-def test_kappa_raises_for_s10() -> None:
-    with pytest.raises(NotImplementedError) as excinfo:
+def test_kappa_requires_metaorder() -> None:
+    # S10 で実装済み。ただし κ はメタオーダー符号に乗るので単独では立てられない。
+    with pytest.raises(ValueError) as excinfo:
         Config(kappa=0.3)
-    assert "S10" in str(excinfo.value)
+    assert "enable_metaorder" in str(excinfo.value)
 
 
 def test_feedback_gain_raises_for_s11() -> None:
@@ -61,10 +62,10 @@ def test_multi_asset_raises_for_s13() -> None:
 
 
 def test_unimplemented_stage_raises() -> None:
-    # 実装が進んだら「次の未実装段階」へ更新する (S9 の実装で S9 -> S10)。
+    # 実装が進んだら「次の未実装段階」へ更新する (S10 の実装で S10 -> S11)。
     with pytest.raises(NotImplementedError) as excinfo:
-        Config(stage="S10")
-    assert "S10" in str(excinfo.value)
+        Config(stage="S11")
+    assert "S11" in str(excinfo.value)
 
 
 def test_unknown_stage_is_a_value_error() -> None:

@@ -217,8 +217,33 @@ def uz_transform(mid_ticks, eta):
 
 
 @njit(cache=True)
+def _kappa_p_up(
+    kappa_bias, t_now, best_bid, best_ask, ref_bid, ref_ask,
+    log_pstar, s_scale_grid, pstar_step_sec, pstar_n, k_base_price, k_tick,
+):
+    """S10: メタオーダー生成時の買い確率 P(+1) = 0.5 + 0.5·tanh(κ·d/s)。
+
+    d = log p*(t) − log mid(t)、s = σ_t·√τ_meta (s_scale_grid で事前計算済み)。
+    σ_t で正規化するので高ボラ期に反応が鈍らない (指示書 §2.1)。
+    """
+    pos = t_now / pstar_step_sec
+    i0 = int(pos)
+    if i0 >= pstar_n - 1:
+        ps = log_pstar[pstar_n - 1]
+        sg = s_scale_grid[pstar_n - 1]
+    else:
+        frac = pos - i0
+        ps = log_pstar[i0] * (1.0 - frac) + log_pstar[i0 + 1] * frac
+        sg = s_scale_grid[i0] * (1.0 - frac) + s_scale_grid[i0 + 1] * frac
+    pb = best_bid if best_bid >= 0 else ref_bid
+    pa = best_ask if best_ask >= 0 else ref_ask
+    lm = np.log(k_base_price + k_tick * 0.5 * (pb + pa))
+    return 0.5 + 0.5 * np.tanh(kappa_bias * (ps - lm) / sg)
+
+
+@njit(cache=True)
 def _meta_spawn(
-    rng_meta, meta_alpha, meta_n_min, t, spawned_empty,
+    rng_meta, meta_alpha, meta_n_min, t, spawned_empty, p_up,
     m_sign, m_ntotal, m_nexec, m_t_created, m_spawned_empty,
     act_meta, n_meta, n_act, counters,
 ):
@@ -226,6 +251,9 @@ def _meta_spawn(
 
     長さは N = floor(N_min·(1−u)^{-1/α}) — 離散裾 P(N ≥ n) = (N_min/n)^α が厳密で、
     符号 ACF の減衰指数 γ = α − 1 の理論対応がそのまま成立する (指示書 §4)。
+    符号は P(+1) = p_up (κ=0 なら 0.5 — 比較定数が同じなのでビット単位同一)。
+    ★S10 の κ バイアスは**ここ (生成時) だけ**に乗り、子は親符号を継承する
+    (§2.2 — 子レベルで掛けると run length が壊れ γ = α−1 が崩れる)。
     消費は常に 2 draw (符号 → 長さ)。容量到達時は生成せずカウンタに記録する
     (draw も消費しない — 失敗経路は決定論的に同一)。
     """
@@ -238,7 +266,7 @@ def _meta_spawn(
     u_sign = rng_meta.random()
     u_len = rng_meta.random()
     mi = n_meta
-    m_sign[mi] = 1.0 if u_sign < 0.5 else -1.0
+    m_sign[mi] = 1.0 if u_sign < p_up else -1.0
     m_ntotal[mi] = np.floor(meta_n_min * (1.0 - u_len) ** (-1.0 / meta_alpha))
     m_nexec[mi] = 0.0
     m_t_created[mi] = t
@@ -304,6 +332,10 @@ def run_zi_book(
     qr_cx_dist, qr_cx_w_floor, qr_cx_len_pow, qr_cx_back,  # §6 取消重み
     qr_mo_frac,  # 成行サイズのデプス上限 (0 = 無効)
     qr_obi_bias,  # ノイズ成行の OBI 符号バイアス (0 = 無効。§7.2)
+    # --- S10: p* との結合 (kappa_bias=0 なら完全無視 — S6〜S9 経路は不変) ---
+    kappa_bias,  # tanh バイアス強度 κ
+    s_scale_grid,  # σ_t·√τ_meta [log 価格単位] (log_pstar と同一グリッド)
+    k_base_price, k_tick,  # ティック → log 価格の変換 (d の計算用)
 ):
     """ZI 板を最後まで走らせ、(イベントログ, グリッドミッド, スナップショット,
     カウンタ) を返す。単一スレッド・固定消費順で決定論。"""
@@ -522,17 +554,28 @@ def run_zi_book(
 
         # S8: 期日の来た Poisson 到着を処理 (子の需要が発生する前に必ず追加)。
         # 生成失敗 (容量) でも次回時刻は進める — 詰まって無限ループしないため。
-        while use_meta and next_meta_t <= t_now:
-            nm2, na2 = _meta_spawn(
-                rng_meta, meta_alpha, meta_n_min, next_meta_t, 0.0,
-                m_sign, m_ntotal, m_nexec, m_t_created, m_spawned_empty,
-                act_meta, n_meta, n_act, counters,
-            )
-            if nm2 > n_meta:
-                counters[C_META_ARRIVALS] += 1.0
-            n_meta = nm2
-            n_act = na2
-            next_meta_t += -np.log(1.0 - rng_meta.random()) / meta_lambda_day * day_sec
+        # S10: 符号バイアス p_up は現在の板・p* 状態から計算 (κ=0 なら 0.5)。
+        if use_meta and next_meta_t <= t_now:
+            p_up_arr = 0.5
+            if kappa_bias > 0.0:
+                p_up_arr = _kappa_p_up(
+                    kappa_bias, t_now, best_bid, best_ask, ref_bid, ref_ask,
+                    log_pstar, s_scale_grid, pstar_step_sec, pstar_n,
+                    k_base_price, k_tick,
+                )
+            while next_meta_t <= t_now:
+                nm2, na2 = _meta_spawn(
+                    rng_meta, meta_alpha, meta_n_min, next_meta_t, 0.0, p_up_arr,
+                    m_sign, m_ntotal, m_nexec, m_t_created, m_spawned_empty,
+                    act_meta, n_meta, n_act, counters,
+                )
+                if nm2 > n_meta:
+                    counters[C_META_ARRIVALS] += 1.0
+                n_meta = nm2
+                n_act = na2
+                next_meta_t += (
+                    -np.log(1.0 - rng_meta.random()) / meta_lambda_day * day_sec
+                )
 
         if n_events + 8 >= ev_capacity:
             counters[C_LOG_FULL] += 1.0
@@ -624,8 +667,16 @@ def run_zi_book(
             u_mix = rng_meta.random()
             if u_mix < meta_psi:
                 if n_act == 0:
+                    p_up_sp = 0.5
+                    if kappa_bias > 0.0:
+                        p_up_sp = _kappa_p_up(
+                            kappa_bias, t_now, best_bid, best_ask,
+                            ref_bid, ref_ask,
+                            log_pstar, s_scale_grid, pstar_step_sec, pstar_n,
+                            k_base_price, k_tick,
+                        )
                     nm2, na2 = _meta_spawn(
-                        rng_meta, meta_alpha, meta_n_min, t_now, 1.0,
+                        rng_meta, meta_alpha, meta_n_min, t_now, 1.0, p_up_sp,
                         m_sign, m_ntotal, m_nexec, m_t_created, m_spawned_empty,
                         act_meta, n_meta, n_act, counters,
                     )

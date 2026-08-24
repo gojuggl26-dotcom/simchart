@@ -253,6 +253,19 @@ class ZIBook:
         # ---------------- S9: queue-reactive (意思決定層のみ — §3.2) ----------------
         use_qr = bool(cfg.enable_queue_reactive)
 
+        # ---------------- S10: κ 結合の引数 ----------------
+        # s = σ_t·√τ_meta [log 価格単位]。σ_t は L2 の瞬間ボラ (年率) —
+        # 年率 → 「τ_meta 秒あたり」へ √(τ / (252·session)) で換算する。
+        tick_f = float(cfg.tick_size)
+        base_price_f = float(cfg.p0 - p0_tick * tick_f)
+        kappa_f = float(cfg.kappa)
+        if kappa_f > 0.0:
+            s_scale_grid = np.exp(price.log_vol) * np.sqrt(
+                float(cfg.kappa_tau_meta_sec) / (252.0 * float(session))
+            )
+        else:
+            s_scale_grid = np.ones(2, dtype=np.float64)
+
         # JIT ウォームアップ (コンパイル / キャッシュロードを計測から外す)。
         # ★使い捨ての Generator を使う — レジストリのストリームを消費すると
         # 決定論が壊れる。出力は捨てる。
@@ -287,6 +300,7 @@ class ZIBook:
             float(cfg.qr_cx_dist_decay), float(cfg.qr_cx_w_floor),
             float(cfg.qr_cx_len_pow), float(cfg.qr_cx_back),
             float(cfg.qr_mo_depth_frac), float(cfg.qr_obi_bias),
+            kappa_f, s_scale_grid[:2].copy(), base_price_f, tick_f,
         )
 
         started = time.perf_counter()
@@ -330,6 +344,7 @@ class ZIBook:
             float(cfg.qr_cx_dist_decay), float(cfg.qr_cx_w_floor),
             float(cfg.qr_cx_len_pow), float(cfg.qr_cx_back),
             float(cfg.qr_mo_depth_frac), float(cfg.qr_obi_bias),
+            kappa_f, s_scale_grid, base_price_f, tick_f,
         )
         engine_runtime = time.perf_counter() - started
 
@@ -592,8 +607,6 @@ def build_book_layer(
     calendar: ConstantCalendar,
     activity: ConstantActivity,
 ) -> PassThroughBook | ZIBook:
-    if config.kappa != 0.0:
-        raise NotImplementedError("p* との結合 (kappa) は S10 で実装します。")
     if config.enable_book:
         # S7+: Hawkes の仕様 (行列・カーネル・ベースライン) は L1 が持ち、
         # L3 はそれを消費する。S6 (enable_hawkes=False) では使わない。
