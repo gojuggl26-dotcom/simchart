@@ -63,10 +63,10 @@ def test_multi_asset_raises_for_s13() -> None:
 
 
 def test_unimplemented_stage_raises() -> None:
-    # 実装が進んだら「次の未実装段階」へ更新する (S11 の実装で S11 -> S12)。
+    # 実装が進んだら「次の未実装段階」へ更新する (S12 の実装で S12 -> S13)。
     with pytest.raises(NotImplementedError) as excinfo:
-        Config(stage="S12")
-    assert "S12" in str(excinfo.value)
+        Config(stage="S13")
+    assert "S13" in str(excinfo.value)
 
 
 def test_unknown_stage_is_a_value_error() -> None:

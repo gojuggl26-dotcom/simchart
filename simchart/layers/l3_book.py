@@ -298,6 +298,31 @@ class ZIBook:
             v_z = (ma_z - float(m_v)) / float(cfg.c_vol_v_scale)
             cvf = float(cfg.c_vol)
             z_grid = np.exp(cvf * v_z - 0.5 * cvf * cvf)
+            # S12: χ₁ を Z に畳み込む — Z_total = Z_S10 · exp(a₁χ₁ − c_χ₁)。
+            # カーネルは Z を 1 本しか知らないので、thinning・メタ到着・容量・
+            # n̂ の φ·Z 補償 (E 経路) の全てが自動で χ₁ 込みになる。
+            # a₁ は導出量 (config docstring)、c_χ₁ は数値凸性補正 (係数 1 §4.4)。
+            chi1_diag = None
+            if cfg.enable_chaos_lambda:
+                from ..chaos import chi_window
+
+                t1_days, chi1_norm, chi1_info = chi_window(
+                    cfg, float(cfg.n_days) + 1.0, "chi1"
+                )
+                share1 = float(cfg.chi1_var_share)
+                a1 = cvf * float(np.sqrt(share1 / (1.0 - share1)))
+                tz_days = (np.arange(n_z, dtype=np.float64) * z_step_f) / float(session)
+                chi1_g = np.interp(tz_days, t1_days, chi1_norm)
+                c_chi1 = float(np.log(np.mean(np.exp(a1 * chi1_g))))
+                z_grid = z_grid * np.exp(a1 * chi1_g - c_chi1)
+                chi1_diag = dict(chi1_info)
+                chi1_diag.update({
+                    "a1": a1,
+                    "c_chi1_numerical": c_chi1,
+                    "c_chi1_gaussian_formula": 0.5 * a1 * a1,
+                    "var_contribution": a1 * a1,
+                    "e_factor": float(np.mean(np.exp(a1 * chi1_g - c_chi1))),
+                })
             # thinning 上界: 4h ブロック max の前方 2 ブロック引き。カーネルは
             # 有効域 (自+次ブロック) を越える候補を打ち切るので厳密な上界。
             z_blk = max(1, int(round(4.0 * 3600.0 / z_step_f)))
@@ -325,6 +350,8 @@ class ZIBook:
                 "ma_window_days": w_z / spd_z,
                 "z_step_sec": z_step_f,
             }
+            if chi1_diag is not None:
+                cvol_diag["chi1"] = chi1_diag
         else:
             z_grid = np.ones(2, dtype=np.float64)
             z_up_grid = np.ones(2, dtype=np.float64)
@@ -355,6 +382,27 @@ class ZIBook:
             phi_sig2 = np.ones(2, dtype=np.float64)
             inv_n_design = 1.0
             fb_u_out = np.zeros(2, dtype=np.float64)
+
+        # ---------------- S12: χ₃ (分岐比の脆弱窓) ----------------
+        # 全シードで同一の決定論系列 (シード非依存 — §8 の窓再現性検証の前提)。
+        # 15 日スケールなので 60s 格子で十分。乱数は消費しない。
+        use_chi3 = bool(cfg.enable_chaos_branching)
+        if use_chi3:
+            from ..chaos import chi_window
+
+            t3_days, chi3_norm, chi3_info = chi_window(
+                cfg, float(cfg.n_days) + 1.0, "chi3"
+            )
+            chi3_step_f = 60.0
+            n3 = int(cfg.n_days * session / chi3_step_f) + 2
+            t3_grid_days = (np.arange(n3, dtype=np.float64) * chi3_step_f) / float(session)
+            chi3_grid = np.interp(t3_grid_days, t3_days, chi3_norm)
+            chi3_b_f = float(cfg.chi3_b)
+        else:
+            chi3_grid = np.zeros(2, dtype=np.float64)
+            chi3_step_f = 60.0
+            chi3_b_f = 0.0
+            chi3_info = None
 
         # JIT ウォームアップ (コンパイル / キャッシュロードを計測から外す)。
         # ★使い捨ての Generator を使う — レジストリのストリームを消費すると
@@ -403,6 +451,7 @@ class ZIBook:
                 int(0.2 * session / cfg.book_snapshot_interval_sec) + 2,
                 dtype=np.float64,
             ),
+            chi3_b_f, np.zeros(2, dtype=np.float64), 60.0,
         )
 
         started = time.perf_counter()
@@ -456,6 +505,7 @@ class ZIBook:
             float(cfg.fb_n_min), float(cfg.fb_n_max),
             fb_lam_short, fb_lam_long, phi_sig2, inv_n_design,
             fb_u_out,
+            chi3_b_f, chi3_grid, float(chi3_step_f),
         )
         engine_runtime = time.perf_counter() - started
 
@@ -685,6 +735,9 @@ class ZIBook:
                 C_FB_U_SUMSQ,
             )
 
+            if chi3_info is not None:
+                self.last_diagnostics["chi3"] = dict(chi3_info)
+                self.last_diagnostics["chi3"]["b_chi"] = chi3_b_f
             n_fb = max(counters[C_FB_NT_N], 1.0)
             nt_mean = counters[C_FB_NT_SUM] / n_fb
             nt_var = max(counters[C_FB_NT_SUMSQ] / n_fb - nt_mean**2, 0.0)

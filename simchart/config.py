@@ -39,6 +39,7 @@ STAGES: tuple[str, ...] = tuple(f"S{i}" for i in range(14))
 #: 現時点で実装が存在する段階。段階を進めるたびにここへ追加する。
 IMPLEMENTED_STAGES: tuple[str, ...] = (
     "S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "S11",
+    "S12",
 )
 
 #: 年率ボラを 1 ステップ分に落とすときの営業日数。
@@ -52,9 +53,7 @@ SESSION_SECONDS: float = 6.5 * 3600.0
 # 未実装フラグの表: フラグ名 -> (実装段階, 内容, 追加先)
 # ---------------------------------------------------------------------------
 UNIMPLEMENTED_FLAGS: dict[str, tuple[str, str, str]] = {
-    "enable_chaos_lambda": ("S12", "カオス的強度変調 chi_1", "simchart/layers/l1_activity.py"),
-    "enable_chaos_branching": ("S12", "カオス的分岐比変調 chi_3", "simchart/layers/l1_activity.py"),
-    "enable_jump_hawkes": ("S11d", "ジャンプ自己励起 (任意 — S11a〜c 完了後に要否判断 §7)", "simchart/layers/l2_price.py"),
+    "enable_jump_hawkes": ("S11d", "ジャンプ自己励起 (任意 — S11d で見送り判断済み、再検討条件は results/S11d)", "simchart/layers/l2_price.py"),
 }
 
 #: 実装済みの機能フラグ。UNIMPLEMENTED_FLAGS から行を移すときはこちらに追記する。
@@ -80,6 +79,8 @@ IMPLEMENTED_FLAGS: tuple[str, ...] = (
     "enable_queue_reactive",  # S9
     "enable_uncertainty_zones",  # S9 (fallback — 常用禁止 §8.2)
     "enable_feedback",  # S11
+    "enable_chaos_lambda",  # S12 (χ₁ — 活動度ベースライン)
+    "enable_chaos_branching",  # S12 (χ₃ — 分岐比の脆弱窓)
 )
 
 #: フラグ以外 (数値パラメータ) の未実装条件。
@@ -441,8 +442,30 @@ class Config:
     #: 1 日あたり最大イベント数。発動はカウンタに記録され、ゲートが頻度 < 0.01% を課す。
     hawkes_intensity_cap_mult: float = 50.0
     hawkes_daily_event_cap: int = 500_000
+    # --- S12: L1 のカオス駆動 (χ₁ 活動度 / χ₃ 分岐比の脆弱窓) ---
+    #: χ₁: 活動度ベースラインの決定論的うねり。**Z 機構に畳み込む** —
+    #: Z_total = Z_S10 · exp(a₁χ₁ − c_χ₁)。a₁ は導出量 (自由パラメータでない):
+    #:   a₁ = c_vol · √(share/(1−share))  (χ₁ が log λ 確率分の share を占める §4.3。
+    #:   ★指示書の予算表の「W_t (S7, 25%)」は本実装に存在しない — S7 の
+    #:   ベースラインは決定論 φ_λ·μ。予算は現行組成 (c_vol·V) 基準で再導出)。
+    #: c_χ₁ は数値凸性補正 log E[e^{a₁χ₁}] (係数 1 — §4.4)。
     enable_chaos_lambda: bool = False  # S12 (chi_1)
+    #: χ₃: 分岐比の脆弱窓。sigmoid(b_n·tanh(u/u_s) + b_χ·χ₃) — S11 の
+    #: フィードバックと同じ sigmoid に入るので n_t ∈ [n_min, n_max] は自動。
+    #: 全シードで同一の系列 (シード非依存) — 窓の再現性検証 (§8) の前提。
     enable_chaos_branching: bool = False  # S12 (chi_3)
+    #: MG(17) スペクトルピーク実測 49.65 単位。χ₁ → 4.7 日 (帯 2〜10、Hawkes 最長
+    #: 時定数 300s の 24 倍 = 0.083 日を大きく超える §4.2)、χ₃ → 13.1 日
+    #: (帯 10〜30)。★周期は**非共鳴に離調**する: 当初の 15 日は χ₂ (30 日) と
+    #: 厳密な 2:1 共鳴になり |corr| = 0.22 を実測 (同一アトラクタの支配周期が
+    #: 整数比で噛み合う)。4.7/13.1/30 は低次の整数比を持たない。
+    #: 初期値も χ₂ (1.2) から離す。
+    chi1_ic: float = 0.9
+    chi1_days_per_unit: float = 0.0947
+    chi1_var_share: float = 0.25
+    chi3_ic: float = 1.6
+    chi3_days_per_unit: float = 0.2638
+    chi3_b: float = 0.0  # b_χ (S12c の窓再現性較正で確定)
 
     # --- L3 / S6: ZI 板 (zero-intelligence、Smith et al. 2003 ベースライン) ---
     # ★κ=0 で L2 と完全に切り離す。この段階の価格には ①③④⑧⑯⑱ は現れない —
@@ -780,6 +803,8 @@ class Config:
         "qr_mo_depth_frac", "qr_obi_bias",
     )
     _S9_UZ_PARAMS = ("uz_eta",)
+    _S12_CHI1_PARAMS = ("chi1_ic", "chi1_days_per_unit", "chi1_var_share")
+    _S12_CHI3_PARAMS = ("chi3_ic", "chi3_days_per_unit", "chi3_b")
     _S11_FB_PARAMS = (
         "fb_b_delta", "fb_b_place", "fb_b_n", "fb_u_scale", "fb_u_center",
         "fb_c_delta", "fb_c_place",
@@ -817,6 +842,8 @@ class Config:
             ("enable_queue_reactive", self._S9_QR_PARAMS),
             ("enable_uncertainty_zones", self._S9_UZ_PARAMS),
             ("enable_feedback", self._S11_FB_PARAMS),
+            ("enable_chaos_lambda", self._S12_CHI1_PARAMS),
+            ("enable_chaos_branching", self._S12_CHI3_PARAMS),
         ):
             if not getattr(self, flag):
                 changed = [n for n in params if getattr(self, n) != defaults[n]]
@@ -1205,6 +1232,32 @@ class Config:
                 raise ValueError("crisis_k_sigma > 0, crisis_spread_mult > 1 が必要です")
             if not (0 < self.crisis_freq_per_year_lo < self.crisis_freq_per_year_hi):
                 raise ValueError("危機頻度帯は 0 < lo < hi が必要です")
+        if self.enable_chaos_lambda:
+            if not self.enable_hawkes:
+                raise ValueError("enable_chaos_lambda には enable_hawkes が必要です")
+            if self.c_vol <= 0:
+                raise ValueError(
+                    "enable_chaos_lambda には c_vol > 0 が必要です"
+                    " (χ₁ の振幅 a₁ = c_vol·√(share/(1−share)) は S10 成分基準の導出量)"
+                )
+            if not (0.0 < self.chi1_var_share <= 0.5):
+                raise ValueError("chi1_var_share は (0, 0.5] が必要です")
+            if self.chi1_days_per_unit <= 0:
+                raise ValueError("chi1_days_per_unit は正である必要があります")
+        if self.enable_chaos_branching:
+            if not self.enable_feedback:
+                raise ValueError(
+                    "enable_chaos_branching には enable_feedback が必要です"
+                    " (χ₃ は n_t 機構の sigmoid に入る)"
+                )
+            if self.chi3_b <= 0:
+                raise ValueError(
+                    "enable_chaos_branching=True なのに chi3_b = 0 です (暗黙 no-op)"
+                )
+            if self.chi3_b > 5.0:
+                raise ValueError(f"chi3_b = {self.chi3_b} は過大です (sigmoid 飽和)")
+            if self.chi3_days_per_unit <= 0:
+                raise ValueError("chi3_days_per_unit は正である必要があります")
         if self.vol_var_budget_total <= 0:
             raise ValueError("vol_var_budget_total は正である必要があります")
         allocated = (
@@ -1245,8 +1298,11 @@ class Config:
         resets["c_vol_ma_days"] = defaults["c_vol_ma_days"]
         resets["c_vol_v_scale"] = defaults["c_vol_v_scale"]
         resets.update({name: defaults[name] for name in self._S11_FB_PARAMS})
+        resets.update({name: defaults[name] for name in self._S12_CHI1_PARAMS})
+        resets.update({name: defaults[name] for name in self._S12_CHI3_PARAMS})
         return self.replace(
             enable_book=False, enable_hawkes=False, enable_feedback=False,
+            enable_chaos_lambda=False, enable_chaos_branching=False,
             enable_metaorder=False, enable_iceberg=False,
             enable_queue_reactive=False, enable_uncertainty_zones=False,
             **resets,

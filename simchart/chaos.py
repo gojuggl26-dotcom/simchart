@@ -48,7 +48,7 @@ from pathlib import Path
 
 import numpy as np
 
-__all__ = ["ChaosSeries", "mackey_glass", "chaos_generate"]
+__all__ = ["ChaosSeries", "mackey_glass", "chaos_generate", "chi_window"]
 
 
 @dataclass(frozen=True)
@@ -138,6 +138,7 @@ def chaos_generate(
     ic: float,
     burn_in_units: float,
     cache_dir: str | Path | None = None,
+    name: str = "chi2",
 ) -> ChaosSeries:
     """決定論的にカオス系列を生成する (キャッシュつき)。
 
@@ -162,7 +163,7 @@ def chaos_generate(
     }
     key = "_".join(f"{k}={v}" for k, v in sorted(full_params.items()))
     ic_hash = hashlib.sha256(key.encode()).hexdigest()[:16]
-    fname = f"chi2_{system}_{ic_hash}.npy"
+    fname = f"{name}_{system}_{ic_hash}.npy"
 
     cache_path: Path | None = None
     if cache_dir is not None:
@@ -192,3 +193,57 @@ def chaos_generate(
         t=t, x=x, dt=full_params["dt"], sha256=_array_hash(x),
         params=full_params, cache_path=str(cache_path) if cache_path else None,
     )
+
+
+def chi_window(
+    config, n_days: float, which: str
+) -> tuple[np.ndarray, np.ndarray, dict]:
+    """S12: χ₁ / χ₃ の窓を用意する共通経路 (χ₂ の prepare_chaos_component と同型)。
+
+    同一の MG 系を**異なる初期値・異なる時間写像**で回す (§3.1 の推奨構成)。
+    過渡除去後は動的に独立 — 独立性は chi_independence ゲートが実測で確認する。
+    Returns: (t_days, chi_norm, diagnostics)。chi_norm は窓上で平均 0・分散 1。
+    乱数は一切消費しない。
+    """
+    if which == "chi1":
+        ic = float(config.chi1_ic)
+        s = float(config.chi1_days_per_unit)
+    elif which == "chi3":
+        ic = float(config.chi3_ic)
+        s = float(config.chi3_days_per_unit)
+    else:
+        raise ValueError(f"未知の系列 {which!r} (chi1 / chi3)")
+    length_units = n_days / s + 2.0 * config.chaos_dt
+    series = chaos_generate(
+        system=config.chaos_system,
+        params={
+            "tau": config.chaos_tau_delay,
+            "beta": config.chaos_beta,
+            "gamma": config.chaos_gamma,
+            "n_exponent": config.chaos_n_exponent,
+        },
+        length_units=length_units,
+        dt=config.chaos_dt,
+        ic=ic,
+        burn_in_units=config.chaos_burn_in_units,
+        cache_dir=config.chaos_cache_dir or None,
+        name=which,
+    )
+    x = series.x
+    mu = float(x.mean())
+    sd = float(x.std())
+    if sd <= 0:
+        raise ValueError(f"{which} の分散が 0 です")
+    chi_norm = (x - mu) / sd
+    diagnostics = {
+        "system": config.chaos_system,
+        "sha256": series.sha256,
+        "cache_path": series.cache_path,
+        "ic": ic,
+        "days_per_unit": s,
+        "grid_spacing_days": config.chaos_dt * s,
+        "n_grid_points": int(chi_norm.shape[0]),
+        "window_mean": mu,
+        "window_sd": sd,
+    }
+    return series.t * s, chi_norm, diagnostics

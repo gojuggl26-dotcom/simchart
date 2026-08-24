@@ -142,8 +142,9 @@ class HawkesActivity:
 def build_activity(
     config: Config, rng: RNGRegistry, calendar: ConstantCalendar
 ) -> ConstantActivity | HawkesActivity:
-    if config.enable_chaos_lambda or config.enable_chaos_branching:
-        raise NotImplementedError("カオス成分 chi_1 / chi_3 は S12 で実装します。")
+    # S12: χ₁/χ₃ は L1 の**仕様** (活動度ベースライン・分岐比) を変調するが、
+    # 実装は板カーネル側 (χ₁ は Z_total への畳み込み、χ₃ は n_t の sigmoid) —
+    # S7 以降の「生成は板カーネルに融合」と同じ配置 (README の作法)。
     del rng  # 乱数は L3 側がレジストリから直接引く (l1.hawkes ストリーム)
     if config.enable_hawkes:
         return HawkesActivity(config, calendar)

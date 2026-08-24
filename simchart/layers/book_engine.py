@@ -361,6 +361,10 @@ def run_zi_book(
     phi_sig2_table,  # 脱季節化用 φ_σ²(u) (u_t に日内周期を入れない §11)
     inv_n_design,  # 1/ρ(a) — n_t → 励起増分スケール変換
     fb_u_out,  # スナップショット格子での u_t 記録 (危機解剖・n_t 分布の再構成用)
+    # --- S12: χ₃ — 分岐比の脆弱窓 (b_chi=0 なら完全無視) ---
+    b_chi,  # χ₃ の強度 b_χ (sigmoid 引数に加算 §5.1)
+    chi3_grid,  # 全シード同一の決定論系列 (60s 格子、正規化済み)
+    chi3_step_sec,
 ):
     """ZI 板を最後まで走らせ、(イベントログ, グリッドミッド, スナップショット,
     カウンタ) を返す。単一スレッド・固定消費順で決定論。"""
@@ -714,8 +718,17 @@ def run_zi_book(
                 fb_mult_delta = np.exp(fb_b_delta * th_ - fb_c_delta)
             if fb_b_place > 0.0:
                 fb_mult_place = np.exp(fb_b_place * th_ - fb_c_place)
-            if fb_b_n > 0.0:
-                sig_ = 1.0 / (1.0 + np.exp(-fb_b_n * th_))
+            if fb_b_n > 0.0 or b_chi > 0.0:
+                # S12: χ₃ は S11 のフィードバックと同じ sigmoid に入る (§5.1) —
+                # n_t ∈ [n_min, n_max] は自動で保たれる。b_chi=0 では従来と
+                # ビット単位で同一 ((−b)·th == −(b·th))。
+                arg_n = fb_b_n * th_
+                if b_chi > 0.0:
+                    ci_ = int(t_now / chi3_step_sec)
+                    if ci_ >= chi3_grid.size:
+                        ci_ = chi3_grid.size - 1
+                    arg_n += b_chi * chi3_grid[ci_]
+                sig_ = 1.0 / (1.0 + np.exp(-arg_n))
                 fb_exc_scale = (fb_n_min + (fb_n_max - fb_n_min) * sig_) * inv_n_design
 
         # 種別の決定 (kind: 0=MO, 1=LO, 2=CX)
