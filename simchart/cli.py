@@ -384,6 +384,29 @@ def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
         per_seed["gph_d"].append(
             gph_estimator(np.abs(r_daily), config.validation.daily_gph_bandwidth_exponent).get("d")
         )
+        # S10 (κ>0): ③ の判定計器 — 同一シードの潜在 log p* で同じ gph_d を測り
+        # **per-seed 差**で判定する (S5 基準値は 5000 日測定で、1000 日の観測値と
+        # 有限標本バイアスが異なる。同一ラン・同一視野の差なら相殺する)。
+        # ⑧ の JV は 1 秒 BNS だとバウンスをジャンプと誤検出する (S10b) ので
+        # バウンス頑健な 5 分サンプリング版も測る。
+        if config.kappa > 0.0:
+            ps = result.price.log_p_star
+            step_g = float(result.price.t[1] - result.price.t[0])
+            spd_g = int(round(obs.session_seconds / step_g))
+            r_daily_lat = np.diff(np.asarray(ps)[::spd_g])
+            d_lat = gph_estimator(
+                np.abs(r_daily_lat), config.validation.daily_gph_bandwidth_exponent
+            ).get("d")
+            d_obs = per_seed["gph_d"][-1]
+            per_seed.setdefault("gph_d_latent", []).append(d_lat)
+            per_seed.setdefault("gph_d_obs_minus_latent", []).append(
+                d_obs - d_lat if (d_obs is not None and d_lat is not None) else None
+            )
+            stride5 = max(1, int(round(300.0 / obs.step_seconds)))
+            r5 = np.diff(obs.log_price[::stride5])
+            per_seed.setdefault("jv_share_5min", []).append(
+                bns_jump_test(r5, steps_per_day // stride5).get("jv_share")
+            )
         # S6 (κ=0 の板): 観測は ZI ミッドなので、観測ベースの季節性ペアと
         # 希釈の相関ペア実行 (どちらも観測を測る) はスキップする。潜在側
         # (SD 比・シード横断・chi ハッシュ) は板と無関係なので継続する。

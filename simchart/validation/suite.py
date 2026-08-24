@@ -912,16 +912,31 @@ def _hawkes_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
         targets = HawkesActivity(cfg, None).stationary_rates()
         keep = times >= burn_sec
         days = cfg.n_days - cfg.book_burn_in_days
+        # S10c: c_vol>0 では設計上レート ∝ Z なので、閉ループ確認は実現平均 Z で
+        # 正規化した値で行う (生の ±5% は Z≡1 を前提としており、エポック効果で
+        # 実行ごとに ±10〜15% 動くのが正しい物理 — results/S10c/DECISION.md)。
+        z_norm = 1.0
+        if float(cfg.c_vol) > 0.0:
+            cv = (result.meta.get("l3") or {}).get("cvol") or {}
+            zm = cv.get("z_mean")
+            if zm:
+                z_norm = float(zm)
         rows: dict[str, Any] = {}
         rels = []
+        raw_rels = []
         for y, name in ((0, "mo"), (1, "lo"), (2, "cx")):
             rate = float(((marks == y) & keep).sum()) / days
-            rel = rate / float(targets[y]) - 1.0
+            rel_raw = rate / float(targets[y]) - 1.0
+            rel = rate / (float(targets[y]) * z_norm) - 1.0
             rows[f"{name}_per_day"] = num(rate)
             rows[f"{name}_target"] = num(targets[y])
             rows[f"{name}_rel_diff"] = num(rel)
+            rows[f"{name}_rel_diff_raw"] = num(rel_raw)
             rels.append(abs(rel))
+            raw_rels.append(abs(rel_raw))
         rows["max_abs_rel_diff"] = num(max(rels))
+        rows["max_abs_rel_diff_raw"] = num(max(raw_rels))
+        rows["z_mean_norm"] = num(z_norm)
         return ok(rows["max_abs_rel_diff"], **rows)
 
     out["realized_rates"] = safe_call(_rates)

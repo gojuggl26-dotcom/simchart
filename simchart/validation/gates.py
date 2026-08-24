@@ -2097,7 +2097,182 @@ _S9_NEW_GATES: tuple[Gate, ...] = (
 
 S9_GATES: tuple[Gate, ...] = _S9_INHERITED_GATES + _S9_NEW_GATES
 
-#: 段階ごとのゲート。S10 以降を実装するときはここに追加する。
+
+# ---------------------------------------------------------------------------
+# S10: κ 結合 — L2 の性質が観測に**現れる**ことを初めて要求する段階
+# ---------------------------------------------------------------------------
+def _gap_halflife_check(value: Any) -> bool:
+    return value is not None and 0.0 < float(value) < 600.0
+
+
+#: S9 からの継承にあたっての再スコープ (経緯は各 description):
+#:  - qr_c1_invariant: raw C(1) には κ 追跡の情報チャネル (こぶ) が重畳する —
+#:    符号構造の不変判定は**残差 C(1)** (S10a の解剖) に移す。帯は S8 のまま。
+#:  - vr_improved / beta_improved (S8 比の方向ゲート) は S10 の**絶対整合ゲート**
+#:    (下の impact_*) が上位互換なので落とす。
+#:  - sqrt_law_unchanged (S9 soft) は S10 の sqrt_law_target (指示書の帯) に交代。
+#:  - multiseed_coverage: 1000 日は窓逸脱率 ~17% (S10d 実測) — 床 20 / 30。
+_S10_DROPPED = {"vr_improved", "beta_improved", "sqrt_law_unchanged"}
+
+_S10_INHERITED_GATES: tuple[Gate, ...] = tuple(
+    (
+        Gate(
+            name=g.name,
+            metric_path="multiseed.cpl_c1_resid.median",
+            check=g.check, critical=g.critical,
+            threshold="残差 C(1) が S8 実測 0.1322 ± 0.03 (κ バイアス控除後)",
+            description=(
+                "符号の分割構造は κ 結合で壊れない (§2.2 子の継承)。raw C(1) は"
+                "情報チャネルのこぶで上振れするのが正しい物理なので、判定は"
+                "生成時バイアス E[ε|d] を引いた残差側 (S10a)。raw は記録。"
+            ),
+        )
+        if g.name == "qr_c1_invariant"
+        else Gate(
+            name=g.name, metric_path=g.metric_path,
+            check=lambda v: v is not None and int(v) >= 20,
+            threshold="窓逸脱スキップ後の有効シード数 ≥ 20 / 30 (1000 日は逸脱率 ~17%)",
+            description=g.description,
+        )
+        if g.name == "multiseed_coverage"
+        else g
+    )
+    for g in S9_GATES
+    if g.name not in _S10_DROPPED
+)
+
+_S10_NEW_GATES: tuple[Gate, ...] = (
+    # --- 結合そのもの (critical) ---
+    Gate(
+        name="cpl_gap_stationary",
+        metric_path="multiseed.cpl_gap_halflife_min.median",
+        check=_gap_halflife_check,
+        threshold="乖離 d = log p* − log p_obs の AR(1) 半減期が有限で < 600 分 (中央値)",
+        description=(
+            "結合の第一条件: 板が p* を見失わない。κ=0 では d が漂流 (半減期 ∞)。"
+            "κ=0.2 実測 ~100 分 (500 日)。SD は cpl_gap_sd_bp に記録。"
+        ),
+    ),
+    Gate(
+        name="cpl_tracking_daily",
+        metric_path="multiseed.cpl_corr_daily_level.median",
+        check=_gt(0.90),
+        threshold="corr(log p_obs, log p*) 日次レベル > 0.90 (中央値、指示書 §9)",
+        description="日次以上の地平で観測価格は情報価格を再現する (S10a 実測 ~0.999)。",
+    ),
+    Gate(
+        name="cpl_transmission_daily",
+        metric_path="multiseed.cpl_T_daily.median",
+        check=_between(0.95, 1.05),
+        threshold="伝達率 T(1日) = Var(Δ1d p_obs)/Var(Δ1d p*) ∈ 1.00 ± 0.05 (中央値)",
+        description=(
+            "σ̄ 再較正 (S10b: 0.20→0.2217) の閉ループ確認。S10d 1000日×10 で"
+            "中央値 1.030。シード分布は whale で重裾 (0.61〜1.94) — 中央値判定。"
+            "T(5d) は cpl_T_5d に記録 (whale 残存超拡散で >1、総ホライズン依存 — "
+            "results/S10d/DECISION.md §3)。"
+        ),
+    ),
+    Gate(
+        name="cpl_gamma_resid_preserved",
+        metric_path="multiseed.cpl_gamma_resid.median",
+        check=_between(0.534, 0.95),
+        threshold="残差符号の γ ∈ [S8 実測 0.614 − 0.08, 0.95] (中央値)",
+        description=(
+            "⑪ の保存 (指示書 §9 の最重要 L3 項)。raw γ̂ は情報チャネルのこぶで"
+            "潰れて見える (S10a: raw 0.33 / 残差 0.611) — 判定は残差計器。"
+        ),
+    ),
+    Gate(
+        name="cpl_vol_volume",
+        metric_path="multiseed.cpl_rv_volume_log.median",
+        check=_between(0.50, 0.70),
+        threshold="corr(log 日次RV, log 日次出来高) ∈ [0.5, 0.7] (⑦、中央値)",
+        description=(
+            "c_vol=0.65 の較正点 (S10c 実測 0.596 = 帯中央)。log-log が主計器"
+            " (レベル相関は鯨日支配 — S10c DECISION)。"
+        ),
+    ),
+    Gate(
+        name="cpl_vol_spread",
+        metric_path="multiseed.cpl_rv_spread.median",
+        check=_gt(0.30),
+        threshold="corr(log 日次RV, 日次平均スプレッド) > 0.3 (指示書 §7.3)",
+        description="高ボラ日はスプレッドが広い (κ 追跡の枯渇由来、S10c 実測 0.44〜0.67)。",
+    ),
+    # --- L2 性質の観測への出現 (critical — この段階の存在理由) ---
+    Gate(
+        name="obs_gph_d_matches_latent",
+        metric_path="multiseed.gph_d_obs_minus_latent.median",
+        check=lambda v: v is not None and abs(float(v)) <= 0.05,
+        threshold="③ 日次 |r| の gph_d: 観測 − 潜在 (同一シード対) ∈ ±0.05 (中央値)",
+        description=(
+            "最重要ゲート (指示書 §9)。★S5 基準値 (5000 日) との横並びは有限標本"
+            "バイアスが異なるため**同一ラン・同一視野の per-seed 差**で判定し、"
+            "S5 値 (0.266) は参照記録 (results/S10d/DECISION.md §4)。"
+        ),
+    ),
+    Gate(
+        name="obs_hill_alpha",
+        metric_path="multiseed.hill_alpha.median",
+        check=_between(3.0, 5.0),
+        threshold="観測日次リターンの Hill α ∈ [3, 5] (⑧、中央値)",
+        description="S5 潜在実測 3.09。結合が裾を破壊しない (S10b 日次 Hill 3.37〜3.66)。",
+    ),
+    Gate(
+        name="obs_jv_share_5min",
+        metric_path="multiseed.jv_share_5min.median",
+        check=_between(0.05, 0.30),
+        threshold="★暫定: 5 分 BNS の JV share ∈ [0.05, 0.30] (中央値) — 事前測定で確定",
+        description=(
+            "④ ジャンプの保存。1 秒 BNS はバウンスをジャンプと誤検出する (S10b: "
+            "0.77) のでバウンス頑健な 5 分サンプリングで測る。S5 (1s、潜在) 0.15。"
+        ),
+    ),
+    Gate(
+        name="obs_skewness",
+        metric_path="multiseed.skewness_daily.median",
+        check=_between(-3.0, -0.10),
+        threshold="観測日次リターンの歪度 ∈ [−3, −0.1] (中央値)",
+        description="① の非対称。S5 潜在実測 −0.91 (Kou p_up=0.42 + ON ジャンプ)。",
+    ),
+    # --- インパクト整合 (指示書 §9 の 3 点セット) ---
+    Gate(
+        name="impact_vr_consistency",
+        metric_path="multiseed.meta_vr_trade_1000.median",
+        check=_between(0.90, 1.10),
+        threshold="約定時間 VR(1000) ∈ [0.90, 1.10] (中央値) — 赤字の解消",
+        description=(
+            "S8 3.21 → S9 2.68 → S10 で κ の引き戻しが残りを埋める。"
+            "VR < 0.9 は行き過ぎ (過剰平均回帰) で同様に不合格。"
+        ),
+    ),
+    Gate(
+        name="impact_beta_consistency",
+        metric_path="multiseed.meta_beta.median",
+        check=_between(-0.25, -0.15),
+        threshold="★暫定: propagator β̂ ∈ −(1−γ)/2 ± 0.05 = [−0.25, −0.15] (中央値)",
+        description=(
+            "インパクト整合 β = (1−γ)/2、γ=0.6 → 0.20。測定は S8 窓 (5,150) の"
+            "既存計器 — ★S10a で ℓ* 飽和により窓依存が判明しており、事前測定で"
+            "窓の妥当性を確認して確定する。"
+        ),
+    ),
+    Gate(
+        name="sqrt_law_target",
+        metric_path="multiseed.meta_sqrt_slope.median",
+        check=_between(0.40, 0.70),
+        threshold="サイズ応答の傾き ∈ [0.4, 0.7] (⑯ 平方根則、指示書 §9)",
+        description=(
+            "★S10a の解剖: 生成モデルには N ⊥ d (メタオーダー長と情報の無相関) の"
+            "ため √ 則の経済学 (大口ほど情報を持つ) が**構造的に無い** — "
+            "落ちる可能性が高いことを承知で課す (落ちたら §14 の記録様式で報告)。"
+        ),
+    ),
+)
+
+S10_GATES: tuple[Gate, ...] = _S10_INHERITED_GATES + _S10_NEW_GATES
+
+#: 段階ごとのゲート。S11 以降を実装するときはここに追加する。
 STAGE_GATES: dict[str, tuple[Gate, ...]] = {
     "S0": S0_GATES,
     "S1": S1_GATES,
@@ -2109,6 +2284,7 @@ STAGE_GATES: dict[str, tuple[Gate, ...]] = {
     "S7": S7_GATES,
     "S8": S8_GATES,
     "S9": S9_GATES,
+    "S10": S10_GATES,
 }
 
 
