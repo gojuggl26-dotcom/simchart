@@ -328,6 +328,36 @@ def _coupling_seed_stats(result, config: Config) -> dict[str, float | None]:
     }
 
 
+def _nt_window_means(result, config: Config, window_days: float):
+    """窓 (5 日) ごとの平均 n_t (u と χ₃ から決定論的に再構成)。
+
+    §8.1 の「脆弱性の窓は再現される」の直接検証素材 — n_t の緩慢成分は
+    全シード共通の χ₃ が支配するので、シード横断相関は高いはず。
+    """
+    import numpy as np
+
+    from .chaos import chi_window
+
+    meta = result.events.meta if isinstance(result.events.meta, dict) else {}
+    u = np.asarray(meta.get("fb_u_grid", np.empty(0)), dtype=np.float64)
+    if not u.size:
+        return None
+    step = float(meta.get("fb_u_step_sec", 60.0))
+    t3_days, chi3_norm, _ = chi_window(config, float(config.n_days) + 1.0, "chi3")
+    t_days = np.arange(u.size, dtype=np.float64) * step / 23400.0
+    chi3_g = np.interp(t_days, t3_days, chi3_norm)
+    th = np.tanh(u / float(config.fb_u_scale))
+    arg = float(config.fb_b_n) * th + float(config.chi3_b) * chi3_g
+    sig = 1.0 / (1.0 + np.exp(-arg))
+    nt = float(config.fb_n_min) + (float(config.fb_n_max) - float(config.fb_n_min)) * sig
+    burn_d = int(config.book_burn_in_days)
+    spw = int(round(window_days * 23400.0 / step))
+    start = int(burn_d * 23400.0 / step)
+    nt_b = nt[start:]
+    n_w = nt_b.size // spw
+    return nt_b[: n_w * spw].reshape(n_w, spw).mean(axis=1)
+
+
 def _u_time_mean(result, config: Config) -> float | None:
     """時間加重の u 平均 (スナップショット格子、バーンイン後)。"""
     import numpy as np
@@ -495,6 +525,8 @@ def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
     # サブサンプルを保持する。1 分間引きで 1 シード ~16MB、10 シードで 156MB。
     cross_seed_paths: list[np.ndarray] = []
     chi_hashes: list[str] = []
+    fb_window_vecs: list = []
+    fb_nt_window_vecs: list = []
     seeds = [config.seed + i for i in range(n_seeds)]
     skipped_seeds: list[dict[str, str]] = []
     for i, seed in enumerate(seeds):
@@ -642,6 +674,20 @@ def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
                 for key_, val_ in fstats.items():
                     per_seed.setdefault(key_, []).append(val_)
                 del r_off
+                # S12 §8.2: 窓あたり危機件数と窓平均 n_t のベクトルを収集
+                # (シード横断相関はループ後に一括計算)
+                if config.enable_chaos_branching:
+                    from .validation import feedback as fbv2
+
+                    det_w = fbv2.crisis_detect(result, seed_config)
+                    fb_window_vecs.append(
+                        fbv2.crisis_window_counts(
+                            result, seed_config, 5.0, detection=det_w
+                        )
+                    )
+                    fb_nt_window_vecs.append(
+                        _nt_window_means(result, seed_config, 5.0)
+                    )
             if config.enable_iceberg:
                 # §6.3 アブレーション: 同一シードで iceberg off。単一シードの
                 # on/off 差は経路分岐で SD ~0.06 になるため、中央値同士で判定する。
@@ -687,6 +733,26 @@ def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
         out["chi_hash_all_equal"] = bool(len(set(chi_hashes)) == 1)
         out["chi_hashes"] = chi_hashes
         del cross_seed_paths
+    # S12 §8: 窓再現性の二層計器 (シード横断)。
+    #  - fb_nt_window_corr: 脆弱変数 n_t 自体の窓再現 (χ₃ 支配 → 高相関が正解)
+    #  - fb_window_repro: 危機**発火**の窓相関 (存在が鯨供給のため天井 ~0.15 —
+    #    ICC 分解込みで記録。「窓は再現・発火は確率的」§8.1 の定量形)
+    if fb_window_vecs:
+        from .validation.feedback import crisis_window_reproducibility
+
+        out["fb_window_repro"] = crisis_window_reproducibility(fb_window_vecs)
+        nt_ok = [v for v in fb_nt_window_vecs if v is not None]
+        out["fb_nt_window_corr"] = crisis_window_reproducibility(nt_ok)
+        if len(fb_window_vecs) >= 3:
+            n_c = min(v.size for v in fb_window_vecs)
+            M = np.stack([np.asarray(v)[:n_c] for v in fb_window_vecs])
+            var_b = float(M.mean(axis=0).var())
+            var_w = float(M.var(axis=0).mean())
+            var_chi = max(var_b - var_w / M.shape[0], 0.0)
+            out["fb_window_repro"]["icc_chi3_share"] = (
+                var_chi / (var_chi + var_w) if (var_chi + var_w) > 0 else None
+            )
+
     for name, values in per_seed.items():
         clean = [v for v in values if v is not None]
         if not clean:

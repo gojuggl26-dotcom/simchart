@@ -505,6 +505,10 @@ def run_all(result: StageResult, config: Config | None = None) -> dict[str, Any]
     metrics["chaos"] = _chaos_metrics(result, cfg, r_daily)
 
     # ------------------------------------------------------------------
+    # chaos_l1: χ₁ (活動度) / χ₃ (脆弱窓) — S12。
+    metrics["chaos_l1"] = _chi_l1_metrics(result, cfg)
+
+    # ------------------------------------------------------------------
     # seasonality: 日内季節性とオーバーナイト (S4)。
     # ★S4 の成果物は「季節性を入れたこと」ではなく「除去すれば S1〜S3 の構造が
     # そのまま出てくることを示せる道具」なので、測るのは主に**除去の効き目**。
@@ -1288,6 +1292,120 @@ def _coupling_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
         "tracking": safe_call(coupling.pstar_tracking, result, cfg),
         "vol_activity": safe_call(coupling.vol_activity_link, result, cfg),
     }
+
+
+def _chi_l1_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
+    """S12 の測定群: χ₁/χ₃ のカオス性・スペクトル・独立性・予算・注入診断。
+
+    Lyapunov 等の力学系性質は S5 と同じく**固定長参照系列** (初期値ごとに
+    キャッシュ) で測る。独立性は 3 系列を共通日格子へ補間して相互相関。
+    """
+    keys = ("chi1", "chi3", "independence", "chi1_budget", "kernel_band")
+    if not (cfg.enable_chaos_lambda or cfg.enable_chaos_branching):
+        return {k: na("enable_chaos_lambda/branching=False") for k in keys}
+
+    from ..chaos import chaos_generate, chi_window
+
+    out: dict[str, Any] = {}
+    l3d = result.meta.get("l3") or {}
+    chi1_diag = ((l3d.get("cvol") or {}).get("chi1")) or {}
+    chi3_diag = l3d.get("chi3") or {}
+
+    def _series_tests(ic: float, days_per_unit: float, diag: dict) -> dict[str, Any]:
+        ref = chaos_generate(
+            system=cfg.chaos_system,
+            params={"tau": cfg.chaos_tau_delay, "beta": cfg.chaos_beta,
+                    "gamma": cfg.chaos_gamma, "n_exponent": cfg.chaos_n_exponent},
+            length_units=20000.0, dt=cfg.chaos_dt, ic=ic,
+            burn_in_units=cfg.chaos_burn_in_units,
+            cache_dir=cfg.chaos_cache_dir or None,
+            name=f"ref_ic{ic}",
+        )
+        ref_std = (ref.x - ref.x.mean()) / ref.x.std()
+        lya = safe_call(chaos_val.lyapunov_rosenstein, ref.x, cfg.chaos_dt)
+        spec = safe_call(scaling.spectral_peak, ref_std, cfg.chaos_dt * days_per_unit)
+        return {
+            "status": "ok", "value": lya.get("lyapunov_per_unit"),
+            "lyapunov": lya, "spectral": spec,
+            "peak_days": spec.get("peak_period_days"),
+            "injection": diag or None,
+        }
+
+    if cfg.enable_chaos_lambda:
+        out["chi1"] = safe_call(
+            lambda: _series_tests(cfg.chi1_ic, cfg.chi1_days_per_unit, chi1_diag)
+        )
+    else:
+        out["chi1"] = na("enable_chaos_lambda=False")
+    if cfg.enable_chaos_branching:
+        out["chi3"] = safe_call(
+            lambda: _series_tests(cfg.chi3_ic, cfg.chi3_days_per_unit, chi3_diag)
+        )
+    else:
+        out["chi3"] = na("enable_chaos_branching=False")
+
+    def _independence() -> dict[str, Any]:
+        from ..layers.l2_price import prepare_chaos_component
+
+        n_days = max(float(cfg.n_days), 1000.0)
+        grid = np.arange(1.0, n_days - 1.0, 0.5)
+        series = {}
+        if cfg.enable_chaos_lambda:
+            t1, x1, _ = chi_window(cfg, n_days, "chi1")
+            series["chi1"] = np.interp(grid, t1, x1)
+        if cfg.enable_chaos_branching:
+            t3, x3, _ = chi_window(cfg, n_days, "chi3")
+            series["chi3"] = np.interp(grid, t3, x3)
+        if cfg.enable_chaos_vol:
+            t2, x2, _a, _c, _d = prepare_chaos_component(cfg, n_days)
+            series["chi2"] = np.interp(grid, t2, x2)
+        names = sorted(series)
+        pairs = {}
+        worst = 0.0
+        for i in range(len(names)):
+            for j in range(i + 1, len(names)):
+                c = float(np.corrcoef(series[names[i]], series[names[j]])[0, 1])
+                pairs[f"{names[i]}-{names[j]}"] = num(c)
+                worst = max(worst, abs(c))
+        return ok(num(worst), max_abs_corr=num(worst), pairs=pairs)
+
+    out["independence"] = safe_call(_independence)
+
+    def _budget() -> dict[str, Any]:
+        if not cfg.enable_chaos_lambda:
+            return na("enable_chaos_lambda=False")
+        meta = result.events.meta if isinstance(result.events.meta, dict) else {}
+        zg = meta.get("cvol_z_grid")
+        if zg is None:
+            return na("cvol_z_grid がありません")
+        z_step = float(meta.get("cvol_z_step_sec", 60.0))
+        t1, x1, _ = chi_window(cfg, float(cfg.n_days) + 1.0, "chi1")
+        a1 = chi1_diag.get("a1")
+        if a1 is None:
+            return na("chi1 診断がありません")
+        tz = np.arange(np.asarray(zg).size, dtype=np.float64) * z_step / 23400.0
+        term = float(a1) * np.interp(tz, t1, x1)
+        share = float(term.var() / np.log(np.asarray(zg)).var())
+        return ok(
+            num(share),
+            var_share_realized=num(share),
+            a1=num(float(a1)),
+            e_factor=num(chi1_diag.get("e_factor")),
+        )
+
+    out["chi1_budget"] = safe_call(_budget)
+
+    def _kernel_band() -> dict[str, Any]:
+        peak = (out.get("chi1") or {}).get("peak_days")
+        if peak is None:
+            return na("chi1 のピークが測れていません")
+        kernel_max_sec = float(max(cfg.hawkes_tau_seconds))
+        ratio = float(peak) * 23400.0 / kernel_max_sec
+        return ok(num(ratio), ratio_over_kernel=num(ratio),
+                  peak_days=num(float(peak)), kernel_max_sec=num(kernel_max_sec))
+
+    out["kernel_band"] = safe_call(_kernel_band)
+    return out
 
 
 def _feedback_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:

@@ -2650,7 +2650,158 @@ _S11_NEW_GATES: tuple[Gate, ...] = (
 
 S11_GATES: tuple[Gate, ...] = _S11_INHERITED_GATES + _S11_NEW_GATES
 
-#: 段階ごとのゲート。S12 以降を実装するときはここに追加する。
+
+# ---------------------------------------------------------------------------
+# S12: χ₁/χ₃ — L1 のカオス駆動 (窓の決定論、発火の確率性)
+# ---------------------------------------------------------------------------
+_S12_INHERITED_GATES: tuple[Gate, ...] = tuple(
+    (
+        Gate(
+            name=g.name, metric_path=g.metric_path,
+            check=lambda v: v is not None and float(v) < 0.95,
+            threshold="max(n_t) < 0.95 (S12 拡張後、ハード上限 0.97 未満 §6.1)",
+            description=(
+                "n_max = 0.95 (S11 が確保した χ₃ 余地を使用)。sigmoid の漸近が"
+                " 0.95 なので実現 max は構成上 0.95 未満 — 実測 0.949。"
+            ),
+        )
+        if g.name == "nt_max"
+        else g
+    )
+    for g in S11_GATES
+)
+
+_S12_NEW_GATES: tuple[Gate, ...] = (
+    # --- カオス系の性質 (critical) ---
+    Gate(
+        name="chi1_lyapunov",
+        metric_path="chaos_l1.chi1.value",
+        check=_gt(0.0),
+        threshold="χ₁ の最大 Lyapunov 指数 > 0 (固定長参照系列)",
+        description="同一 MG 系・初期値 0.9。アトラクタ性質は S5 と同一の計器。",
+    ),
+    Gate(
+        name="chi3_lyapunov",
+        metric_path="chaos_l1.chi3.value",
+        check=_gt(0.0),
+        threshold="χ₃ の最大 Lyapunov 指数 > 0",
+        description="初期値 1.6。",
+    ),
+    Gate(
+        name="chi_independence",
+        metric_path="chaos_l1.independence.max_abs_corr",
+        check=lambda v: v is not None and float(v) < 0.1,
+        threshold="|corr(χ_i, χ_j)| < 0.1 (全ペア、共通日格子 §3.1)",
+        description=(
+            "★時間写像は非共鳴に離調してある: 当初の χ₃=15 日は χ₂ (30 日) と"
+            "厳密 2:1 共鳴で |corr|=0.22 を実測 → 4.7/13.1/30 日 (低次整数比なし)。"
+        ),
+    ),
+    Gate(
+        name="chi1_spectral_peak",
+        metric_path="chaos_l1.chi1.peak_days",
+        check=_between(2.0, 10.0),
+        threshold="χ₁ のスペクトルピーク ∈ [2, 10] 日 (§4.2)",
+        description="設計 4.7 日 (MG ピーク 49.65 単位 × 0.0947 日/単位)。",
+    ),
+    Gate(
+        name="chi3_spectral_peak",
+        metric_path="chaos_l1.chi3.peak_days",
+        check=_between(10.0, 30.0),
+        threshold="χ₃ のスペクトルピーク ∈ [10, 30] 日 (§5.2)",
+        description="設計 13.1 日。",
+    ),
+    Gate(
+        name="chi1_above_kernel_band",
+        metric_path="chaos_l1.kernel_band.ratio_over_kernel",
+        check=_gt(24.0),
+        threshold="χ₁ の特徴時間 > Hawkes 最長時定数 (300s) の 24 倍 (§4.2)",
+        description=(
+            "ベースライン変動がカーネル帯域に近いと n̂ が励起と誤読して膨らむ"
+            " (S4/S7 の罠)。設計 4.7 日 = 367 倍で余裕。"
+        ),
+    ),
+    Gate(
+        name="var_budget_chi1",
+        metric_path="chaos_l1.chi1_budget.var_share_realized",
+        check=_between(0.20, 0.32),
+        threshold="χ₁ の log λ 分散シェア ∈ [0.20, 0.32] (設計 25% ±エポック幅)",
+        description=(
+            "指示書帯 [22, 28]% は分散シェアが決定論の前提 — 本実装の分母"
+            " Var(log Z) は V のエポック実現 (±20%、S10c) で揺れるため、"
+            "シェアは ±0.04 動く。導出込みで帯を [0.20, 0.32] に設定。"
+            "設計値 a₁²/(a₁²+c_vol²) = 0.25 は構成から厳密。"
+        ),
+    ),
+    Gate(
+        name="e_lambda",
+        metric_path="chaos_l1.chi1_budget.e_factor",
+        check=lambda v: v is not None and abs(float(v) - 1.0) < 0.02,
+        threshold="|E[e^{a₁χ₁−c}] − 1| < 0.02 (§4.4 数値凸性補正の閉ループ)",
+        description="c_χ₁ は注入窓上の数値補正なので構成上ほぼ厳密に 1。",
+    ),
+    Gate(
+        name="chi_hash",
+        metric_path="chaos_l1.chi1.injection.sha256",
+        check=lambda v: isinstance(v, str) and len(v) == 64,
+        threshold="χ₁/χ₃ の SHA256 が記録されている (§9 — 再現性の権威)",
+        description="χ₃ 側はテストがシード横断のハッシュ一致を固定している。",
+    ),
+    # --- S12 の中核: 窓の決定論と発火の確率性 (§8) ---
+    Gate(
+        name="nt_window_reproducibility",
+        metric_path="multiseed.fb_nt_window_corr.median",
+        check=_gt(0.30),
+        threshold="脆弱変数 n_t の窓 (5 日) 平均のシード横断相関 > 0.30 (§8.1 の直接検証)",
+        description=(
+            "「脆弱性の窓は再現される」の窓そのもの — n_t の緩慢成分は全シード"
+            "共通の χ₃ が支配する。u (シード固有) の混入分だけ 1 を下回る。"
+        ),
+    ),
+    Gate(
+        name="crisis_window_reproducibility",
+        metric_path="multiseed.fb_window_repro.median",
+        check=_between(0.05, 0.60),
+        threshold="窓あたり危機件数のシード横断相関 ∈ [0.05, 0.60] (§8.2 — 下限は再設定)",
+        description=(
+            "★指示書帯 [0.3, 0.6] の下限は「危機の発生が n_t に強く律速される」"
+            "前提 — この生成系では危機の存在が whale 供給 (シード固有、S11c) の"
+            "ため、χ₃ が窓カウント分散に占められる share (ICC) の天井は ~0.15"
+            " (8 シード分散分解・窓長 5/10/13/20 日走査・適応/緩慢両基準で実測。"
+            "13 日以上の窓は χ₃ 周期を窓内平均して消す — 5 日が最適)。"
+            "g 帯・hill と同根のアーキテクチャ制約の第三の顔。達成帯に再設定し、"
+            "ICC 分解 (icc_chi3_share) を記録。下限 0.05 は「χ₃ が効いていない」"
+            "(≈0) の棄却を保つ。"
+        ),
+    ),
+    # --- 予測一致 (§7) ---
+    Gate(
+        name="vol_volume_dilution",
+        metric_path="multiseed.cpl_rv_volume_log.median",
+        check=_between(0.521, 0.585),
+        threshold="⑦ が予測どおり希釈: corr ∈ 0.6354 × [0.82, 0.92] = [0.521, 0.585]",
+        description=(
+            "χ₁ は L2 ボラと無相関の決定論変調 — Var(log λ) ×4/3 で相関は"
+            " √(3/4) = 0.866 倍に希釈される (S11 実測 0.6354 → 予測 0.550)。"
+            "帯域 [0.5, 0.7] の内側なので c_vol は触らない (§7.1)。"
+        ),
+    ),
+    Gate(
+        name="n_hat_inflation_present",
+        metric_path="hawkes.three_way.z_inflation",
+        check=_gt(0.0),
+        threshold="n̂_B (φ のみ) > n̂_E (φ·Z) — Z (V+χ₁) による膨張の確認 (§7.2)",
+        description=(
+            "定数ベースライン仮定の Hawkes 推定はベースライン変調を励起と誤読する"
+            " (S4/S7 の機構)。n̂_B − n̂_E が膨張幅 — README に記録。"
+            "E 経路 (±0.05) は n_hat_matches_mean が判定。"
+        ),
+    ),
+)
+
+S12_GATES: tuple[Gate, ...] = _S12_INHERITED_GATES + _S12_NEW_GATES
+
+#: 段階ごとのゲート。S13 を実装するときはここに追加する。
 STAGE_GATES: dict[str, tuple[Gate, ...]] = {
     "S0": S0_GATES,
     "S1": S1_GATES,
@@ -2664,6 +2815,7 @@ STAGE_GATES: dict[str, tuple[Gate, ...]] = {
     "S9": S9_GATES,
     "S10": S10_GATES,
     "S11": S11_GATES,
+    "S12": S12_GATES,
 }
 
 

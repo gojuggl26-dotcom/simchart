@@ -1,0 +1,5 @@
+b_chi=1.0 n_max=0.95: win_corr=+0.047 [-0.00,+0.08] g30=+0.122 crises/y=49.5 hill=2.13/3.30 nt_max=0.945 div=0 (142s)
+b_chi=2.0 n_max=0.95: win_corr=+0.093 [+0.05,+0.12] g30=+0.084 crises/y=50.3 hill=2.08/3.42 nt_max=0.949 div=0 (158s)
+b_chi=1.0 n_max=0.93: win_corr=+0.073 [+0.00,+0.11] g30=+0.108 crises/y=51.4 hill=2.22/3.06 nt_max=0.926 div=0 (109s)
+b_chi=2.0 n_max=0.93: win_corr=+0.091 [+0.06,+0.11] g30=+0.088 crises/y=50.8 hill=2.08/3.53 nt_max=0.929 div=0 (118s)
+saved E:\模擬チャート生成\results\S12c\window_sweep_slow.json

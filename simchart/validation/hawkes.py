@@ -347,6 +347,17 @@ def branching_three_ways(
         if true_phi_table is not None
         else None
     )
+    # S12 §7.2 の B 経路: 真の φ のみ (Z = φ 外のベースライン変調を知らない)。
+    # n̂_B − n̂_E が Z (c_vol の V + χ₁) による膨張幅 — S4/S7 の罠の再演を
+    # 実測で示す record。Z が無い構成では true と同一なので省略。
+    fit_phi_only = (
+        hawkes_mle(
+            times, marks, t_end, betas, weights,
+            phi_table=true_phi_table, session_seconds=session_seconds, precomputed=pre,
+        )
+        if (true_phi_table is not None and zkw)
+        else None
+    )
     est = estimate_phi_lambda(times, session_seconds, n_bins=n_bins_est)
     fit_est = hawkes_mle(
         times, marks, t_end, betas, weights,
@@ -398,6 +409,11 @@ def branching_three_ways(
         "true_phi_minus_design": num(n_true - n_design) if n_true is not None else None,
         "est_phi_minus_design": num(n_est - n_design),
         "raw_inflation_over_true": num(n_raw - n_true) if n_true is not None else None,
+        "n_hat_phi_only": num(fit_phi_only["n_hat"]) if fit_phi_only else None,
+        "z_inflation": (
+            num(fit_phi_only["n_hat"] - n_true)
+            if (fit_phi_only and n_true is not None) else None
+        ),
         "converged": bool(
             fit_raw["converged"]
             and fit_est["converged"]

@@ -1,0 +1,5 @@
+8 完走
+window=5d: pair_corr=+0.108 ICC(χ₃ 起因シェア)=0.145 mean_count=1.01 var_between=0.526 var_within=1.785
+window=10d: pair_corr=+0.088 ICC(χ₃ 起因シェア)=0.135 mean_count=2.03 var_between=1.085 var_within=3.852
+window=13d: pair_corr=+0.010 ICC(χ₃ 起因シェア)=0.049 mean_count=2.63 var_between=0.956 var_within=5.427
+window=20d: pair_corr=+0.029 ICC(χ₃ 起因シェア)=0.035 mean_count=4.05 var_between=1.374 var_within=8.547
