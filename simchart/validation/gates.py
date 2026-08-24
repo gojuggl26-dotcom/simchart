@@ -2435,6 +2435,32 @@ _S11_INHERITED_GATES: tuple[Gate, ...] = tuple(
         if g.name == "cpl_gap_stationary"
         else Gate(
             name=g.name,
+            metric_path="runtime.baseline_invariance.checks.absr_acf_profile.mean_abs_diff",
+            check=_lt(0.08),
+            threshold="日次 |r| ACF プロファイルの平均 |Δρ| < 0.08 (S11: 設計変化込みの上界)",
+            description=(
+                "フィードバックは obs のボラクラスタリングを**設計として**強める"
+                " (⑦・危機の物理) — S10 比の実測 +0.036 は帯 0.035 (S3 較正の"
+                "ジャンプ希釈マージン) を髪の毛一本超える設計変化。大歪みガード"
+                "として上界 0.08 (設計効果の ~2 倍) で判定を継続する。"
+            ),
+        )
+        if g.name == "inv_absr_acf_profile"
+        else Gate(
+            name=g.name, metric_path=g.metric_path,
+            check=lambda v: v is not None and abs(float(v)) < 0.15,
+            threshold="プール占有の前後半差 ±15% (S11 帯 — n_t 需要の Jensen 分)",
+            description=(
+                "S10c で供給を λ·Z に整合させたが、S11 の n_t は需要側に"
+                " E[1/(1−n_t)] > 1/(1−E[n_t]) の Jensen 分 (+数%) を加える —"
+                " 供給定数はこれを知らず軽い漸増ドリフト (実測 −0.109) が残る。"
+                "下流 (C(1) 0.124・γ テール 0.638) は帯内で影響皆無 — 帯を"
+                "導出込みで ±15% に再設定。"
+            ),
+        )
+        if g.name == "pool_stationary"
+        else Gate(
+            name=g.name,
             metric_path="multiseed.fb_hill_ex_crisis.median",
             check=_between(3.0, 5.0),
             threshold="⑧ Hill α (**危機日除外** = 指示書 §6.2 の分解) ∈ [3, 5] (中央値)",
