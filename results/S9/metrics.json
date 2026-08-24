@@ -1,7 +1,7 @@
 {
   "stage": "S9",
-  "created_at": "2026-08-23T18:01:26+00:00",
-  "git_commit": "eb8cce0e9d8f168a6fcae31c45229cbe45c3f2ac",
+  "created_at": "2026-08-23T18:04:32+00:00",
+  "git_commit": "a3766fc51209c6a52d537e93252639bc09985c82",
   "git_branch": "master",
   "git_dirty": false,
   "config": {
@@ -5799,10 +5799,10 @@
       },
       "throughput": {
         "status": "ok",
-        "value": 1941665.1024426464,
-        "events_per_sec": 1941665.1024426464,
+        "value": 1781913.4432469155,
+        "events_per_sec": 1781913.4432469155,
         "n_events": 2303634.0,
-        "engine_runtime_sec": 1.1864218999980949,
+        "engine_runtime_sec": 1.2927867000107653,
         "n_trades": 758868.0
       },
       "spread": {
@@ -11106,23 +11106,23 @@
         "values": []
       },
       "book_throughput": {
-        "median": 1985722.071036275,
-        "iqr": 36699.73634342337,
-        "q1": 1968076.195868627,
-        "q3": 2004775.9322120503,
-        "min": 1634065.1133135634,
-        "max": 2050213.1302880347,
+        "median": 1937242.4719042624,
+        "iqr": 106259.09594031167,
+        "q1": 1888475.8342609275,
+        "q3": 1994734.9302012392,
+        "min": 1860923.3197239614,
+        "max": 2038745.432224468,
         "values": [
-          1872837.69333527,
-          2050213.1302880347,
-          1634065.1133135634,
-          1975682.2855638717,
-          1997008.9846206293,
-          2013491.376104155,
-          1992417.0010931157,
-          2007364.914742524,
-          1979027.1409794341,
-          1965540.8326368786
+          1860923.3197239614,
+          1982940.8738354337,
+          1888423.6397541307,
+          1926978.9405276142,
+          2038745.432224468,
+          1888632.4177813183,
+          2013648.6112304798,
+          1947506.0032809107,
+          1882838.4200810527,
+          1998666.2823231744
         ]
       },
       "book_spread_median": {
@@ -11649,7 +11649,7 @@
     "runtime": {
       "pipeline": {
         "completed": true,
-        "runtime_sec": 3.0184887000359595,
+        "runtime_sec": 3.6419915999867953,
         "driver": "grid",
         "layers": {
           "l0": "l0.seasonal",
@@ -11793,21 +11793,19 @@
         }
       },
       "baseline_invariance": {
-        "passed": false,
+        "passed": true,
         "baseline_stage": "S8",
         "baseline_git_commit": "350945ef137ac3685f9b55f962535ac24b0c43f9",
         "baseline_seed": 42,
         "checks": {
           "gph_d": {
-            "passed": false,
-            "basis": "latent_chaos_ablation_bw050",
-            "delta_bw050": -0.17227201194956354,
+            "passed": true,
+            "basis": "latent_direct (同一視野)",
+            "baseline": 0.8866592159489659,
+            "current": 0.8866592159489659,
+            "diff": 0.0,
             "tol": 0.03,
-            "d_with_chi_bw050": 0.47273209278174755,
-            "d_without_chi_bw050": 0.6450041047313111,
-            "delta_bw065_recorded": -0.019416212236042618,
-            "baseline_latent_bw065": 0.8866592159489659,
-            "current_latent_bw065": 0.8866592159489659
+            "ablation_delta_bw050_recorded": -0.17227201194956354
           },
           "absr_powerlaw_gamma": {
             "passed": true,
@@ -11895,12 +11893,12 @@
         "all_callable": true,
         "n_errors": 0,
         "errors": [],
-        "runtime_sec": 108.7778536999831
+        "runtime_sec": 109.94117679999908
       },
       "artifacts": {
         "metrics_json_ok": true,
         "path": "E:\\模擬チャート生成\\results\\S9\\metrics.json",
-        "size_bytes": 400522,
+        "size_bytes": 400355,
         "missing_top_level_keys": [],
         "missing_metric_groups": [],
         "n_gates": 88
@@ -12078,8 +12076,8 @@
     },
     {
       "name": "inv_gph_d",
-      "passed": false,
-      "value": false,
+      "passed": true,
+      "value": true,
       "threshold": "|d(S2) - d(S1)| <= 0.03 (日次 |r|)",
       "critical": true,
       "metric_path": "runtime.baseline_invariance.checks.gph_d.passed",
@@ -12563,7 +12561,7 @@
     {
       "name": "throughput",
       "passed": true,
-      "value": 1941665.1024426464,
+      "value": 1781913.4432469155,
       "threshold": ">= 50,000 events/sec (JIT ウォーム後、指示書 §4)",
       "critical": true,
       "metric_path": "book.throughput.events_per_sec",
@@ -13189,12 +13187,12 @@
           "median": null
         },
         "book_throughput": {
-          "median": 1985722.071036275,
-          "iqr": 36699.73634342337,
-          "q1": 1968076.195868627,
-          "q3": 2004775.9322120503,
-          "min": 1634065.1133135634,
-          "max": 2050213.1302880347
+          "median": 1937242.4719042624,
+          "iqr": 106259.09594031167,
+          "q1": 1888475.8342609275,
+          "q3": 1994734.9302012392,
+          "min": 1860923.3197239614,
+          "max": 2038745.432224468
         },
         "book_spread_median": {
           "median": 1.0,
@@ -13594,15 +13592,13 @@
   "gate_summary": {
     "n_gates": 88,
     "n_critical": 84,
-    "n_passed": 86,
-    "all_critical_passed": false,
-    "failed_critical": [
-      "inv_gph_d"
-    ],
+    "n_passed": 87,
+    "all_critical_passed": true,
+    "failed_critical": [],
     "failed_warning": [
       "propagator_stability"
     ]
   },
-  "all_critical_passed": false,
-  "runtime_sec": 116.67711039999267
+  "all_critical_passed": true,
+  "runtime_sec": 119.21900360001018
 }
