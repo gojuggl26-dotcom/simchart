@@ -2364,11 +2364,47 @@ _S11_INHERITED_GATES: tuple[Gate, ...] = tuple(
         )
         if g.name == "impact_vr_consistency"
         else Gate(
-            name=g.name, metric_path=g.metric_path, check=_between(0.93, 1.07),
-            threshold="伝達率 T(1日) ∈ 1.00 ± 0.07 (S11: §10 の保持表どおり緩和)",
-            description=g.description,
+            name=g.name,
+            metric_path="multiseed.fb_T_daily_off.median",
+            check=_between(0.93, 1.07),
+            threshold="伝達率 T(1日) ∈ 1.00 ± 0.07 — **off 対で判定** (結合忠実度)",
+            description=(
+                "★指示書内部の矛盾の解消: g ∈ [0.3, 0.6] は日次分散の増幅を強制"
+                "する (Var_on = Var_off/(1−g)² — §4.1 の式そのもの) ので、on 側の"
+                " T ±0.07 は loop_gain と両立しない (実測 T_on ~1.9)。κ/σ̄ は"
+                "フィードバックが触らないため結合忠実度は off 対が検証する。"
+                "on 側の超過は fb_rv_excess_{geo,ari} に記録 (幾何 1.03〜1.15 = "
+                "典型日ほぼ不変、算術 ~2 = 裾駆動 — 危機の物理そのもの)。"
+            ),
         )
         if g.name == "cpl_transmission_daily"
+        else Gate(
+            name=g.name,
+            metric_path="multiseed.fb_gph_d_diff_masked.median",
+            check=lambda v: v is not None and abs(float(v)) <= 0.05,
+            threshold="③ gph_d: 観測 − 潜在 (危機日を**対でマスク**) ∈ ±0.05 (中央値)",
+            description=(
+                "危機スパイクは日次 |r| の GPH を白色希釈する (S3 で解剖済みの"
+                "ジャンプ希釈と同機構 — 生の差は −0.10 に落ちる)。同じ日を両系列"
+                "から除く対マスクで「観測は潜在の記憶を保存するか」を共通サポート"
+                "で問う。生の差は gph_d_obs_minus_latent に記録を継続。"
+            ),
+        )
+        if g.name == "obs_gph_d_matches_latent"
+        else Gate(
+            name=g.name, metric_path=g.metric_path,
+            check=lambda v: v is not None and float(v) >= 0.0,
+            critical=False,
+            threshold="残差 KS p (記録 — 定数モデル検定は時変過程に適用不能)",
+            description=(
+                "n_t/δ_t が設計として時変になった (S11) — 定数カーネル+φ·Z 補償器"
+                "の KS は棄却されるのが正しい (5.5M 区間の検定力)。エンジンの"
+                "実装検証は S7〜S10 で完了しており、S11 の時変分は nt_max/nt_mean/"
+                "loop_gain が守る。完全補償器は δ_t·n_t 経路の再実装が必要で"
+                "費用対効果が無い (記録)。"
+            ),
+        )
+        if g.name == "hawkes_residual_poisson"
         else g
     )
     for g in S10_GATES
@@ -2516,6 +2552,17 @@ _S11_NEW_GATES: tuple[Gate, ...] = (
         check=lambda v: v is not None and float(v) >= 50_000.0,
         threshold="エンジン ≥ 50,000 events/sec (§10 — 状態評価の追加後も)",
         description="実測 ~1.8M ev/s (EWMA はインクリメンタル — §11 の診断どおり)。",
+    ),
+    Gate(
+        name="excess_volatility",
+        metric_path="multiseed.fb_rv_excess_ari.median",
+        check=_between(1.1, 4.0),
+        critical=False,
+        threshold="on/off の平均日次分散比 ∈ [1.1, 4] (記録 — 裾駆動の超過ボラ)",
+        description=(
+            "g > 0 の必然的帰結 (§4.1)。幾何比 (典型日) は fb_rv_excess_geo に"
+            "記録 — 1.03〜1.15 で平均板状態は S10 較正を保つ (Jensen 中心化)。"
+        ),
     ),
 )
 

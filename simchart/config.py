@@ -640,15 +640,24 @@ class Config:
     fb_b_delta: float = 0.0  # b_δ (S11a で確定)
     fb_b_place: float = 0.0  # b_Δ (S11a で確定)
     fb_b_n: float = 0.0  # b_n (S11b で確定)
+    #: Jensen 中心化定数 c = log E[exp(b·tanh(u/u_s))] (実測、時間測度)。
+    #: exp 乗数は u が対称でも平均 > 1 (Jensen) で、平均の板を恒常的に薄くし
+    #: RV 水準を ×1.65 押し上げた (S11e 実測)。c を引いて**平均中立**にする —
+    #: フィードバックは S10 較正の平均板状態の周りの純粋な状態依存になる。
+    #: ★b に依存する定数なので、b を変えたら再実測すること (値は s11.yaml)。
+    fb_c_delta: float = 0.0
+    fb_c_place: float = 0.0
     #: tanh の飽和スケール u_s ≈ 1.5×SD(u) (実測 SD 1.25〜1.6)。規約として固定し
     #: 強度の探索は b 側で行う (κ/τ_meta と同じ役割分担)。
     fb_u_scale: float = 2.0
-    #: ★u の中心化定数 (指示書 §2.1 との整合措置): クラスタしたフローでは
-    #: 大半の短期窓が 2 日平均より静かで、E[log(RV_s/RV_l)] は **−1.08 ± 0.15**
-    #: (8 ラン実測、シード/ホライズンに安定) — 生の式は自らの要件「定常で u≈0」を
-    #: 満たさない (Jensen: E[log RV_s] < log E[RV_s])。m_V (S10c) と同じく実測
-    #: 定数で中心化する。事後平均 ≈ 0 は signal_is_surprise ゲートが確認する。
-    fb_u_center: float = -1.05
+    #: u の中心化定数。★u の定義は指示書 §2.1 の字義 (両 RV の算術 EWMA の
+    #: log 比) から **対数域デトレンド** u = log RV_s − EWMA_long(log RV_s) に
+    #: 変更した。字義の形は自らの要件「定常で u≈0」を二重に破る:
+    #: (1) Jensen オフセット E[u] = −1.08 (クラスタしたフロー)、
+    #: (2) バーストが算術 RV_long を ~2 日汚染し、危機後に偽の負の驚き →
+    #: 板肥厚 → 反持続ボラ応答の平衡 (作業点で E[u] = −1.6 を実測)。
+    #: 対数域なら構造的に平均 ≈ 0 で、この定数は微調整用 (既定 0)。
+    fb_u_center: float = 0.0
     #: n_t のレンジ (指示書 §3.3)。ハード上限 0.97 — S12 の χ₃ 変調の余地
     #: 0.07 を残すため n_max は 0.90 を推奨値とする (0.97 に張り付けない)。
     fb_n_min: float = 0.75
@@ -773,6 +782,7 @@ class Config:
     _S9_UZ_PARAMS = ("uz_eta",)
     _S11_FB_PARAMS = (
         "fb_b_delta", "fb_b_place", "fb_b_n", "fb_u_scale", "fb_u_center",
+        "fb_c_delta", "fb_c_place",
         "fb_n_min", "fb_n_max",
         "fb_rv_short_halflife_min", "fb_rv_long_halflife_days",
         "crisis_k_sigma", "crisis_spread_mult",
@@ -1165,6 +1175,16 @@ class Config:
                 )
             if min(self.fb_b_delta, self.fb_b_place, self.fb_b_n) < 0:
                 raise ValueError("fb_b_* は非負である必要があります")
+            for b_, c_, nm_ in (
+                (self.fb_b_delta, self.fb_c_delta, "delta"),
+                (self.fb_b_place, self.fb_c_place, "place"),
+            ):
+                if c_ < 0 or c_ >= max(b_, 1e-12):
+                    if not (b_ == 0.0 and c_ == 0.0):
+                        raise ValueError(
+                            f"fb_c_{nm_} = {c_} は [0, b) の範囲が必要です"
+                            " (中心化定数は乗数域を反転させない)"
+                        )
             if not (0.0 < self.fb_n_min < self.fb_n_max):
                 raise ValueError("0 < fb_n_min < fb_n_max が必要です")
             if self.fb_n_max >= 0.97:

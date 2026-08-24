@@ -272,6 +272,11 @@ enable_feedback: true
 fb_b_delta: 1.0             # 取消強度チャネル b_δ
 fb_b_place: 1.0             # 配置距離チャネル b_Δ
 fb_b_n: 2.0                 # 分岐比チャネル b_n (飽和域中央 — S11b)
+# Jensen 中心化定数 c = log E[e^{b·tanh(u/u_s)}] (作業点で実測 0.197±0.01、
+# 4 シード安定)。乗数を時間測度で平均 1 にし、S10 較正の平均板状態を保つ。
+# ★b に依存 — b を変えたら再実測 (config.py の docstring)。
+fb_c_delta: 0.197
+fb_c_place: 0.197
 
 # --- L2 / S5: 決定論的カオス成分 chi_2 (★この段階の差分) ---
 # ★値は config.py の既定と**同一**にしてある (単一の情報源は config.py 側)。
@@ -296,8 +301,7 @@ vol_var_target_chaos: 0.050 # S1 から予約されていた枠。25% 超は con
 chaos_normalization: standardize  # 案 A。合成 log σ が双峰化したら ecdf_normal (案 B)
 chaos_cache_dir: cache
 
-# --- フィードバック ---
-enable_feedback: false      # S11
+# (enable_feedback は上の S11 ブロックで true — 重複キー禁止)
 
 # --- 多資産 ---
 n_assets: 1                 # S13

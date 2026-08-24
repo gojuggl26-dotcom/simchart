@@ -357,6 +357,47 @@ def _feedback_seed_stats(result, config: Config, result_off) -> dict[str, float 
 
     cv_on = _depth_cv(result)
     cv_off = _depth_cv(result_off)
+
+    # 結合忠実度 (T_daily) は **off 対で判定** — g ∈ [0.3,0.6] は日次分散の増幅を
+    # 強制するので、on 側の T ±0.07 は指示書内部で矛盾する (S11e 実測 T_on ~1.9)。
+    # κ/σ̄ はフィードバックが触らないため off 対がその検証。on 側は超過として記録
+    # (幾何/算術の分解: 典型日 +8% / 平均分散 ×2 = 裾駆動 — 危機の物理そのもの)。
+    from .validation.coupling import transmission
+
+    t_off = transmission(result_off, config)
+    from .validation.feedback import _log_rv_series
+
+    lon = _log_rv_series(result.observation, config, 23400.0)
+    loff = _log_rv_series(result_off.observation, config, 23400.0)
+    n_c = min(lon.size, loff.size)
+    rv_geo = float(np.exp(lon[:n_c].mean() - loff[:n_c].mean()))
+    rv_ari = float(np.exp(lon[:n_c]).mean() / np.exp(loff[:n_c]).mean())
+
+    # ③ の判定は危機日を**対でマスク**した gph_d 差 — 危機スパイクは日次 |r| の
+    # GPH を白色希釈する (S3 で解剖済みの機構)。同じ日を両系列から除くので
+    # 「観測は潜在の記憶を保存するか」を共通サポートで問える。
+    def _masked_gph_diff() -> float | None:
+        from .validation.memory import gph_estimator
+
+        det_ = fbv.crisis_detect(result, config)
+        obs = result.observation
+        spd = int(round(23400.0 / obs.step_seconds))
+        r_obs = np.diff(np.asarray(obs.log_price)[::spd])
+        ps = np.asarray(result.price.log_p_star)
+        spd_g = int(round(23400.0 / float(result.price.t[1] - result.price.t[0])))
+        r_lat = np.diff(ps[::spd_g])
+        n = min(r_obs.size, r_lat.size)
+        mask = np.ones(n, dtype=bool)
+        step_snap = det_.get("step_sec") or 60.0
+        for a, b in det_.get("episodes") or []:
+            d0 = int(a * step_snap / 23400.0)
+            d1 = int(b * step_snap / 23400.0)
+            mask[max(d0 - 1, 0): min(d1 + 2, n)] = False
+        bw = config.validation.daily_gph_bandwidth_exponent
+        d_o = gph_estimator(np.abs(r_obs[:n][mask]), bw).get("d")
+        d_l = gph_estimator(np.abs(r_lat[:n][mask]), bw).get("d")
+        return (d_o - d_l) if (d_o is not None and d_l is not None) else None
+
     return {
         "fb_g_30min": g.get("g_30min"),
         "fb_g_daily": g.get("g_daily"),
@@ -376,6 +417,10 @@ def _feedback_seed_stats(result, config: Config, result_off) -> dict[str, float 
         "fb_nt_mean": fb.get("nt_mean"),
         "fb_nt_max": fb.get("nt_max"),
         "fb_u_mean": fb.get("u_mean"),
+        "fb_T_daily_off": t_off.get("T_daily"),
+        "fb_rv_excess_geo": rv_geo,
+        "fb_rv_excess_ari": rv_ari,
+        "fb_gph_d_diff_masked": _masked_gph_diff(),
     }
 
 

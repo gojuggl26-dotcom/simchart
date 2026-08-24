@@ -353,6 +353,7 @@ def run_zi_book(
     # --- S11: RV フィードバック (use_feedback=False なら完全無視) ---
     use_feedback,
     fb_b_delta, fb_b_place, fb_b_n,  # チャネル強度 (0 = そのチャネル無効)
+    fb_c_delta, fb_c_place,  # Jensen 中心化定数 (乗数を時間測度で平均 1 に)
     fb_u_scale,  # tanh 飽和スケール u_s
     fb_u_center,  # u の中心化定数 (クラスタ下の Jensen オフセット実測 §2.1 整合)
     fb_n_min, fb_n_max,  # n_t のレンジ (§3.3)
@@ -486,8 +487,8 @@ def run_zi_book(
     fb_mult_delta = 1.0
     fb_mult_place = 1.0
     fb_exc_scale = 1.0
-    # thinning 上界用: δ_t ≤ δ0·e^{b_δ} (tanh 飽和の有界性がここで効く §3.2)
-    fb_delta_bound = np.exp(fb_b_delta) if use_feedback else 1.0
+    # thinning 上界用: δ_t ≤ δ0·e^{b_δ − c_δ} (tanh 飽和の有界性がここで効く §3.2)
+    fb_delta_bound = np.exp(fb_b_delta - fb_c_delta) if use_feedback else 1.0
     fb_phi_n = phi_sig2_table.shape[0]
     h_day_idx = -1
     h_day_events = 0
@@ -602,9 +603,17 @@ def run_zi_book(
                         pj = fb_phi_n - 1
                     x_g = r_g * r_g / phi_sig2_table[pj]
                     fb_rv_s = fb_lam_short * fb_rv_s + (1.0 - fb_lam_short) * x_g
-                    fb_rv_l = fb_lam_long * fb_rv_l + (1.0 - fb_lam_long) * x_g
                     fb_ws = fb_lam_short * fb_ws + (1.0 - fb_lam_short)
-                    fb_wl = fb_lam_long * fb_wl + (1.0 - fb_lam_long)
+                    # ★RV_long は RV_short の**対数域** EWMA (幾何的な「通常水準」)。
+                    # 算術 EWMA だとバーストが基準を ~2 日汚染し、危機後に
+                    # 「静かすぎる」偽の驚き (u < 0) → 板肥厚 → 反持続的ボラ応答
+                    # という逆向きの平衡に落ちる (作業点で E[u] = −1.6 を実測)。
+                    # 対数域なら u = log RV_s − EWMA(log RV_s) は構造的に平均 ≈ 0
+                    # (指示書 §2.1 の要件をこの形で満たす)。
+                    if fb_rv_s > 0.0 and fb_ws > 0.0:
+                        y_g = np.log(fb_rv_s / fb_ws)
+                        fb_rv_l = fb_lam_long * fb_rv_l + (1.0 - fb_lam_long) * y_g
+                        fb_wl = fb_lam_long * fb_wl + (1.0 - fb_lam_long)
                 else:
                     fb_started = True
                 fb_prev_logmid = fb_logmid_now
@@ -697,14 +706,14 @@ def run_zi_book(
         # 全て決定論 (乱数を引かない)。tanh 飽和で乗数は [e^-b, e^+b] に有界 (§3.2)。
         if use_feedback and fb_wl > 0.0:
             us_ = fb_rv_s / fb_ws
-            ul_ = fb_rv_l / fb_wl
-            if us_ > 0.0 and ul_ > 0.0:
-                fb_u = np.log(us_ / ul_) - fb_u_center
+            if us_ > 0.0:
+                # u = log RV_s − EWMA_long(log RV_s) − u0 (対数域デトレンド)
+                fb_u = np.log(us_) - fb_rv_l / fb_wl - fb_u_center
             th_ = np.tanh(fb_u / fb_u_scale)
             if fb_b_delta > 0.0:
-                fb_mult_delta = np.exp(fb_b_delta * th_)
+                fb_mult_delta = np.exp(fb_b_delta * th_ - fb_c_delta)
             if fb_b_place > 0.0:
-                fb_mult_place = np.exp(fb_b_place * th_)
+                fb_mult_place = np.exp(fb_b_place * th_ - fb_c_place)
             if fb_b_n > 0.0:
                 sig_ = 1.0 / (1.0 + np.exp(-fb_b_n * th_))
                 fb_exc_scale = (fb_n_min + (fb_n_max - fb_n_min) * sig_) * inv_n_design
