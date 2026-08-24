@@ -46,7 +46,7 @@ __all__ = [
 #: S2 の合否は「S1 から何が変わらなかったか」で決まる (S2 指示書 §0)。
 BASELINE_STAGE: dict[str, str] = {
     "S2": "S1", "S3": "S2", "S4": "S3", "S5": "S4", "S6": "S5", "S7": "S6",
-    "S8": "S7", "S9": "S8",
+    "S8": "S7", "S9": "S8", "S10": "S9",
 }
 
 
@@ -379,9 +379,22 @@ def baseline_invariance_check(
     # レジーム変更として記録に降格する。**潜在側 (log σ・chi・ストリーム証人・
     # ジャンプ理論値) の照合はすべて維持** — L2 は凍結されており、板の追加で
     # 1 bit も動いてはならない (それがこの照合の主目的になる)。
-    obs_regime_changed = bool(config.enable_book and config.kappa == 0.0)
+    # S10 (κ>0): 観測レジームが**もう一度**変わる (切断ミッド → 結合ミッド)。
+    # S9 基準との観測照合は「変わらないこと」ではなく「変わること」が正解なので
+    # 記録に降格し、判定は S10 のゲート (同一ラン内の潜在 vs 観測、S5 参照) が担う。
+    # 潜在側の照合は維持 (σ̄ 再較正はレベルのみで形状不変のはず — 破れたら見える)。
+    crossed_coupling = bool(
+        config.enable_book
+        and config.kappa > 0.0
+        and BASELINE_STAGE.get(config.stage) in ("S6", "S7", "S8", "S9")
+    )
+    obs_regime_changed = bool(
+        (config.enable_book and config.kappa == 0.0) or crossed_coupling
+    )
     _OBS_NOTE = (
-        "観測が ZI 板ミッドに変わった (κ=0)。L2 の観測性質はこの段階に存在しない"
+        "観測が結合ミッドに変わった (κ>0、基準は切断板)。観測照合は S10 ゲートが担う"
+        if crossed_coupling
+        else "観測が ZI 板ミッドに変わった (κ=0)。L2 の観測性質はこの段階に存在しない"
         " (指示書 §11) — 純マイクロ構造ベースラインとして記録"
     )
 
@@ -676,7 +689,9 @@ def baseline_invariance_check(
     # 同一シード・同一視野で板だけを外した基準ランを回し、L2 の全ダイジェストを
     # 直接比べる。板は l3.* ストリームしか消費しないので、1 bit でも違えば
     # 凍結違反 (板が L2 に触れた) である。メトリクス経由の近似照合より強い。
-    if result is not None and config.enable_book and config.kappa == 0.0:
+    # S10 (κ>0, c_vol>0) でも維持 — 板は p*/log σ を**読む**が書かない。
+    # without_book() は κ/c_vol も外すので、一致条件は S6〜S9 と同一。
+    if result is not None and config.enable_book:
         ref = run(config.without_book())
         cur_l2 = result.meta.get("l2", {})
         ref_l2 = ref.meta.get("l2", {})

@@ -292,6 +292,33 @@ def _qr_seed_stats(result, config: Config) -> dict[str, float | None]:
     }
 
 
+def _coupling_seed_stats(result, config: Config) -> dict[str, float | None]:
+    """S10 のシード別結合統計 (multiseed の中央値判定用)。
+
+    ⑪ の保存判定は**残差符号の γ** (raw の C(ℓ) には κ 追跡の情報チャネルが
+    重畳する — S10a の解剖)。T_daily・乖離半減期・⑦ も whale/エポックで
+    シード間に散らばるため中央値で判定する。
+    """
+    from .validation.suite import _coupling_metrics
+
+    m = _coupling_metrics(result, config)
+    tr = m["transmission"].get("T") or {}
+    return {
+        "cpl_gamma_resid": m["residual_sign_acf"].get("gamma_resid"),
+        "cpl_c1_resid": m["residual_sign_acf"].get("c1_resid"),
+        "cpl_gamma_raw": m["residual_sign_acf"].get("gamma_raw"),
+        "cpl_c1_raw": m["residual_sign_acf"].get("c1_raw"),
+        "cpl_gap_halflife_min": m["gap"].get("halflife_min"),
+        "cpl_gap_sd_bp": m["gap"].get("sd_bp"),
+        "cpl_T_daily": m["transmission"].get("T_daily"),
+        "cpl_T_5d": tr.get("h117000s"),
+        "cpl_corr_daily_level": m["tracking"].get("corr_daily_level"),
+        "cpl_corr_daily_return": m["tracking"].get("corr_daily_return"),
+        "cpl_rv_volume_log": m["vol_activity"].get("corr_rv_volume_log"),
+        "cpl_rv_spread": m["vol_activity"].get("corr_rv_spread"),
+    }
+
+
 def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
     """ノイズの大きい指標をシードを変えて測り、中央値・IQR を返す (S3 指示書 §8)。
 
@@ -404,6 +431,10 @@ def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
         if config.enable_queue_reactive:
             qstats = _qr_seed_stats(result, seed_config)
             for key_, val_ in qstats.items():
+                per_seed.setdefault(key_, []).append(val_)
+        if config.kappa > 0.0 or config.c_vol > 0.0:
+            cstats = _coupling_seed_stats(result, seed_config)
+            for key_, val_ in cstats.items():
                 per_seed.setdefault(key_, []).append(val_)
             if config.enable_iceberg:
                 # §6.3 アブレーション: 同一シードで iceberg off。単一シードの
