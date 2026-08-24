@@ -1,0 +1,14 @@
+[1/6] 実行 stage=S12 seed=42 n_days=1000 steps_per_day=23400
+      完了 (23.10 秒, グリッド 23,400,001 点)
+[2/6] 決定性の確認 (同一シードで再実行)
+      ビット単位一致: True
+[3/6] RNG ストリーム安定性の確認
+      既存ストリーム不変: True / 相互に別系列: True
+      l2.diffusion 消費列の一致: True
+[3b/6] 時間スケール不変性 (steps_per_day=390 で対照実行)
+      日次統計の一致: True
+[4/6] 検証スイート
+[4b/6] S11 からの不変性照合 (results/S11/metrics.json)
+      不変性: False
+        不一致: absr_powerlaw_gamma  {'passed': False, 'obs_regime_changed': False, 'regime_note': None, 'gamma_within_tol': False, 'gated_on_gamma': False, 'baseline': 0.5753900119033948, 'current': 0.6967473902727958, 'rel_diff': 0.21091325163596392, 'tol_rel': 0.1, 'r2_baseline': 0.8517382915741688, 'r2_current': 0.6688146222963892, 'r2_not_degraded': False, 'note': 'chi の 30 日振動が daily |r| ACF に乗り γ は動く (S5 設計の帰結)。判定は R² 非劣化のみ (S3 裁定の延長)。'}
+[4c/6] 多シード判定 (10 シード — hill/leverage/JV/skew)

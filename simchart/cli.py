@@ -658,9 +658,12 @@ def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
             import dataclasses as _dc2
 
             defaults2 = {f.name: f.default for f in _dc2.fields(type(config))}
+            # ★off 対は χ₃ も外す (χ₃ は n_t 機構に乗るため単独では立てられない)。
+            # χ₁ は両脚に残す — 決定論変調は比で相殺し、ループだけが測れる。
             cfg_off = seed_config.replace(
-                enable_feedback=False,
+                enable_feedback=False, enable_chaos_branching=False,
                 **{n: defaults2[n] for n in type(config)._S11_FB_PARAMS},
+                **{n: defaults2[n] for n in type(config)._S12_CHI3_PARAMS},
             )
             try:
                 r_off = run_pipeline(cfg_off)

@@ -1,0 +1,33 @@
+Traceback (most recent call last):
+  File "<frozen runpy>", line 203, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "E:\模擬チャート生成\simchart\cli.py", line 1128, in <module>
+    raise SystemExit(main())
+                     ~~~~^^
+  File "E:\模擬チャート生成\simchart\cli.py", line 1118, in main
+    return int(args.func(args))
+               ~~~~~~~~~^^^^^^
+  File "E:\模擬チャート生成\simchart\cli.py", line 938, in cmd_run
+    multiseed = _run_multiseed(config, args.seeds)
+  File "E:\模擬チャート生成\simchart\cli.py", line 661, in _run_multiseed
+    cfg_off = seed_config.replace(
+        enable_feedback=False,
+        **{n: defaults2[n] for n in type(config)._S11_FB_PARAMS},
+    )
+  File "E:\模擬チャート生成\simchart\config.py", line 1344, in replace
+    return dataclasses.replace(self, **changes)
+           ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "C:\Users\ii562\AppData\Local\Programs\Python\Python313\Lib\dataclasses.py", line 1644, in replace
+    return _replace(obj, **changes)
+  File "C:\Users\ii562\AppData\Local\Programs\Python\Python313\Lib\dataclasses.py", line 1678, in _replace
+    return self.__class__(**changes)
+           ~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "<string>", line 152, in __init__
+  File "E:\模擬チャート生成\simchart\config.py", line 721, in __post_init__
+    self._check_s1_params()
+    ~~~~~~~~~~~~~~~~~~~~~^^
+  File "E:\模擬チャート生成\simchart\config.py", line 1254, in _check_s1_params
+    raise ValueError(
+    ...<2 lines>...
+    )
+ValueError: enable_chaos_branching には enable_feedback が必要です (χ₃ は n_t 機構の sigmoid に入る)

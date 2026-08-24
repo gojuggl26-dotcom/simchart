@@ -2666,6 +2666,22 @@ _S12_INHERITED_GATES: tuple[Gate, ...] = tuple(
             ),
         )
         if g.name == "nt_max"
+        else Gate(
+            name=g.name,
+            metric_path="runtime.baseline_invariance.checks.absr_powerlaw_gamma.r2_current",
+            check=_gt(0.45),
+            critical=False,
+            threshold="|r| ACF べき則の R² > 0.45 (記録 — χ₁ の設計振動込み)",
+            description=(
+                "χ₁ (4.7 日ピーク) は活動リズムのうねりとして日次 |r| ACF に"
+                "**設計として**構造を加える (⑤⑫ — この段階の目的そのもの)。"
+                "χ₂ (30 日) が γ を動かした S5 の帰結と同機構の S12 版で、"
+                "べき則の直線性 (R² 0.85→0.67 実測) は χ₁ の帯域が ACF 測定窓"
+                " (1〜100 日) の内側にある以上、崩れるのが正しい。完全消失"
+                " (R² < 0.45) だけを見張る記録に降格。"
+            ),
+        )
+        if g.name == "inv_absr_powerlaw_r2"
         else g
     )
     for g in S11_GATES
