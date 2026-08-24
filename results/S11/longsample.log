@@ -1,0 +1,22 @@
+10 完走 / 9950 日 (228s)
+20 完走 / 19900 日 (491s)
+30 完走 / 29850 日 (751s)
+40 完走 / 39800 日 (1016s)
+{
+ "n_runs": 45,
+ "n_skipped": 17,
+ "total_days": 44775,
+ "per_year_median": 51.15979899497487,
+ "per_year_q1q3": [
+  47.867336683417086,
+  53.94572864321608
+ ],
+ "dislocation_fraction": 0.469535624108025,
+ "duration_min_median": 2.0,
+ "max_spread_ratio_median": 44.59006715151146,
+ "min_depth_ratio_median": 0.13686833504283694,
+ "recovery_30min_dislocation_median": 0.3476497547314877,
+ "recovery_1day_dislocation_median": 1.1782914847937855,
+ "recovery_1day_catchup_median": -0.3724706710850985
+}
+saved E:\模擬チャート生成\results\S11\crisis_longsample.json

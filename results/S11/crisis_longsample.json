@@ -1,0 +1,676 @@
+{
+ "summary": {
+  "n_runs": 45,
+  "n_skipped": 17,
+  "total_days": 44775,
+  "per_year_median": 51.15979899497487,
+  "per_year_q1q3": [
+   47.867336683417086,
+   53.94572864321608
+  ],
+  "dislocation_fraction": 0.469535624108025,
+  "duration_min_median": 2.0,
+  "max_spread_ratio_median": 44.59006715151146,
+  "min_depth_ratio_median": 0.13686833504283694,
+  "recovery_30min_dislocation_median": 0.3476497547314877,
+  "recovery_1day_dislocation_median": 1.1782914847937855,
+  "recovery_1day_catchup_median": -0.3724706710850985
+ },
+ "rows": [
+  {
+   "seed": 42,
+   "per_year": 46.85427135678392,
+   "n_episodes": 185,
+   "n_dislocation": 89,
+   "n_catchup": 96,
+   "duration_min_median": 2.0,
+   "max_spread_ratio_median": 45.596914103586926,
+   "min_depth_ratio_median": 0.1442658401249689,
+   "recovery_30min_dislocation": 0.5219376493900325,
+   "recovery_1day_dislocation": 1.0156986124874057,
+   "recovery_1day_catchup": -0.35253492343243786
+  },
+  {
+   "seed": 43,
+   "per_year": 50.65326633165829,
+   "n_episodes": 200,
+   "n_dislocation": 99,
+   "n_catchup": 101,
+   "duration_min_median": 3.0,
+   "max_spread_ratio_median": 48.99681509740599,
+   "min_depth_ratio_median": 0.1410819190747338,
+   "recovery_30min_dislocation": 0.4388088180270769,
+   "recovery_1day_dislocation": 1.349878320555107,
+   "recovery_1day_catchup": -0.24992143635180364
+  },
+  {
+   "seed": 44,
+   "per_year": 51.15979899497487,
+   "n_episodes": 202,
+   "n_dislocation": 96,
+   "n_catchup": 106,
+   "duration_min_median": 2.0,
+   "max_spread_ratio_median": 44.32049397168223,
+   "min_depth_ratio_median": 0.13686833504283694,
+   "recovery_30min_dislocation": 0.22616002364198715,
+   "recovery_1day_dislocation": 1.2636581433205074,
+   "recovery_1day_catchup": -0.5024996282664166
+  },
+  {
+   "seed": 45,
+   "per_year": 47.867336683417086,
+   "n_episodes": 189,
+   "n_dislocation": 90,
+   "n_catchup": 99,
+   "duration_min_median": 2.0,
+   "max_spread_ratio_median": 43.70055637197812,
+   "min_depth_ratio_median": 0.13223671165475456,
+   "recovery_30min_dislocation": 0.4385037287150145,
+   "recovery_1day_dislocation": 0.9097740731820265,
+   "recovery_1day_catchup": -0.26654022920501846
+  },
+  {
+   "seed": 47,
+   "per_year": 48.37386934673366,
+   "n_episodes": 191,
+   "n_dislocation": 101,
+   "n_catchup": 90,
+   "duration_min_median": 2.0,
+   "max_spread_ratio_median": 44.29849443029382,
+   "min_depth_ratio_median": 0.13800731403180858,
+   "recovery_30min_dislocation": 0.35629431385792804,
+   "recovery_1day_dislocation": 1.240446098783789,
+   "recovery_1day_catchup": -0.21812944002974163
+  },
+  {
+   "seed": 48,
+   "per_year": 47.867336683417086,
+   "n_episodes": 189,
+   "n_dislocation": 111,
+   "n_catchup": 78,
+   "duration_min_median": 2.0,
+   "max_spread_ratio_median": 44.30221468087419,
+   "min_depth_ratio_median": 0.1431359106842041,
+   "recovery_30min_dislocation": 0.5250090603191756,
+   "recovery_1day_dislocation": 1.0377383981965511,
+   "recovery_1day_catchup": -0.4895401167018415
+  },
+  {
+   "seed": 49,
+   "per_year": 49.13366834170854,
+   "n_episodes": 194,
+   "n_dislocation": 72,
+   "n_catchup": 122,
+   "duration_min_median": 3.0,
+   "max_spread_ratio_median": 43.96472295805141,
+   "min_depth_ratio_median": 0.1371827369658687,
+   "recovery_30min_dislocation": 0.09198433594210612,
+   "recovery_1day_dislocation": 0.5217242442865775,
+   "recovery_1day_catchup": -0.731355630363064
+  },
+  {
+   "seed": 51,
+   "per_year": 48.62713567839196,
+   "n_episodes": 192,
+   "n_dislocation": 83,
+   "n_catchup": 109,
+   "duration_min_median": 2.0,
+   "max_spread_ratio_median": 42.93388583354839,
+   "min_depth_ratio_median": 0.1456390388649989,
+   "recovery_30min_dislocation": 0.24119494894310706,
+   "recovery_1day_dislocation": 1.4224454513763418,
+   "recovery_1day_catchup": -0.2799548385030668
+  },
+  {
+   "seed": 52,
+   "per_year": 60.78391959798995,
+   "n_episodes": 240,
+   "n_dislocation": 95,
+   "n_catchup": 145,
+   "duration_min_median": 2.0,
+   "max_spread_ratio_median": 46.54532333941323,
+   "min_depth_ratio_median": 0.1307399152715651,
+   "recovery_30min_dislocation": 0.3948825697767675,
+   "recovery_1day_dislocation": 1.2233776679365793,
+   "recovery_1day_catchup": -0.21284683204926488
+  },
+  {
+   "seed": 53,
+   "per_year": 49.893467336683415,
+   "n_episodes": 197,
+   "n_dislocation": 98,
+   "n_catchup": 99,
+   "duration_min_median": 2.0,
+   "max_spread_ratio_median": 43.40508086933999,
+   "min_depth_ratio_median": 0.13838480763796243,
+   "recovery_30min_dislocation": 0.3347849309118816,
+   "recovery_1day_dislocation": 0.8672670234430194,
+   "recovery_1day_catchup": -0.3666993073160944
+  },
+  {
+   "seed": 54,
+   "per_year": 49.38693467336683,
+   "n_episodes": 195,
+   "n_dislocation": 124,
+   "n_catchup": 71,
+   "duration_min_median": 2.0,
+   "max_spread_ratio_median": 43.625026473879295,
+   "min_depth_ratio_median": 0.1359149848371759,
+   "recovery_30min_dislocation": 0.28198524273925674,
+   "recovery_1day_dislocation": 1.2932153466438132,
+   "recovery_1day_catchup": -0.1458426420125111
+  },
+  {
+   "seed": 56,
+   "per_year": 53.94572864321608,
+   "n_episodes": 213,
+   "n_dislocation": 106,
+   "n_catchup": 107,
+   "duration_min_median": 2.0,
+   "max_spread_ratio_median": 45.2432368770251,
+   "min_depth_ratio_median": 0.13990593662519085,
+   "recovery_30min_dislocation": 0.34740936662031363,
+   "recovery_1day_dislocation": 0.9550040162482178,
+   "recovery_1day_catchup": -0.06163909486742467
+  },
+  {
+   "seed": 59,
+   "per_year": 48.120603015075375,
+   "n_episodes": 190,
+   "n_dislocation": 104,
+   "n_catchup": 86,
+   "duration_min_median": 3.0,
+   "max_spread_ratio_median": 45.52189467525601,
+   "min_depth_ratio_median": 0.13623807479968958,
+   "recovery_30min_dislocation": 0.34382309366448405,
+   "recovery_1day_dislocation": 0.9889337823720177,
+   "recovery_1day_catchup": -0.8502677746388159
+  },
+  {
+   "seed": 60,
+   "per_year": 44.321608040201006,
+   "n_episodes": 175,
+   "n_dislocation": 104,
+   "n_catchup": 71,
+   "duration_min_median": 2.0,
+   "max_spread_ratio_median": 47.055419023318095,
+   "min_depth_ratio_median": 0.13740367320321645,
+   "recovery_30min_dislocation": 0.5569330984901889,
+   "recovery_1day_dislocation": 1.2381084190415985,
+   "recovery_1day_catchup": -0.2441105724968577
+  },
+  {
+   "seed": 61,
+   "per_year": 46.85427135678392,
+   "n_episodes": 185,
+   "n_dislocation": 97,
+   "n_catchup": 88,
+   "duration_min_median": 2.0,
+   "max_spread_ratio_median": 42.13837134908501,
+   "min_depth_ratio_median": 0.14167655046120686,
+   "recovery_30min_dislocation": 0.6152363585047709,
+   "recovery_1day_dislocation": 0.9828104721679518,
+   "recovery_1day_catchup": -0.5783462843130485
+  },
+  {
+   "seed": 62,
+   "per_year": 66.60904522613065,
+   "n_episodes": 263,
+   "n_dislocation": 122,
+   "n_catchup": 141,
+   "duration_min_median": 2.0,
+   "max_spread_ratio_median": 44.072744976939696,
+   "min_depth_ratio_median": 0.1355352878459792,
+   "recovery_30min_dislocation": 0.485860528002573,
+   "recovery_1day_dislocation": 1.527813500855898,
+   "recovery_1day_catchup": -0.3461728763920283
+  },
+  {
+   "seed": 64,
+   "per_year": 46.347738693467335,
+   "n_episodes": 183,
+   "n_dislocation": 100,
+   "n_catchup": 83,
+   "duration_min_median": 2.0,
+   "max_spread_ratio_median": 47.45384895348073,
+   "min_depth_ratio_median": 0.13841061139344304,
+   "recovery_30min_dislocation": 0.22659108212640922,
+   "recovery_1day_dislocation": 1.1782914847937855,
+   "recovery_1day_catchup": -0.522840757307092
+  },
+  {
+   "seed": 66,
+   "per_year": 60.530653266331655,
+   "n_episodes": 239,
+   "n_dislocation": 92,
+   "n_catchup": 147,
+   "duration_min_median": 2.0,
+   "max_spread_ratio_median": 46.699806508479554,
+   "min_depth_ratio_median": 0.13529547166906863,
+   "recovery_30min_dislocation": 0.14341182374092407,
+   "recovery_1day_dislocation": 1.1637084651492415,
+   "recovery_1day_catchup": -0.5509482547503468
+  },
+  {
+   "seed": 67,
+   "per_year": 52.17286432160804,
+   "n_episodes": 206,
+   "n_dislocation": 82,
+   "n_catchup": 124,
+   "duration_min_median": 2.0,
+   "max_spread_ratio_median": 43.39130896144893,
+   "min_depth_ratio_median": 0.13632611333760322,
+   "recovery_30min_dislocation": 0.40750438384794746,
+   "recovery_1day_dislocation": 1.288856158652425,
+   "recovery_1day_catchup": -0.1808836065076043
+  },
+  {
+   "seed": 68,
+   "per_year": 53.439195979899495,
+   "n_episodes": 211,
+   "n_dislocation": 84,
+   "n_catchup": 127,
+   "duration_min_median": 3.0,
+   "max_spread_ratio_median": 45.62633663089737,
+   "min_depth_ratio_median": 0.13188706726492716,
+   "recovery_30min_dislocation": -0.018373757597119105,
+   "recovery_1day_dislocation": 1.0072977430560321,
+   "recovery_1day_catchup": -0.16706079162537565
+  },
+  {
+   "seed": 69,
+   "per_year": 54.70552763819095,
+   "n_episodes": 216,
+   "n_dislocation": 92,
+   "n_catchup": 124,
+   "duration_min_median": 2.0,
+   "max_spread_ratio_median": 43.67177457628095,
+   "min_depth_ratio_median": 0.1338659377496436,
+   "recovery_30min_dislocation": 0.2308341629214018,
+   "recovery_1day_dislocation": 0.6643374216909494,
+   "recovery_1day_catchup": -0.31158937523181857
+  },
+  {
+   "seed": 70,
+   "per_year": 58.757788944723615,
+   "n_episodes": 232,
+   "n_dislocation": 104,
+   "n_catchup": 128,
+   "duration_min_median": 2.0,
+   "max_spread_ratio_median": 44.59782803074407,
+   "min_depth_ratio_median": 0.13222986278738508,
+   "recovery_30min_dislocation": 0.37323169290318736,
+   "recovery_1day_dislocation": 1.3058279882631103,
+   "recovery_1day_catchup": -0.3724706710850985
+  },
+  {
+   "seed": 71,
+   "per_year": 65.3427135678392,
+   "n_episodes": 258,
+   "n_dislocation": 78,
+   "n_catchup": 180,
+   "duration_min_median": 2.0,
+   "max_spread_ratio_median": 41.49935368518989,
+   "min_depth_ratio_median": 0.13725204014348502,
+   "recovery_30min_dislocation": 0.2072273194077138,
+   "recovery_1day_dislocation": 0.903740660732866,
+   "recovery_1day_catchup": -0.5863125677008174
+  },
+  {
+   "seed": 72,
+   "per_year": 51.413065326633166,
+   "n_episodes": 203,
+   "n_dislocation": 79,
+   "n_catchup": 124,
+   "duration_min_median": 3.0,
+   "max_spread_ratio_median": 49.67373186097543,
+   "min_depth_ratio_median": 0.13516361145571612,
+   "recovery_30min_dislocation": 0.32025191979516515,
+   "recovery_1day_dislocation": 0.753511436764909,
+   "recovery_1day_catchup": -0.4855918942835732
+  },
+  {
+   "seed": 74,
+   "per_year": 46.60100502512562,
+   "n_episodes": 184,
+   "n_dislocation": 89,
+   "n_catchup": 95,
+   "duration_min_median": 2.0,
+   "max_spread_ratio_median": 49.94370016813376,
+   "min_depth_ratio_median": 0.13120746174352638,
+   "recovery_30min_dislocation": 0.45534375190743975,
+   "recovery_1day_dislocation": 0.9474034093576056,
+   "recovery_1day_catchup": -0.8553417690659694
+  },
+  {
+   "seed": 76,
+   "per_year": 45.84120603015075,
+   "n_episodes": 181,
+   "n_dislocation": 69,
+   "n_catchup": 112,
+   "duration_min_median": 3.0,
+   "max_spread_ratio_median": 44.54149767619563,
+   "min_depth_ratio_median": 0.13380802201304312,
+   "recovery_30min_dislocation": 0.2913999303267239,
+   "recovery_1day_dislocation": 0.9616600716427068,
+   "recovery_1day_catchup": -0.6267385044036391
+  },
+  {
+   "seed": 77,
+   "per_year": 59.2643216080402,
+   "n_episodes": 234,
+   "n_dislocation": 127,
+   "n_catchup": 107,
+   "duration_min_median": 2.0,
+   "max_spread_ratio_median": 46.606901869852365,
+   "min_depth_ratio_median": 0.1408765130980335,
+   "recovery_30min_dislocation": 0.3621265459924829,
+   "recovery_1day_dislocation": 1.080506712261171,
+   "recovery_1day_catchup": -0.3811729219685152
+  },
+  {
+   "seed": 78,
+   "per_year": 56.2251256281407,
+   "n_episodes": 222,
+   "n_dislocation": 95,
+   "n_catchup": 127,
+   "duration_min_median": 2.0,
+   "max_spread_ratio_median": 44.29256241425348,
+   "min_depth_ratio_median": 0.12988658947919923,
+   "recovery_30min_dislocation": 0.3130542305889186,
+   "recovery_1day_dislocation": 1.2185023825648489,
+   "recovery_1day_catchup": -0.4409474669388832
+  },
+  {
+   "seed": 79,
+   "per_year": 49.893467336683415,
+   "n_episodes": 197,
+   "n_dislocation": 94,
+   "n_catchup": 103,
+   "duration_min_median": 2.0,
+   "max_spread_ratio_median": 44.09622601146492,
+   "min_depth_ratio_median": 0.1402650175656192,
+   "recovery_30min_dislocation": 0.5069781151806176,
+   "recovery_1day_dislocation": 0.9777542891235872,
+   "recovery_1day_catchup": -0.31366334715223537
+  },
+  {
+   "seed": 81,
+   "per_year": 61.29045226130653,
+   "n_episodes": 242,
+   "n_dislocation": 106,
+   "n_catchup": 136,
+   "duration_min_median": 2.0,
+   "max_spread_ratio_median": 44.954746540064846,
+   "min_depth_ratio_median": 0.1348939288452471,
+   "recovery_30min_dislocation": 0.3476497547314877,
+   "recovery_1day_dislocation": 1.0766448389507408,
+   "recovery_1day_catchup": -0.11942835150763965
+  },
+  {
+   "seed": 83,
+   "per_year": 53.185929648241206,
+   "n_episodes": 210,
+   "n_dislocation": 116,
+   "n_catchup": 94,
+   "duration_min_median": 2.0,
+   "max_spread_ratio_median": 47.46920816696228,
+   "min_depth_ratio_median": 0.13083665853833354,
+   "recovery_30min_dislocation": 0.08631969578047048,
+   "recovery_1day_dislocation": 0.9845598944064601,
+   "recovery_1day_catchup": 0.009926793153949454
+  },
+  {
+   "seed": 84,
+   "per_year": 53.69246231155778,
+   "n_episodes": 212,
+   "n_dislocation": 109,
+   "n_catchup": 103,
+   "duration_min_median": 2.0,
+   "max_spread_ratio_median": 48.02762261817851,
+   "min_depth_ratio_median": 0.1365841834165416,
+   "recovery_30min_dislocation": 0.3631211476042779,
+   "recovery_1day_dislocation": 1.5485532175156247,
+   "recovery_1day_catchup": -0.33772225102849074
+  },
+  {
+   "seed": 87,
+   "per_year": 36.47035175879397,
+   "n_episodes": 144,
+   "n_dislocation": 66,
+   "n_catchup": 78,
+   "duration_min_median": 3.0,
+   "max_spread_ratio_median": 45.32701980377109,
+   "min_depth_ratio_median": 0.1353633384240751,
+   "recovery_30min_dislocation": 0.5995663323466933,
+   "recovery_1day_dislocation": 1.3963753065399462,
+   "recovery_1day_catchup": -0.33262405110315996
+  },
+  {
+   "seed": 89,
+   "per_year": 41.029145728643215,
+   "n_episodes": 162,
+   "n_dislocation": 67,
+   "n_catchup": 95,
+   "duration_min_median": 2.0,
+   "max_spread_ratio_median": 44.56646711002563,
+   "min_depth_ratio_median": 0.1350188489342485,
+   "recovery_30min_dislocation": 0.13887582384652314,
+   "recovery_1day_dislocation": 0.8112702623462797,
+   "recovery_1day_catchup": -0.7118027537270548
+  },
+  {
+   "seed": 90,
+   "per_year": 48.62713567839196,
+   "n_episodes": 192,
+   "n_dislocation": 97,
+   "n_catchup": 95,
+   "duration_min_median": 2.0,
+   "max_spread_ratio_median": 42.44846226805734,
+   "min_depth_ratio_median": 0.14831357454712835,
+   "recovery_30min_dislocation": 0.4985673810334307,
+   "recovery_1day_dislocation": 1.3614236580638983,
+   "recovery_1day_catchup": -0.4558983607666247
+  },
+  {
+   "seed": 91,
+   "per_year": 39.50954773869346,
+   "n_episodes": 156,
+   "n_dislocation": 85,
+   "n_catchup": 71,
+   "duration_min_median": 3.0,
+   "max_spread_ratio_median": 47.300385704359634,
+   "min_depth_ratio_median": 0.14156681518371228,
+   "recovery_30min_dislocation": 0.30214188353507115,
+   "recovery_1day_dislocation": 1.1863938944220365,
+   "recovery_1day_catchup": -0.37549094374466374
+  },
+  {
+   "seed": 92,
+   "per_year": 40.01608040201005,
+   "n_episodes": 158,
+   "n_dislocation": 82,
+   "n_catchup": 76,
+   "duration_min_median": 2.0,
+   "max_spread_ratio_median": 41.400467950426346,
+   "min_depth_ratio_median": 0.14272721104648078,
+   "recovery_30min_dislocation": 0.22362736459185445,
+   "recovery_1day_dislocation": 0.9222322780749057,
+   "recovery_1day_catchup": -0.6399826074632369
+  },
+  {
+   "seed": 93,
+   "per_year": 51.91959798994974,
+   "n_episodes": 205,
+   "n_dislocation": 87,
+   "n_catchup": 118,
+   "duration_min_median": 3.0,
+   "max_spread_ratio_median": 46.3100312324765,
+   "min_depth_ratio_median": 0.13677724107109773,
+   "recovery_30min_dislocation": 0.18259672104702623,
+   "recovery_1day_dislocation": 1.2062744605960893,
+   "recovery_1day_catchup": -0.6222848603405742
+  },
+  {
+   "seed": 95,
+   "per_year": 51.413065326633166,
+   "n_episodes": 203,
+   "n_dislocation": 84,
+   "n_catchup": 119,
+   "duration_min_median": 3.0,
+   "max_spread_ratio_median": 47.83886557704193,
+   "min_depth_ratio_median": 0.13717960786377723,
+   "recovery_30min_dislocation": 0.05308318716291782,
+   "recovery_1day_dislocation": 0.8389602846919143,
+   "recovery_1day_catchup": -0.728832430532141
+  },
+  {
+   "seed": 96,
+   "per_year": 54.19899497487437,
+   "n_episodes": 214,
+   "n_dislocation": 91,
+   "n_catchup": 123,
+   "duration_min_median": 2.0,
+   "max_spread_ratio_median": 43.910459902348094,
+   "min_depth_ratio_median": 0.1393838695637768,
+   "recovery_30min_dislocation": 0.5749792566927802,
+   "recovery_1day_dislocation": 1.4201738707182487,
+   "recovery_1day_catchup": -0.31981362288535603
+  },
+  {
+   "seed": 98,
+   "per_year": 44.574874371859295,
+   "n_episodes": 176,
+   "n_dislocation": 108,
+   "n_catchup": 68,
+   "duration_min_median": 2.0,
+   "max_spread_ratio_median": 40.749881110116746,
+   "min_depth_ratio_median": 0.1418969170232786,
+   "recovery_30min_dislocation": 0.5455793719998051,
+   "recovery_1day_dislocation": 1.350437803267087,
+   "recovery_1day_catchup": -0.05596920524562224
+  },
+  {
+   "seed": 100,
+   "per_year": 62.050251256281406,
+   "n_episodes": 245,
+   "n_dislocation": 103,
+   "n_catchup": 142,
+   "duration_min_median": 2.0,
+   "max_spread_ratio_median": 43.75848292188694,
+   "min_depth_ratio_median": 0.12772717737030623,
+   "recovery_30min_dislocation": 0.2595676514010949,
+   "recovery_1day_dislocation": 1.5167416766538784,
+   "recovery_1day_catchup": -0.5291451367395867
+  },
+  {
+   "seed": 101,
+   "per_year": 52.42613065326633,
+   "n_episodes": 207,
+   "n_dislocation": 92,
+   "n_catchup": 115,
+   "duration_min_median": 2.0,
+   "max_spread_ratio_median": 45.225019889522905,
+   "min_depth_ratio_median": 0.14199926456861814,
+   "recovery_30min_dislocation": 0.3557628387237427,
+   "recovery_1day_dislocation": 1.2479786926886767,
+   "recovery_1day_catchup": -0.4401661778012896
+  },
+  {
+   "seed": 102,
+   "per_year": 52.17286432160804,
+   "n_episodes": 206,
+   "n_dislocation": 104,
+   "n_catchup": 102,
+   "duration_min_median": 2.0,
+   "max_spread_ratio_median": 46.73969220915625,
+   "min_depth_ratio_median": 0.13368089898930943,
+   "recovery_30min_dislocation": 0.4007694020761129,
+   "recovery_1day_dislocation": 1.2770186401489845,
+   "recovery_1day_catchup": -0.47628337042997304
+  },
+  {
+   "seed": 103,
+   "per_year": 53.439195979899495,
+   "n_episodes": 211,
+   "n_dislocation": 104,
+   "n_catchup": 107,
+   "duration_min_median": 2.0,
+   "max_spread_ratio_median": 44.59006715151146,
+   "min_depth_ratio_median": 0.1419118897783466,
+   "recovery_30min_dislocation": 0.3611731070677927,
+   "recovery_1day_dislocation": 1.20931813767588,
+   "recovery_1day_catchup": -0.2661582114950655
+  }
+ ],
+ "skipped": [
+  {
+   "seed": 46,
+   "err": "ZI ミッドが板の絶対ティック窓から逸脱しました。 book_window_half_ticks を広げるか期間を見直す"
+  },
+  {
+   "seed": 50,
+   "err": "ZI ミッドが板の絶対ティック窓から逸脱しました。 book_window_half_ticks を広げるか期間を見直す"
+  },
+  {
+   "seed": 55,
+   "err": "ZI ミッドが板の絶対ティック窓から逸脱しました。 book_window_half_ticks を広げるか期間を見直す"
+  },
+  {
+   "seed": 57,
+   "err": "ZI ミッドが板の絶対ティック窓から逸脱しました。 book_window_half_ticks を広げるか期間を見直す"
+  },
+  {
+   "seed": 58,
+   "err": "ZI ミッドが板の絶対ティック窓から逸脱しました。 book_window_half_ticks を広げるか期間を見直す"
+  },
+  {
+   "seed": 63,
+   "err": "ZI ミッドが板の絶対ティック窓から逸脱しました。 book_window_half_ticks を広げるか期間を見直す"
+  },
+  {
+   "seed": 65,
+   "err": "ZI ミッドが板の絶対ティック窓から逸脱しました。 book_window_half_ticks を広げるか期間を見直す"
+  },
+  {
+   "seed": 73,
+   "err": "ZI ミッドが板の絶対ティック窓から逸脱しました。 book_window_half_ticks を広げるか期間を見直す"
+  },
+  {
+   "seed": 75,
+   "err": "ZI ミッドが板の絶対ティック窓から逸脱しました。 book_window_half_ticks を広げるか期間を見直す"
+  },
+  {
+   "seed": 80,
+   "err": "ZI ミッドが板の絶対ティック窓から逸脱しました。 book_window_half_ticks を広げるか期間を見直す"
+  },
+  {
+   "seed": 82,
+   "err": "ZI ミッドが板の絶対ティック窓から逸脱しました。 book_window_half_ticks を広げるか期間を見直す"
+  },
+  {
+   "seed": 85,
+   "err": "ZI ミッドが板の絶対ティック窓から逸脱しました。 book_window_half_ticks を広げるか期間を見直す"
+  },
+  {
+   "seed": 86,
+   "err": "ZI ミッドが板の絶対ティック窓から逸脱しました。 book_window_half_ticks を広げるか期間を見直す"
+  },
+  {
+   "seed": 88,
+   "err": "ZI ミッドが板の絶対ティック窓から逸脱しました。 book_window_half_ticks を広げるか期間を見直す"
+  },
+  {
+   "seed": 94,
+   "err": "ZI ミッドが板の絶対ティック窓から逸脱しました。 book_window_half_ticks を広げるか期間を見直す"
+  },
+  {
+   "seed": 97,
+   "err": "ZI ミッドが板の絶対ティック窓から逸脱しました。 book_window_half_ticks を広げるか期間を見直す"
+  },
+  {
+   "seed": 99,
+   "err": "ZI ミッドが板の絶対ティック窓から逸脱しました。 book_window_half_ticks を広げるか期間を見直す"
+  }
+ ]
+}
