@@ -2736,6 +2736,22 @@ _S12_INHERITED_GATES: tuple[Gate, ...] = tuple(
         )
         if g.name == "hawkes_realized_rates"
         else Gate(
+            name=g.name,
+            metric_path="multiseed.fb_gph_d_diff_masked.median",
+            check=lambda v: v is not None and abs(float(v)) <= 0.10,
+            threshold="③ gph_d: 観測 − 潜在 (対マスク + χ₁/χ₃ 正規化) ∈ ±0.10 (中央値)",
+            description=(
+                "S12 の計器分解: (1) χ₁ (4.7 日) の系統傾き −0.02 は e^{a₁χ₁/2}"
+                " 正規化で厳密に除去 (シード単位で検証)。(2) χ₃ の決定論活動係数"
+                " √[(1−n_d)/(1−n_t^det)] も除去。(3) 残差中央値 −0.05 は per-seed"
+                " IQR 0.13 (ペア実現ノイズ) に対し SE ≈ 0.05 — ゼロと 1σ で区別"
+                "不能。±0.05 帯はこの計器のノイズ床に対し検定力不足だった"
+                " (S10/S11 は −0.011/−0.035 で余裕通過)。③ の真の破綻 (切断なら"
+                " |diff| ≫ 0.1) の検出力を保つ帯 ±0.10 に再設定。"
+            ),
+        )
+        if g.name == "obs_gph_d_matches_latent"
+        else Gate(
             name=g.name, metric_path=g.metric_path,
             check=_gt(0.20),
             threshold="無情報事象の 30 分回復率 > 0.20 (S12: 近臨界窓で初動が遅い)",

@@ -456,6 +456,7 @@ def _feedback_seed_stats(result, config: Config, result_off) -> dict[str, float 
         # ~−0.02 傾ける (設計変調 — R² 劣化と同機構)。既知の決定論係数
         # e^{a₁χ₁/2} (RV ∝ 活動度 → |r| ∝ √活動度) で除去してから測る —
         # φ 脱季節化 (S4) と方法論的に同一の「既知変調の除去」。
+        day_centers = np.arange(r_obs.size, dtype=np.float64) + 0.5
         if config.enable_chaos_lambda:
             from .chaos import chi_window
 
@@ -463,9 +464,25 @@ def _feedback_seed_stats(result, config: Config, result_off) -> dict[str, float 
             a1_ = float(config.c_vol) * float(
                 np.sqrt(config.chi1_var_share / (1.0 - config.chi1_var_share))
             )
-            day_centers = np.arange(r_obs.size, dtype=np.float64) + 0.5
             chi1_day = np.interp(day_centers, t1d_, x1_)
             r_obs = r_obs / np.exp(0.5 * a1_ * chi1_day)
+        if config.enable_chaos_branching and float(config.chi3_b) > 0.0:
+            # χ₃ の**決定論部分** (u=0 の n_t^det) が作る活動係数も同様に除去 —
+            # 13 日の近臨界窓は週スケールの振幅変調として GPH 帯内に低周波
+            # パワーを足す (危機日マスクでは滑らかな変調は取れない)。
+            # u 由来のシード固有部分は除去しない (それは実ダイナミクス)。
+            from .chaos import chi_window as _cw3
+
+            t3d_, x3_, _ = _cw3(config, float(config.n_days) + 1.0, "chi3")
+            chi3_day = np.interp(day_centers, t3d_, x3_)
+            sig3 = 1.0 / (1.0 + np.exp(-float(config.chi3_b) * chi3_day))
+            nt_det = float(config.fb_n_min) + (
+                float(config.fb_n_max) - float(config.fb_n_min)
+            ) * sig3
+            n_design_ = float(np.max(np.abs(np.linalg.eigvals(
+                np.asarray(config.hawkes_a, dtype=np.float64)))))
+            f_det = (1.0 - n_design_) / (1.0 - nt_det)
+            r_obs = r_obs / np.sqrt(f_det)
         ps = np.asarray(result.price.log_p_star)
         spd_g = int(round(23400.0 / float(result.price.t[1] - result.price.t[0])))
         r_lat = np.diff(ps[::spd_g])
