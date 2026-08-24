@@ -1,0 +1,10 @@
+b_δ=0.3 b_Δ=0.0: g_30m=+0.023 g_daily=+0.010 crises/y=120.1 u_sd=1.29 sp_med=0.0 sp_p99=1 div=0 (20s)
+b_δ=0.6 b_Δ=0.0: g_30m=+0.038 g_daily=+0.040 crises/y=133.9 u_sd=1.41 sp_med=0.0 sp_p99=1 div=0 (19s)
+b_δ=1.0 b_Δ=0.0: g_30m=+0.109 g_daily=+0.104 crises/y=131.3 u_sd=1.43 sp_med=0.0 sp_p99=1 div=1 (20s)
+b_δ=1.5 b_Δ=0.0: g_30m=+0.187 g_daily=+0.198 crises/y=145.6 u_sd=1.59 sp_med=0.0 sp_p99=1 div=3 (20s)
+b_δ=0.0 b_Δ=0.3: g_30m=+0.047 g_daily=+0.071 crises/y=126.3 u_sd=1.37 sp_med=0.0 sp_p99=1 div=0 (18s)
+b_δ=0.0 b_Δ=0.6: g_30m=+0.114 g_daily=+0.112 crises/y=117.6 u_sd=1.48 sp_med=0.0 sp_p99=1 div=0 (18s)
+b_δ=0.0 b_Δ=1.0: g_30m=+0.318 g_daily=+0.219 crises/y=118.1 u_sd=1.81 sp_med=0.0 sp_p99=1 div=1 (18s)
+b_δ=0.6 b_Δ=0.4: g_30m=+0.111 g_daily=+0.148 crises/y=123.7 u_sd=1.51 sp_med=0.0 sp_p99=1 div=0 (19s)
+b_δ=1.0 b_Δ=0.6: g_30m=+0.124 g_daily=+0.218 crises/y=142.5 u_sd=1.71 sp_med=0.0 sp_p99=1 div=0 (20s)
+saved E:\模擬チャート生成\results\S11a\gain_sweep.json
