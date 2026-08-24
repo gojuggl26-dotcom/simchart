@@ -343,6 +343,7 @@ def run_zi_book(
     z_up_grid,  # thinning 上界: ブロック前方 max (自ブロック+次ブロックの max)
     z_step_sec,  # z グリッドの刻み [秒]
     z_up_block,  # z_up の 1 ブロックのグリッド段数 (上界の有効域 = 2 ブロック)
+    z_max_meta,  # メタオーダー到着 thinning の上界 (= max Z。use_cvol=False は 1.0)
 ):
     """ZI 板を最後まで走らせ、(イベントログ, グリッドミッド, スナップショット,
     カウンタ) を返す。単一スレッド・固定消費順で決定論。"""
@@ -481,10 +482,16 @@ def run_zi_book(
     pool_grid = np.zeros(n_grid, dtype=np.float64)
     # S9: 取消の重み付き選択のスクラッチ (生存注文数ぶんの重み)
     qr_w = np.zeros(max_orders, dtype=np.float64)
-    # Poisson 到着スケジュール (逐次モードや到着率 0 では発火しない)
+    # Poisson 到着スケジュール (逐次モードや到着率 0 では発火しない)。
+    # S10c: 需要 (子の要求 ∝ MO レート) は Z に比例するので、供給 (到着率) も
+    # λ·Z(t) にしないとプール占有が Z エポックで漂流する (1000 日実測 165%)。
+    # 実装は thinning: 定数レート λ·z_max で候補を立て、Z(t)/z_max で受理する
+    # (use_cvol=False では z_max=1.0 で乗算は恒等、受理抽選も引かない —
+    # 乱数消費列はビット単位で不変)。
+    meta_lam_sched = meta_lambda_day * z_max_meta
     next_meta_t = horizon_sec * 2.0
     if use_meta and (not meta_sequential) and meta_lambda_day > 0.0:
-        next_meta_t = -np.log(1.0 - rng_meta.random()) / meta_lambda_day * day_sec
+        next_meta_t = -np.log(1.0 - rng_meta.random()) / meta_lam_sched * day_sec
 
     # ------------------------------------------------------------------
     # メインループ
@@ -589,17 +596,26 @@ def run_zi_book(
                     k_base_price, k_tick,
                 )
             while next_meta_t <= t_now:
-                nm2, na2 = _meta_spawn(
-                    rng_meta, meta_alpha, meta_n_min, next_meta_t, 0.0, p_up_arr,
-                    m_sign, m_ntotal, m_nexec, m_t_created, m_spawned_empty,
-                    act_meta, n_meta, n_act, counters,
-                )
-                if nm2 > n_meta:
-                    counters[C_META_ARRIVALS] += 1.0
-                n_meta = nm2
-                n_act = na2
+                # S10c: thinning 受理 (率 Z(t)/z_max)。use_cvol=False は無条件受理
+                # で抽選も引かない — S8/S9 経路の乱数消費列を変えない。
+                accept_meta = True
+                if use_cvol:
+                    zi_m = int(next_meta_t / z_step_sec)
+                    if zi_m >= z_grid.size:
+                        zi_m = z_grid.size - 1
+                    accept_meta = rng_meta.random() * z_max_meta < z_grid[zi_m]
+                if accept_meta:
+                    nm2, na2 = _meta_spawn(
+                        rng_meta, meta_alpha, meta_n_min, next_meta_t, 0.0, p_up_arr,
+                        m_sign, m_ntotal, m_nexec, m_t_created, m_spawned_empty,
+                        act_meta, n_meta, n_act, counters,
+                    )
+                    if nm2 > n_meta:
+                        counters[C_META_ARRIVALS] += 1.0
+                    n_meta = nm2
+                    n_act = na2
                 next_meta_t += (
-                    -np.log(1.0 - rng_meta.random()) / meta_lambda_day * day_sec
+                    -np.log(1.0 - rng_meta.random()) / meta_lam_sched * day_sec
                 )
 
         if n_events + 8 >= ev_capacity:

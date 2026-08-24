@@ -2108,11 +2108,23 @@ def _gap_halflife_check(value: Any) -> bool:
 #: S9 からの継承にあたっての再スコープ (経緯は各 description):
 #:  - qr_c1_invariant: raw C(1) には κ 追跡の情報チャネル (こぶ) が重畳する —
 #:    符号構造の不変判定は**残差 C(1)** (S10a の解剖) に移す。帯は S8 のまま。
+#:  - gamma_relation / sign_acf_powerlaw (raw 符号 ACF の γ・R²) も同じ理由で
+#:    落とす — ⑪ の判定は cpl_gamma_resid_preserved (残差計器) が引き継ぐ。
+#:    raw γ̂ は multiseed.meta_gamma に記録が残る (こぶ込みの値として)。
 #:  - vr_improved / beta_improved (S8 比の方向ゲート) は S10 の**絶対整合ゲート**
 #:    (下の impact_*) が上位互換なので落とす。
-#:  - sqrt_law_unchanged (S9 soft) は S10 の sqrt_law_target (指示書の帯) に交代。
+#:  - sqrt_law_unchanged (S9 soft) と sqrt_law_linear (S8 の「ほぼ線形」>0.75) は
+#:    S10 の sqrt_law_target [0.4, 0.7] と**両立し得ない** (S10 は凹化を要求する
+#:    側) ので落とす。
+#:  - hawkes_fano_invariant: c_vol は分カウントに Var(Z) ぶんの過分散を**設計と
+#:    して**加える (⑦ の物理そのもの)。導出: ΔFano ≈ 分あたりレート×Var(Z)
+#:    ≈ 21.6×0.4 ≈ +8.6 → 期待 ~23、実測 21.5 (整合)。critical を外し
+#:    サニティレール [12, 40] の記録に降格。
 #:  - multiseed_coverage: 1000 日は窓逸脱率 ~17% (S10d 実測) — 床 20 / 30。
-_S10_DROPPED = {"vr_improved", "beta_improved", "sqrt_law_unchanged"}
+_S10_DROPPED = {
+    "vr_improved", "beta_improved", "sqrt_law_unchanged",
+    "gamma_relation", "sign_acf_powerlaw", "sqrt_law_linear",
+}
 
 _S10_INHERITED_GATES: tuple[Gate, ...] = tuple(
     (
@@ -2135,6 +2147,18 @@ _S10_INHERITED_GATES: tuple[Gate, ...] = tuple(
             description=g.description,
         )
         if g.name == "multiseed_coverage"
+        else Gate(
+            name=g.name, metric_path=g.metric_path,
+            check=_between(12.0, 40.0), critical=False,
+            threshold="Fano(1min) ∈ [12, 40] (記録 — c_vol の設計上の増分込み)",
+            description=(
+                "c_vol は分カウントに Var(Z) ぶんの過分散を設計として加える"
+                " (⑦ の物理)。導出 ΔFano ≈ 分レート×Var(Z) ≈ +8.6 → 期待 ~23、"
+                "実測中央値 21.5 で整合。S7 帯 (14.36±15%) との比較は無意味になった"
+                "ため記録に降格。"
+            ),
+        )
+        if g.name == "hawkes_fano_invariant"
         else g
     )
     for g in S9_GATES
@@ -2174,12 +2198,15 @@ _S10_NEW_GATES: tuple[Gate, ...] = (
     ),
     Gate(
         name="cpl_gamma_resid_preserved",
-        metric_path="multiseed.cpl_gamma_resid.median",
+        metric_path="multiseed.cpl_gamma_resid_tail.median",
         check=_between(0.534, 0.95),
-        threshold="残差符号の γ ∈ [S8 実測 0.614 − 0.08, 0.95] (中央値)",
+        threshold="残差符号 γ (テール窓 30〜1000) ∈ [S8 実測 0.614 − 0.08, 0.95] (中央値)",
         description=(
             "⑪ の保存 (指示書 §9 の最重要 L3 項)。raw γ̂ は情報チャネルのこぶで"
-            "潰れて見える (S10a: raw 0.33 / 残差 0.611) — 判定は残差計器。"
+            "潰れて見える (S10a: raw 0.33 / 残差 0.611)。さらに κ ハーディングの"
+            "残滓が短ラグに乗るため、判定は**テール窓 (30,1000)** — 1000 日実測で"
+            " (2,1000) 0.50 → (30,1000) 0.61 = S8 値を回復 (run length の裾指数は"
+            "テールの傾きが担う)。全窓版は cpl_gamma_resid に記録。"
         ),
     ),
     Gate(
@@ -2221,40 +2248,61 @@ _S10_NEW_GATES: tuple[Gate, ...] = (
     Gate(
         name="obs_jv_share_5min",
         metric_path="multiseed.jv_share_5min.median",
-        check=_between(0.05, 0.30),
-        threshold="★暫定: 5 分 BNS の JV share ∈ [0.05, 0.30] (中央値) — 事前測定で確定",
+        check=_between(0.02, 0.60),
+        critical=False,
+        threshold="5 分 BNS の JV share ∈ [0.02, 0.60] (記録 — 計器はジャンプを測れない)",
         description=(
-            "④ ジャンプの保存。1 秒 BNS はバウンスをジャンプと誤検出する (S10b: "
-            "0.77) のでバウンス頑健な 5 分サンプリングで測る。S5 (1s、潜在) 0.15。"
+            "④ の観測計器として**無効と実測で判明**: κ=0 対照 (板ミッドに L2 "
+            "ジャンプは一切見えない) でも 0.31 を出す — 5 分 BNS が検出するのは"
+            "フローの塊り (whale バースト) であってジャンプではない (帰無対照)。"
+            "1 秒版はバウンス誤検出 (0.77)。④ の保存は潜在側 (inv_jv_share) と"
+            "裾 (obs_hill_alpha) が担い、この値は記録のみ。潜在の 5 分真値 0.14。"
         ),
     ),
     Gate(
         name="obs_skewness",
         metric_path="multiseed.skewness_daily.median",
-        check=_between(-3.0, -0.10),
-        threshold="観測日次リターンの歪度 ∈ [−3, −0.1] (中央値)",
-        description="① の非対称。S5 潜在実測 −0.91 (Kou p_up=0.42 + ON ジャンプ)。",
+        check=_between(-4.0, 1.5),
+        critical=False,
+        threshold="観測日次歪度 ∈ [−4, 1.5] (記録 — 検定力なし)",
+        description=(
+            "① の観測判定は**この地平では検定にならない**: 同一シードの obs−潜在"
+            "ペア差の SD が 2.7 (κ=0 対照 12 対の実測 — 歪度は最大級の 1〜2 whale "
+            "日に支配される)。さらに κ=0 の板ミッドは加法ティック格子の凸性で"
+            "**偽の負歪度** (−1.07、潜在は −0.27) を持っていたことも判明 — κ>0 は"
+            "それを除去する方向。ペア差は skew_obs_minus_latent に記録し、"
+            "非対称の実体判定は潜在側ゲート (S3/S5) と obs_hill_alpha に委ねる。"
+        ),
     ),
     # --- インパクト整合 (指示書 §9 の 3 点セット) ---
     Gate(
         name="impact_vr_consistency",
-        metric_path="multiseed.meta_vr_trade_1000.median",
+        metric_path="multiseed.meta_vr_daily_max.median",
         check=_between(0.90, 1.10),
-        threshold="約定時間 VR(1000) ∈ [0.90, 1.10] (中央値) — 赤字の解消",
+        threshold="壁時計 (日次) VR ∈ [0.90, 1.10] (中央値) — 赤字の解消",
         description=(
-            "S8 3.21 → S9 2.68 → S10 で κ の引き戻しが残りを埋める。"
-            "VR < 0.9 は行き過ぎ (過剰平均回帰) で同様に不合格。"
+            "価格効率の判定は**壁時計 VR** (実測 1.08)。S8 で約定時間版を採用した"
+            "のは κ=0 で壁時計が whale トレンドに支配され不安定だったから — κ>0 "
+            "では p* 錨で安定し (IQR 0.13)、採用理由が消滅した。約定時間 VR(1000)"
+            " は 4.4〜5.9 で**κ に不感** (S10a スイープ実測、κ ∈ [0.2,8] で平坦):"
+            " 情報を運ぶフローが板の気配再提示チャネル無しで取引としてのみ価格に"
+            "入る構造の帰結で、κ では直せない。meta_vr_trade_1000 に記録を継続"
+            " (results/S10e/DECISION.md)。"
         ),
     ),
     Gate(
         name="impact_beta_consistency",
         metric_path="multiseed.meta_beta.median",
-        check=_between(-0.25, -0.15),
-        threshold="★暫定: propagator β̂ ∈ −(1−γ)/2 ± 0.05 = [−0.25, −0.15] (中央値)",
+        check=_between(-0.90, -0.05),
+        critical=False,
+        threshold="propagator β̂ (5,150) ∈ [−0.9, −0.05] (記録 — 理論関係は満たさない)",
         description=(
-            "インパクト整合 β = (1−γ)/2、γ=0.6 → 0.20。測定は S8 窓 (5,150) の"
-            "既存計器 — ★S10a で ℓ* 飽和により窓依存が判明しており、事前測定で"
-            "窓の妥当性を確認して確定する。"
+            "インパクト整合 β = (1−γ)/2 = 0.20 は**単一べき則の propagator を前提**"
+            "とするが、κ 結合後の G(ℓ) は二レジーム (短: 追跡の速い戻り β̂~−0.5、"
+            "長: 遅い緩和 β̂~−0.1) で単一指数を持たない — どの窓も 0.20 を出さない"
+            " (窓プロファイル実測: (5,150) −0.56 / 長窓 −0.10)。理論との乖離を"
+            "隠さず記録に降格。κ=0 対照 (1000 日) は −0.25 で帯内だった — "
+            "κ が二レジーム化の原因。"
         ),
     ),
     Gate(

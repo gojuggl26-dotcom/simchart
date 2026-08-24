@@ -806,22 +806,35 @@ def _hawkes_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
 
     out: dict[str, Any] = {}
 
+    # S10c: c_vol>0 では真のベースラインは φ·Z — Z を補償しない MLE は Z の
+    # クラスタリングを励起へ誤帰属し n̂ が上振れする (+0.063 実測)。
+    # Z はエンジンが公開したものを使う (再導出は単一情報源の原則に反する)。
+    ev_meta_h = result.events.meta if isinstance(result.events.meta, dict) else {}
+    z_grid_h = ev_meta_h.get("cvol_z_grid")
+    z_step_h = ev_meta_h.get("cvol_z_step_sec")
+    zkw_h: dict[str, Any] = {}
+    if z_grid_h is not None and z_step_h is not None:
+        zkw_h = {"z_grid": np.asarray(z_grid_h, dtype=np.float64),
+                 "z_step_sec": float(z_step_h)}
+
     # --- 分岐比の 3 経路 (中心ゲート) ---
     block_days = 50.0 if cfg.n_days >= 200 else max(10.0, cfg.n_days / 4.0)
     out["three_way"] = safe_call(
         hk.branching_three_ways, times, marks, t_end, betas, w, session,
-        true_phi, n_design, block_days=block_days,
+        true_phi, n_design, block_days=block_days, **zkw_h,
     )
 
-    # --- 残差検定 (真の φ を与えた当てはめモデルで時間再スケーリング) ---
+    # --- 残差検定 (真の φ (·Z) を与えた当てはめモデルで時間再スケーリング) ---
     def _rescaling() -> dict[str, Any]:
         fit = hk.hawkes_mle(
             times, marks, t_end, betas, w,
             phi_table=true_phi, session_seconds=session if true_phi is not None else None,
+            **zkw_h,
         )
         res = hk.time_rescaling_test(
             times, marks, t_end, betas, w, fit["mu_hat_per_sec"], fit["a_hat"],
             phi_table=true_phi, session_seconds=session if true_phi is not None else None,
+            **zkw_h,
         )
         res["fit_converged"] = bool(fit["converged"])
         return res

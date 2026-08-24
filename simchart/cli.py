@@ -305,6 +305,7 @@ def _coupling_seed_stats(result, config: Config) -> dict[str, float | None]:
     tr = m["transmission"].get("T") or {}
     return {
         "cpl_gamma_resid": m["residual_sign_acf"].get("gamma_resid"),
+        "cpl_gamma_resid_tail": m["residual_sign_acf"].get("gamma_resid_tail"),
         "cpl_c1_resid": m["residual_sign_acf"].get("c1_resid"),
         "cpl_gamma_raw": m["residual_sign_acf"].get("gamma_raw"),
         "cpl_c1_raw": m["residual_sign_acf"].get("c1_raw"),
@@ -406,6 +407,14 @@ def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
             r5 = np.diff(obs.log_price[::stride5])
             per_seed.setdefault("jv_share_5min", []).append(
                 bns_jump_test(r5, steps_per_day // stride5).get("jv_share")
+            )
+            # ① の歪度も同一シード対で記録 (計器のペア差 SD 2.7 実測 — 検定力が
+            # 無いので記録のみ。ゲートは張らない)
+            sk_lat = float(sp_stats.skew(r_daily_lat, bias=False))
+            per_seed.setdefault("skew_daily_latent", []).append(sk_lat)
+            sk_obs = per_seed["skewness_daily"][-1]
+            per_seed.setdefault("skew_obs_minus_latent", []).append(
+                sk_obs - sk_lat if sk_obs is not None else None
             )
         # S6 (κ=0 の板): 観測は ZI ミッドなので、観測ベースの季節性ペアと
         # 希釈の相関ペア実行 (どちらも観測を測る) はスキップする。潜在側

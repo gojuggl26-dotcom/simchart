@@ -146,6 +146,40 @@ def phi_cumulative(times: np.ndarray, table: np.ndarray, session_seconds: float)
     return d * session_seconds * float(table.mean()) + within
 
 
+def z_lookup(times: np.ndarray, z_grid: np.ndarray, z_step_sec: float) -> np.ndarray:
+    """各時刻の Z_t (S10c。エンジンと同じ floor 参照 + 端クリップ)。"""
+    idx = np.minimum((times / z_step_sec).astype(np.int64), z_grid.size - 1)
+    return z_grid[idx]
+
+
+def phi_z_cumulative(
+    times: np.ndarray,
+    phi_table: np.ndarray | None,
+    session_seconds: float,
+    z_grid: np.ndarray,
+    z_step_sec: float,
+) -> np.ndarray:
+    """∫_0^t φ(u_s)·Z_s ds (両者とも区分一定なので厳密)。
+
+    S10c: Z はベースラインに φ と同格で乗る — 脱季節化と同じ扱いで
+    ベースライン補償器に入れないと、MLE が Z のクラスタリングを励起と
+    誤帰属して n̂ が上振れする (φ の raw 経路と同じ機構)。
+    """
+    times = np.asarray(times, dtype=np.float64)
+    n_z = z_grid.size
+    bounds = np.arange(n_z + 1, dtype=np.float64) * z_step_sec
+    if phi_table is not None:
+        phi_b = phi_cumulative(bounds, phi_table, session_seconds)
+        phi_t = phi_cumulative(times, phi_table, session_seconds)
+    else:
+        phi_b = bounds
+        phi_t = times
+    seg = np.diff(phi_b) * z_grid  # 各 z ステップの ∫φ·Z
+    csum = np.concatenate([[0.0], np.cumsum(seg)])
+    j = np.minimum((times / z_step_sec).astype(np.int64), n_z - 1)
+    return csum[j] + z_grid[j] * (phi_t - phi_b[j])
+
+
 def estimate_phi_lambda(
     times: np.ndarray, session_seconds: float, n_bins: int = 52
 ) -> dict[str, Any]:
@@ -197,10 +231,13 @@ def hawkes_mle(
     phi_table: np.ndarray | None = None,
     session_seconds: float | None = None,
     precomputed: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
+    z_grid: np.ndarray | None = None,
+    z_step_sec: float | None = None,
 ) -> dict[str, Any]:
     """振幅 a[x,y] とベースライン μ_y の MLE。β・w は固定 (引数で与える)。
 
     戻り値: mu_hat [1/秒], a_hat (3,3), n_hat = ρ(â), 対数尤度, 収束フラグ。
+    ``z_grid`` (S10c の活動度 Z) を与えるとベースラインを φ·Z で補償する。
     """
     times = np.asarray(times, dtype=np.float64)
     marks = np.asarray(marks, dtype=np.int64)
@@ -216,6 +253,16 @@ def hawkes_mle(
     else:
         phi_i = np.ones_like(times)
         phi_int = float(t_end)
+    if z_grid is not None:
+        if z_step_sec is None:
+            raise ValueError("z_grid には z_step_sec が必要です")
+        phi_i = phi_i * z_lookup(times, z_grid, z_step_sec)
+        phi_int = float(
+            phi_z_cumulative(
+                np.array([t_end]), phi_table,
+                float(session_seconds or t_end), z_grid, float(z_step_sec),
+            )[0]
+        )
 
     if precomputed is not None:
         e_mat, _, c_vec = precomputed
@@ -264,12 +311,19 @@ def branching_three_ways(
     n_design: float,
     n_bins_est: int = 52,
     block_days: float | None = None,
+    z_grid: np.ndarray | None = None,
+    z_step_sec: float | None = None,
 ) -> dict[str, Any]:
     """raw / true-φ / est-φ̂ の 3 経路で n を再推定する (指示書の中心ゲート)。
 
     ``block_days`` を与えると全標本推定に加えてブロック分割の再推定を行い、
     n̂ の標本ばらつき (SD) を付す。ブロックは冷開始 (励起の持ち越し ≤300 秒 ≪
     ブロック長なので端バイアスは無視できる)。
+
+    S10c: ``z_grid`` を与えると true 経路のベースラインを φ·Z で補償する
+    (Z を知らない MLE は Z のクラスタリングを励起へ誤帰属し n̂ が上振れ —
+    実測 +0.063。est 経路は日内周期しか推定できないので Z は入れない:
+    それが「実データで可能な経路」の再現であり、est の帯 ±0.08 が緩い理由)。
     """
     times = np.asarray(times, dtype=np.float64)
     marks = np.asarray(marks, dtype=np.int64)
@@ -278,12 +332,17 @@ def branching_three_ways(
     order = np.argsort(times, kind="stable")
     times, marks = times[order], marks[order]
 
+    zkw: dict[str, Any] = {}
+    if z_grid is not None and z_step_sec is not None:
+        zkw = {"z_grid": np.asarray(z_grid, dtype=np.float64),
+               "z_step_sec": float(z_step_sec)}
     pre = excitation_pass(times, marks, betas, weights, t_end)
     fit_raw = hawkes_mle(times, marks, t_end, betas, weights, precomputed=pre)
     fit_true = (
         hawkes_mle(
             times, marks, t_end, betas, weights,
             phi_table=true_phi_table, session_seconds=session_seconds, precomputed=pre,
+            **zkw,
         )
         if true_phi_table is not None
         else None
@@ -309,6 +368,12 @@ def branching_three_ways(
             kw: dict[str, Any] = {}
             if true_phi_table is not None:
                 kw = {"phi_table": true_phi_table, "session_seconds": session_seconds}
+            if zkw:
+                # ブロック内の Z (グリッドを切り出してブロック原点に平行移動)
+                j0 = int(lo / zkw["z_step_sec"])
+                j1 = max(j0 + 1, int(np.ceil(hi / zkw["z_step_sec"])))
+                kw["z_grid"] = zkw["z_grid"][j0:min(j1, zkw["z_grid"].size)]
+                kw["z_step_sec"] = zkw["z_step_sec"]
             f = hawkes_mle(tb, mb, block_sec, betas, weights, **kw)
             rows.append(f["n_hat"])
         arr = np.array(rows)
@@ -364,11 +429,15 @@ def time_rescaling_test(
     a_mat: np.ndarray,
     phi_table: np.ndarray | None = None,
     session_seconds: float | None = None,
+    z_grid: np.ndarray | None = None,
+    z_step_sec: float | None = None,
 ) -> dict[str, Any]:
     """Λ(t) = ∫λ_tot による時間変換後のイベント間隔が Exp(1) かの KS 検定。
 
     モデルが正しければ (Ogata 1988) 変換後は単位 Poisson。ベースライン積分は
     区分一定 φ に対して厳密、励起積分は指数カーネルの閉形式 (前計算 I)。
+    S10c: ``z_grid`` を与えるとベースライン補償器に φ·Z を使う (Z を入れないと
+    補償器がモデルと違うので間隔が Exp(1) にならないのは当然の帰結)。
     """
     times = np.asarray(times, dtype=np.float64)
     marks = np.asarray(marks, dtype=np.int64)
@@ -378,7 +447,14 @@ def time_rescaling_test(
         return na(f"イベント数が足りません (n={times.size})")
 
     _, i_mat, _ = excitation_pass(times, marks, betas, weights, t_end)
-    if phi_table is not None:
+    if z_grid is not None:
+        if z_step_sec is None:
+            raise ValueError("z_grid には z_step_sec が必要です")
+        cum = phi_z_cumulative(
+            times, phi_table, float(session_seconds or t_end),
+            np.asarray(z_grid, dtype=np.float64), float(z_step_sec),
+        )
+    elif phi_table is not None:
         if session_seconds is None:
             raise ValueError("phi_table には session_seconds が必要です")
         cum = phi_cumulative(times, phi_table, session_seconds)

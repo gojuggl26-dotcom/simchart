@@ -368,7 +368,7 @@ class ZIBook:
             float(cfg.qr_mo_depth_frac), float(cfg.qr_obi_bias),
             kappa_f, s_scale_grid[:2].copy(), base_price_f, tick_f,
             use_cvol, np.ones(2, dtype=np.float64), np.ones(2, dtype=np.float64),
-            60.0, 240,
+            60.0, 240, 1.0,
         )
 
         started = time.perf_counter()
@@ -414,6 +414,7 @@ class ZIBook:
             float(cfg.qr_mo_depth_frac), float(cfg.qr_obi_bias),
             kappa_f, s_scale_grid, base_price_f, tick_f,
             use_cvol, z_grid, z_up_grid, float(z_step_f), int(z_blk),
+            float(z_grid.max()) if use_cvol else 1.0,
         )
         engine_runtime = time.perf_counter() - started
 
@@ -503,6 +504,11 @@ class ZIBook:
                 "base_price": base_price,
             },
         )
+        if use_cvol:
+            # S10c: 検証側 (Hawkes n̂/残差検定のベースライン補償) が同じ Z を
+            # 参照できるように公開する — 再導出は単一情報源の原則に反する。
+            events.meta["cvol_z_grid"] = z_grid
+            events.meta["cvol_z_step_sec"] = float(z_step_f)
         if use_meta:
             events.meta["pool_grid"] = pool_grid
             events.meta["metaorders"] = {

@@ -94,10 +94,13 @@ def residual_sign_acf(result, cfg, fit_range=(2, 1000)) -> dict[str, Any]:
     c1_raw = float(d0[:-1] @ d0[1:]) / float(d0 @ d0)
     kappa = float(cfg.kappa)
     if kappa <= 0:
+        tr0 = (30, fit_range[1]) if fit_range[1] > 60 else fit_range
+        fit_tail0 = acf_powerlaw_fit(s_k, tr0, max_lag=tr0[1])
         return ok(
             fit_raw.get("gamma"),
             gamma_raw=num(fit_raw.get("gamma")),
             gamma_resid=num(fit_raw.get("gamma")),
+            gamma_resid_tail=num(fit_tail0.get("gamma")),
             c1_raw=num(c1_raw),
             note="κ=0: raw = 残差",
         )
@@ -121,12 +124,21 @@ def residual_sign_acf(result, cfg, fit_range=(2, 1000)) -> dict[str, Any]:
     mu_row = np.where(mt_k >= 0, mu_meta[np.clip(mt_k, 0, mu_meta.size - 1)], 0.0)
     resid = s_k - mu_row
     fit_res = acf_powerlaw_fit(resid, fit_range, max_lag=fit_range[1])
+    # ★テール窓 (30,1000): κ ハーディングの残滓は短ラグ (ℓ < 30) に集中し、
+    # ℓ=2 からのフィットは初期減衰が寝て γ̂ を過小評価する (1000 日実測:
+    # (2,1000) 0.50 → (30,1000) 0.61 = S8 の 0.614 を回復)。⑪ 保存の判定計器は
+    # テール側 — run length の裾指数はテールの傾きが担う。
+    tail_range = (30, fit_range[1]) if fit_range[1] > 60 else fit_range
+    fit_tail = acf_powerlaw_fit(resid, tail_range, max_lag=tail_range[1])
     dr = resid - resid.mean()
     c1_res = float(dr[:-1] @ dr[1:]) / float(dr @ dr)
     return ok(
         fit_res.get("gamma"),
         gamma_resid=num(fit_res.get("gamma")),
         gamma_resid_r2=num(fit_res.get("r2")),
+        gamma_resid_tail=num(fit_tail.get("gamma")),
+        gamma_resid_tail_r2=num(fit_tail.get("r2")),
+        tail_range=list(tail_range),
         c1_resid=num(c1_res),
         gamma_raw=num(fit_raw.get("gamma")),
         gamma_raw_r2=num(fit_raw.get("r2")),

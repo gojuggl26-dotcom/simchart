@@ -1,0 +1,46 @@
+seed 42: ctrl gamma=0.632 vr=2.95 beta=-0.235 sqrt=0.985 pool=-0.04 skew=+0.93 jv5=0.317 (20s)
+seed 42: lat skew=-0.89 jv5=0.153 jv1s=0.125
+seed 43: ctrl gamma=0.563 vr=4.41 beta=-0.276 sqrt=1.000 pool=0.11 skew=+1.45 jv5=0.293 (20s)
+seed 43: lat skew=-1.29 jv5=0.150 jv1s=0.142
+seed 44: ctrl gamma=0.494 vr=4.41 beta=-0.320 sqrt=0.979 pool=0.01 skew=+1.10 jv5=0.312 (19s)
+seed 44: lat skew=-0.12 jv5=0.158 jv1s=0.151
+seed 45: ctrl gamma=0.613 vr=3.07 beta=-0.230 sqrt=0.984 pool=-0.04 skew=-2.08 jv5=0.276 (20s)
+seed 45: lat skew=-0.19 jv5=0.078 jv1s=0.044
+seed 46: ctrl gamma=0.589 vr=3.07 beta=-0.232 sqrt=0.960 pool=-0.00 skew=-1.45 jv5=0.311 (19s)
+seed 46: lat skew=-0.35 jv5=0.079 jv1s=0.049
+seed 47: ctrl gamma=0.562 vr=3.96 beta=-0.292 sqrt=0.995 pool=-0.06 skew=-0.92 jv5=0.269 (19s)
+seed 47: lat skew=-0.46 jv5=0.058 jv1s=0.032
+seed 48: ctrl gamma=0.636 vr=3.32 beta=-0.218 sqrt=0.965 pool=-0.04 skew=-0.19 jv5=0.263 (19s)
+seed 48: lat skew=-1.35 jv5=0.183 jv1s=0.169
+seed 49: ctrl gamma=0.554 vr=3.40 beta=-0.247 sqrt=0.987 pool=-0.04 skew=-3.69 jv5=0.296 (19s)
+seed 49: lat skew=-0.10 jv5=0.135 jv1s=0.122
+seed 50: ctrl gamma=0.613 vr=2.63 beta=-0.212 sqrt=0.994 pool=-0.02 skew=-1.21 jv5=0.311 (19s)
+seed 50: lat skew=-0.13 jv5=0.066 jv1s=0.048
+seed 51: ctrl gamma=0.551 vr=3.39 beta=-0.248 sqrt=0.986 pool=0.00 skew=+1.17 jv5=0.322 (19s)
+seed 51: lat skew=-4.58 jv5=0.328 jv1s=0.322
+seed 52: ctrl gamma=0.567 vr=3.51 beta=-0.259 sqrt=0.967 pool=-0.00 skew=-2.36 jv5=0.333 (19s)
+seed 52: lat skew=-0.10 jv5=0.076 jv1s=0.054
+seed 53: ctrl gamma=0.574 vr=3.06 beta=-0.249 sqrt=0.989 pool=0.07 skew=-2.44 jv5=0.309 (19s)
+seed 53: lat skew=+0.74 jv5=0.156 jv1s=0.138
+
+=== 中央値 ===
+{
+ "ctrl": {
+  "meta_gamma": 0.5707681016287977,
+  "meta_c1": 0.13279489342293788,
+  "meta_vr_trade_1000": 3.3555964658972037,
+  "meta_beta": -0.24752884596887106,
+  "meta_sqrt_slope": 0.9854471541378333,
+  "meta_pool_rel_diff": -0.013075041352788742,
+  "obs_skew_daily": -1.0667048857963657,
+  "obs_jv_share_5min": 0.3101202634693271,
+  "obs_jv_share_1s": 0.754119986258328
+ },
+ "latent": {
+  "lat_skew_daily": -0.27220968553729885,
+  "lat_jv_share_5min": 0.14264953186477503,
+  "lat_jv_share_1s": 0.1233724288677357
+ },
+ "n_ctrl": 12
+}
+saved E:\模擬チャート生成\results\S10e\controls_1000d.json
