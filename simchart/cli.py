@@ -234,9 +234,17 @@ def _hawkes_seed_stats(result, config: Config) -> dict[str, float | None]:
         u = (np.arange(4096, dtype=np.float64) + 0.5) / 4096
         phi_table = np.asarray(cal.phi_lambda_of_u(u))
 
+    # S10c: ベースラインは φ·Z — Z を渡さないと n̂ が Z のクラスタリング分だけ
+    # 上振れする (suite 側と同じ補償。z はエンジン公開値)。
+    ev_meta = result.events.meta if isinstance(result.events.meta, dict) else {}
+    zkw: dict = {}
+    if ev_meta.get("cvol_z_grid") is not None:
+        zkw = {"z_grid": np.asarray(ev_meta["cvol_z_grid"], dtype=np.float64),
+               "z_step_sec": float(ev_meta["cvol_z_step_sec"])}
     fit = hawkes_mle(
         times, marks, t_end, betas, w,
         phi_table=phi_table, session_seconds=session if phi_table is not None else None,
+        **zkw,
     )
     burn = config.book_burn_in_days * session
     t_b = times[times >= burn]
