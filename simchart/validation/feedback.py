@@ -23,6 +23,8 @@ __all__ = [
     "crisis_anatomy",
     "divergence_monitor",
     "nt_distribution",
+    "crisis_window_counts",
+    "crisis_window_reproducibility",
 ]
 
 _SESSION = 23400.0
@@ -107,7 +109,7 @@ def crisis_detect(result, cfg) -> dict[str, Any]:
     r5 = np.zeros_like(lp_snap)
     r5[k5:] = lp_snap[k5:] - lp_snap[:-k5]
 
-    lam = float(0.5 ** (step_snap / (cfg.fb_rv_long_halflife_days * _SESSION)))
+    lam = float(0.5 ** (step_snap / (cfg.crisis_norm_halflife_days * _SESSION)))
     sig5 = np.sqrt(np.maximum(_ewma(r5**2, lam), 1e-18))
     sp_norm = _ewma(spread, lam)
     dp_norm = np.maximum(_ewma(depth, lam), 1e-12)
@@ -181,7 +183,7 @@ def crisis_anatomy(result, cfg, detection: dict[str, Any] | None = None) -> dict
     depth = np.asarray(book.bid_sz, dtype=np.float64).sum(axis=1) + np.asarray(
         book.ask_sz, dtype=np.float64
     ).sum(axis=1)
-    lam = float(0.5 ** (step_snap / (cfg.fb_rv_long_halflife_days * _SESSION)))
+    lam = float(0.5 ** (step_snap / (cfg.crisis_norm_halflife_days * _SESSION)))
     sp_norm = _ewma(spread, lam)
     dp_norm = np.maximum(_ewma(depth, lam), 1e-12)
 
@@ -304,6 +306,55 @@ def divergence_monitor(
         threshold=num(threshold),
         duration_days=num(duration_days),
         max_excess=num(float(series.max() - ref)),
+    )
+
+
+def crisis_window_counts(
+    result, cfg, window_days: float = 5.0, detection: dict[str, Any] | None = None
+) -> np.ndarray:
+    """窓 (既定 5 日) あたりの危機件数ベクトル (§8.2 の素材)。"""
+    det = detection if detection is not None else crisis_detect(result, cfg)
+    burn_d = int(cfg.book_burn_in_days)
+    n_w = int((cfg.n_days - burn_d) / window_days)
+    counts = np.zeros(max(n_w, 1), dtype=np.float64)
+    step_snap = det.get("step_sec") or 60.0
+    for a, _b in det.get("episodes") or []:
+        day = a * step_snap / _SESSION
+        w = int((day - burn_d) / window_days)
+        if 0 <= w < n_w:
+            counts[w] += 1.0
+    return counts
+
+
+def crisis_window_reproducibility(
+    count_vectors: list[np.ndarray],
+) -> dict[str, Any]:
+    """シード横断の窓あたり危機件数相関 (§8.2 — S12 の中核)。
+
+    χ₃ は全シードで同一 → 脆弱窓は再現される。発火は確率的 → 個々の危機は
+    再現されない。目標 0.3〜0.6: ≈0 は χ₃ が効いていない、> 0.8 は決定論的すぎ。
+    """
+    vecs = [np.asarray(v, dtype=np.float64) for v in count_vectors if v is not None]
+    if len(vecs) < 2:
+        return na(f"シードが足りません (n={len(vecs)})")
+    n = min(v.size for v in vecs)
+    corrs = []
+    for i in range(len(vecs)):
+        for j in range(i + 1, len(vecs)):
+            a, b = vecs[i][:n], vecs[j][:n]
+            if a.std() > 0 and b.std() > 0:
+                corrs.append(float(np.corrcoef(a, b)[0, 1]))
+    if not corrs:
+        return na("分散のある窓カウントがありません")
+    arr = np.array(corrs)
+    return ok(
+        num(float(np.median(arr))),
+        median=num(float(np.median(arr))),
+        mean=num(float(arr.mean())),
+        q1=num(float(np.percentile(arr, 25))),
+        q3=num(float(np.percentile(arr, 75))),
+        n_pairs=int(arr.size),
+        n_windows=int(n),
     )
 
 

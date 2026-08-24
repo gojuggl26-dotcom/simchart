@@ -695,6 +695,11 @@ class Config:
     #: (results/S11c/DECISION.md)。
     crisis_k_sigma: float = 8.0
     crisis_spread_mult: float = 5.0
+    #: 危機検出器の「通常」基準の半減期 [日]。既定 2.0 = S11 の挙動 (u 信号と
+    #: 同じ適応速度)。★S12 で判明: 適応が χ₃ の脆弱窓 (13 日) より速いと、
+    #: 窓の内側で基準が再適応して検出が消える — 窓再現性の測定には窓より
+    #: 遅い基準が必要 (s12.yaml で 30.0)。u 信号側の半減期とは独立。
+    crisis_norm_halflife_days: float = 2.0
     #: 危機頻度の帯 [件/年] (ゲート crisis_frequency)。whale 基線 (~51/年) 込みの
     #: ガードレール — 死んだループ (≈基線) も爆発 (数百+発散) もここで見える。
     crisis_freq_per_year_lo: float = 5.0
@@ -810,7 +815,7 @@ class Config:
         "fb_c_delta", "fb_c_place",
         "fb_n_min", "fb_n_max",
         "fb_rv_short_halflife_min", "fb_rv_long_halflife_days",
-        "crisis_k_sigma", "crisis_spread_mult",
+        "crisis_k_sigma", "crisis_spread_mult", "crisis_norm_halflife_days",
         "crisis_freq_per_year_lo", "crisis_freq_per_year_hi",
     )
     _S6_BOOK_PARAMS = (
