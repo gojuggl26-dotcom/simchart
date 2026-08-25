@@ -982,22 +982,35 @@ def _run_multiseed_s13(config: Config, n_seeds: int) -> dict[str, Any]:
             )
             per_seed.setdefault(f"x_trades_a{ai}", []).append(float(pa["n_trades"]))
 
-        # 危機時相関のプール素材 (§11: 2000 日以上 → シード横断プール)
+        # 危機時相関のプール素材 (§11: 2000 日以上 → シード横断プール)。
+        # 3 条件付け: 和集合 (指示書の字義) / ブレッドス (≥2 資産同時 = 観測可能な
+        # 市場危機日) / 潜在 big|z_F| (§7.1 の機構実在)。
         from .validation.cross import crisis_day_mask
 
         pl = multi.payloads
+        n_dm = min(min(p.daily_ret_obs.size, p.n_days) for p in pl)
+        masks_all = [
+            crisis_day_mask(p.crisis_episodes, p.crisis_step_sec, n_dm) for p in pl
+        ]
+        breadth = np.sum(np.stack(masks_all), axis=0) >= 2
+        fd = np.abs(np.asarray(multi.factor_daily)[:n_dm])
+        bigf = fd > np.quantile(fd, 0.9)
         for a in range(len(pl)):
             for b in range(a + 1, len(pl)):
                 key = f"{a}-{b}"
-                n_dd = min(pl[a].daily_ret_obs.size, pl[b].daily_ret_obs.size,
-                           pl[a].n_days, pl[b].n_days)
-                mask = crisis_day_mask(
-                    pl[a].crisis_episodes, pl[a].crisis_step_sec, n_dd
-                ) | crisis_day_mask(pl[b].crisis_episodes, pl[b].crisis_step_sec, n_dd)
-                slot = pooled_pairs.setdefault(key, {"di": [], "dj": [], "m": []})
+                n_dd = n_dm
+                mask = masks_all[a][:n_dd] | masks_all[b][:n_dd]
+                slot = pooled_pairs.setdefault(
+                    key, {"di": [], "dj": [], "m": [], "mb": [],
+                          "li": [], "lj": [], "mf": []}
+                )
                 slot["di"].append(pl[a].daily_ret_obs[:n_dd])
                 slot["dj"].append(pl[b].daily_ret_obs[:n_dd])
                 slot["m"].append(mask)
+                slot["mb"].append(breadth[:n_dd])
+                slot["li"].append(pl[a].daily_ret_latent[:n_dd])
+                slot["lj"].append(pl[b].daily_ret_latent[:n_dd])
+                slot["mf"].append(bigf[:n_dd])
         del multi, result
         print(f"      シード {seed} ({i + 1}/{n_seeds}) 完了", flush=True)
 
@@ -1032,17 +1045,33 @@ def _run_multiseed_s13(config: Config, n_seeds: int) -> dict[str, Any]:
     # 危機時相関 (プール): ペアごとに全シードの日次系列を連結して条件付き相関
     pooled_out: dict[str, Any] = {}
     increases: list[float] = []
+    inc_breadth: list[float] = []
+    inc_bigf: list[float] = []
     for key, slot in pooled_pairs.items():
         di = np.concatenate(slot["di"])
         dj = np.concatenate(slot["dj"])
-        mm = np.concatenate(slot["m"])
-        cc = conditional_correlation(di, dj, mm)
-        pooled_out[key] = cc
+        cc = conditional_correlation(di, dj, np.concatenate(slot["m"]))
+        cc_b = conditional_correlation(di, dj, np.concatenate(slot["mb"]))
+        cc_f = conditional_correlation(
+            np.concatenate(slot["li"]), np.concatenate(slot["lj"]),
+            np.concatenate(slot["mf"]),
+        )
+        pooled_out[key] = {"union": cc, "breadth": cc_b, "latent_bigf": cc_f}
         if cc.get("status") == "ok":
             increases.append(cc["increase"])
+        if cc_b.get("status") == "ok":
+            inc_breadth.append(cc_b["increase"])
+        if cc_f.get("status") == "ok":
+            inc_bigf.append(cc_f["increase"])
     out["x_crisis_corr_pooled"] = pooled_out
     out["x_crisis_corr_increase_pooled_median"] = (
         float(np.median(increases)) if increases else None
+    )
+    out["x_crisis_corr_increase_breadth_pooled_median"] = (
+        float(np.median(inc_breadth)) if inc_breadth else None
+    )
+    out["x_crisis_corr_increase_latent_bigf_pooled_median"] = (
+        float(np.median(inc_bigf)) if inc_bigf else None
     )
     out["x_crisis_pooled_days"] = (
         int(sum(v.size for v in next(iter(pooled_pairs.values()))["di"]))
@@ -1256,6 +1285,14 @@ def _run_s13(args: argparse.Namespace, config: Config) -> int:
         "crisis_corr_increase": (
             ms.get("x_crisis_corr_increase_pooled_median")
             if multiseed else cs.get("crisis_corr_increase_median")
+        ),
+        "crisis_corr_increase_breadth": (
+            ms.get("x_crisis_corr_increase_breadth_pooled_median")
+            if multiseed else cs.get("crisis_corr_increase_breadth_median")
+        ),
+        "crisis_corr_increase_latent_bigf": (
+            ms.get("x_crisis_corr_increase_latent_bigf_pooled_median")
+            if multiseed else cs.get("crisis_corr_increase_latent_bigf_median")
         ),
         "leadlag_asym_1_2": med("x_leadlag_asym_1-2") if multiseed else (
             ((metrics["cross_assets"].get("pairs") or {}).get("1-2") or {})

@@ -425,6 +425,22 @@ def cross_asset_metrics(multi, config) -> dict:
     vol_corrs: list[float] = []
     vol_horizon_increasing: list[bool] = []
     cc_increases: list[float] = []
+    cc_breadth_increases: list[float] = []
+    cc_bigf_increases: list[float] = []
+
+    # 条件付けマスク (資産横断で 1 回だけ作る):
+    #  - breadth: ≥2 資産が同時に危機 (検出器ベース = リターン選択バイアスなし。
+    #    実データの「市場全体の危機期間」の観測可能な対応物)
+    #  - big_f: |z_F| 日次集計の上位 10% (潜在 — §7.1 の機構実在の記録用。
+    #    リターン自身での条件付けは楕円切断の機械的相関上昇を作るため使わない)
+    n_dm = min(min(p.daily_ret_obs.size, p.n_days) for p in pl)
+    masks_all = [
+        crisis_day_mask(p.crisis_episodes, p.crisis_step_sec, n_dm) for p in pl
+    ]
+    breadth_mask = np.sum(np.stack(masks_all), axis=0) >= 2
+    fd = np.abs(np.asarray(multi.factor_daily)[:n_dm])
+    bigf_mask = fd > np.quantile(fd, 0.9) if fd.size >= n_dm else None
+
     for i in range(n_assets):
         for j in range(i + 1, n_assets):
             key = f"{i}-{j}"
@@ -481,19 +497,37 @@ def cross_asset_metrics(multi, config) -> dict:
             vbh = vol_correlation_by_horizon(pi.rv_daily_obs, pj.rv_daily_obs)
             if vbh.get("increasing_with_horizon") is not None:
                 vol_horizon_increasing.append(bool(vbh["increasing_with_horizon"]))
-            # --- 危機時相関 (ペア和集合の日マスク) ---
-            n_dd = min(n_o, pi.n_days, pj.n_days)
-            mask = crisis_day_mask(
-                pi.crisis_episodes, pi.crisis_step_sec, n_dd
-            ) | crisis_day_mask(pj.crisis_episodes, pj.crisis_step_sec, n_dd)
+            # --- 危機時相関 (3 条件付け: 和集合 / ブレッドス / 潜在 big|z_F|) ---
+            n_dd = min(n_o, pi.n_days, pj.n_days, n_dm)
+            mask = masks_all[i][:n_dd] | masks_all[j][:n_dd]
             cc = conditional_correlation(
                 pi.daily_ret_obs[:n_dd], pj.daily_ret_obs[:n_dd], mask
             )
             if cc.get("status") == "ok":
                 cc_increases.append(cc["increase"])
-            # --- リードラグ (観測ミッドの 60 秒バー、±30 分) ---
+            cc_breadth = conditional_correlation(
+                pi.daily_ret_obs[:n_dd], pj.daily_ret_obs[:n_dd],
+                breadth_mask[:n_dd],
+            )
+            if cc_breadth.get("status") == "ok":
+                cc_breadth_increases.append(cc_breadth["increase"])
+            cc_bigf = (
+                conditional_correlation(
+                    pi.daily_ret_latent[:n_dd], pj.daily_ret_latent[:n_dd],
+                    bigf_mask[:n_dd],
+                )
+                if bigf_mask is not None
+                else na("factor_daily が不足")
+            )
+            if cc_bigf.get("status") == "ok":
+                cc_bigf_increases.append(cc_bigf["increase"])
+            # --- リードラグ (観測ミッドの 300 秒バー、±2 時間) ---
+            # ★60 秒バーは板の内生ノイズ (アンカー付き ZI 歩行 + バウンス) が
+            # 短スケールの観測相関を ~0.003 まで沈め、CCF 全体が雑音になる
+            # (事前測定 #2 実測)。κ 差の追跡ラグは数十分スケールなので、
+            # 信号シェアが立つ 5 分バー × ±24 ラグ (±2h) で測る。
             spd = int(round(session / pi.obs_step_sec))
-            stride = int(round(60.0 / pi.obs_step_sec))
+            stride = int(round(300.0 / pi.obs_step_sec))
             nd = min(pi.n_days, pj.n_days)
             bars_i = np.diff(
                 pi.obs_log_price_f32[: nd * spd + 1 : stride].astype(np.float64)
@@ -506,7 +540,7 @@ def cross_asset_metrics(multi, config) -> dict:
             ll = lead_lag_profile(
                 bars_i[:nb].reshape(-1, n_bars_day),
                 bars_j[:nb].reshape(-1, n_bars_day),
-                max_lag=30,
+                max_lag=24,
             )
             pairs[key] = {
                 "beta_product_design": float(pl[i].beta * pl[j].beta),
@@ -520,6 +554,8 @@ def cross_asset_metrics(multi, config) -> dict:
                 "vol_corr_latent": v_corr,
                 "vol_corr_by_horizon": vbh,
                 "conditional_corr": cc,
+                "conditional_corr_breadth": cc_breadth,
+                "conditional_corr_latent_bigf": cc_bigf,
                 "lead_lag": ll,
             }
 
@@ -600,5 +636,13 @@ def cross_asset_metrics(multi, config) -> dict:
             "crisis_corr_increase_median": (
                 float(np.median(cc_increases)) if cc_increases else None
             ),
+            "crisis_corr_increase_breadth_median": (
+                float(np.median(cc_breadth_increases))
+                if cc_breadth_increases else None
+            ),
+            "crisis_corr_increase_latent_bigf_median": (
+                float(np.median(cc_bigf_increases)) if cc_bigf_increases else None
+            ),
+            "n_breadth_days": int(breadth_mask[:n_dm].sum()),
         },
     }

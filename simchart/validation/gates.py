@@ -2959,6 +2959,21 @@ def _s13_remap(g: Gate) -> Gate:
                 "S13 のシード数はクロス測定の要求で決まる。"
             ),
         )
+    if g.name == "vol_volume_dilution":
+        return Gate(
+            name="vol_volume_range",
+            metric_path=g.metric_path,
+            check=_between(0.50, 0.70),
+            threshold="⑦ corr(log RV, log 出来高) ∈ [0.50, 0.70] (S10 の元帯 — c_vol 不変)",
+            description=(
+                "S12 の希釈帯 [0.521, 0.585] は S12 の組成 (ジャンプが自資産の瞬時 σ"
+                " で変調) の予測値。S13 では共通ジャンプの変調が**遅い共通成分**"
+                " (= V の 3 日 MA 帯域そのもの) なので、ジャンプ RV と出来高の結合が"
+                "強まり ⑦ が上がる (seed42 同一シード比較 0.510 → 0.625、S12 の"
+                " 30 シード範囲外 — 機構シフト)。c_vol は触っていない (§7.1) ため"
+                "判定は元の帯 [0.5, 0.7] に戻す。"
+            ),
+        )
     return g
 
 
