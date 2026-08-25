@@ -151,7 +151,40 @@ def generate_runs(cfg: Config, n_runs: int, parts_dir: Path, base_seed: int) -> 
     skipped: list[dict] = []
     seed = base_seed
     started = time.perf_counter()
+
+    # 窓逸脱シードの記録。品質選別で本数が不足すると generate_runs は
+    # base_seed から walk し直すので、記録が無いと**落ちると分かっている
+    # シードを毎ラウンド 60 秒かけて引き直す** (実測 4 分の無駄)。
+    # ★設定 (シード以外) が変われば逸脱するシードも変わるので、
+    # config_hash をキーにして古い記録を使い回さない。
+    cache_path = parts_dir / "skipped_seeds.json"
+    cfg_key = cfg.replace(seed=0).config_hash()
+    skip_cache: dict[int, str] = {}
+    if cache_path.exists():
+        try:
+            blob = json.loads(cache_path.read_text(encoding="utf-8"))
+            if blob.get("config_hash") == cfg_key:
+                skip_cache = {int(k): v for k, v in blob.get("seeds", {}).items()}
+        except (ValueError, OSError):
+            skip_cache = {}
+
+    def remember_skip(seed_: int, error: str) -> None:
+        skip_cache[seed_] = error
+        cache_path.write_text(
+            json.dumps(
+                {"config_hash": cfg_key,
+                 "note": "窓逸脱で完走しないシード (設定が変われば無効)",
+                 "seeds": {str(k): v for k, v in sorted(skip_cache.items())}},
+                ensure_ascii=False, indent=1,
+            ),
+            encoding="utf-8",
+        )
+
     while len(runs) < n_runs:
+        if seed in skip_cache:
+            skipped.append({"seed": seed, "error": skip_cache[seed], "from_cache": True})
+            seed += 1
+            continue
         part = parts_dir / f"run_seed{seed}.npz"
         if part.exists():
             z = np.load(part)
@@ -176,6 +209,7 @@ def generate_runs(cfg: Config, n_runs: int, parts_dir: Path, base_seed: int) -> 
             multi = run_multi(cfg.replace(seed=seed))
         except RuntimeError as exc:
             skipped.append({"seed": seed, "error": str(exc)})
+            remember_skip(seed, str(exc))
             print(f"  seed {seed}: スキップ ({str(exc)[:48]})", flush=True)
             seed += 1
             continue

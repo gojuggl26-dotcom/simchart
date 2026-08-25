@@ -1,6 +1,6 @@
 {
   "stage": "S13",
-  "git_commit": "439cfb4ec89c2d6425a1e9f51e518691e2c08110",
+  "git_commit": "647e8698430341e8ad3b94c5e430b5829243a15d",
   "git_dirty": true,
   "config_hash": "09fdfc49bdb06d2834862a1413047710c99033b384f2c6c65e98de156c24c248",
   "config": {
@@ -394,27 +394,32 @@
     "seeds_skipped": [
       {
         "seed": 49,
-        "error": "資産 2: ZI ミッドが板の絶対ティック窓から逸脱しました。 book_window_half_ticks を広げるか期間を見直すこと。"
+        "error": "資産 2: ZI ミッドが板の絶対ティック窓から逸脱しました。 book_window_half_ticks を広げるか期間を見直すこと。",
+        "from_cache": true
       },
       {
         "seed": 55,
-        "error": "資産 1: ZI ミッドが板の絶対ティック窓から逸脱しました。 book_window_half_ticks を広げるか期間を見直すこと。"
+        "error": "資産 1: ZI ミッドが板の絶対ティック窓から逸脱しました。 book_window_half_ticks を広げるか期間を見直すこと。",
+        "from_cache": true
       },
       {
         "seed": 57,
-        "error": "資産 0: ZI ミッドが板の絶対ティック窓から逸脱しました。 book_window_half_ticks を広げるか期間を見直すこと。"
+        "error": "資産 0: ZI ミッドが板の絶対ティック窓から逸脱しました。 book_window_half_ticks を広げるか期間を見直すこと。",
+        "from_cache": true
       },
       {
         "seed": 72,
-        "error": "資産 2: ZI ミッドが板の絶対ティック窓から逸脱しました。 book_window_half_ticks を広げるか期間を見直すこと。"
+        "error": "資産 2: ZI ミッドが板の絶対ティック窓から逸脱しました。 book_window_half_ticks を広げるか期間を見直すこと。",
+        "from_cache": true
       },
       {
         "seed": 83,
-        "error": "資産 0: ZI ミッドが板の絶対ティック窓から逸脱しました。 book_window_half_ticks を広げるか期間を見直すこと。"
+        "error": "資産 0: ZI ミッドが板の絶対ティック窓から逸脱しました。 book_window_half_ticks を広げるか期間を見直すこと。",
+        "from_cache": true
       }
     ],
     "overnight_composed": true,
-    "runtime_sec": 1052.4122980999527
+    "runtime_sec": 0.8628008000086993
   },
   "screening": {
     "criterion": "transmission = Var(obs daily cc) / Var(latent daily cc)",
@@ -643,6 +648,6 @@
       "range_to_body_ratio": 1.3975316916856704,
       "note": "高値・安値は 1 秒経路から取得 (終値だけからは復元できない量)"
     },
-    "runtime_sec": 1052.068875099998
+    "runtime_sec": 0.6028910001041368
   }
 }
