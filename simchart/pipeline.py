@@ -195,6 +195,17 @@ class AssetPayload:
     daily_ret_obs: Any
     daily_ret_latent: Any
     rv_daily_obs: Any
+    #: S4 のオーバーナイト・ギャップ (長さ n_days−1)。★観測系列も log_p_star も
+    #: **日中のみ**の連続経路なので、クローズ・トゥ・クローズ系列を作るには
+    #: これを合成する (types.PriceProcess.overnight_gaps の規約)。
+    #: クロス資産の相関測定は日中 (寄付〜引け) リターンで行う — ギャップは
+    #: 資産別ストリーム (l0.overnight) 由来で資産間に共分散を持たないため、
+    #: 合成すると相関が (1−ON シェア) 倍に希釈される (チャート生成側で記録)。
+    overnight_gaps: Any
+    #: 日次の約定代金相当 (集約約定サイズの日合計) と約定回数。板から内生的に
+    #: 決まる量で、チャートの出来高欄はここから書く。
+    daily_volume: Any
+    daily_n_trades: Any
     log_vol_sub: Any  # 1 分サブサンプルの潜在 log σ (φ 除去済み)
     log_vol_sub_step_sec: float
     crisis_episodes: list
@@ -260,6 +271,22 @@ def build_asset_payload(
     stride_1m = max(int(round(60.0 / step_g)), 1)
     pstar_1min = ps[::stride_1m].copy()
 
+    # 日次の出来高 (集約約定サイズの合計) と約定回数。板イベントの時刻から
+    # 日番号を作って集計する (セッション境界は obs.t[0] 起点)。
+    daily_volume = np.zeros(n_days, dtype=np.float64)
+    daily_n_trades = np.zeros(n_days, dtype=np.int64)
+    if trade_t.size:
+        tr_size = np.asarray(
+            ev_meta.get("agg_trade_size", np.empty(0)), dtype=np.float64
+        )
+        day_idx = np.floor((trade_t - obs.t[0]) / obs.session_seconds).astype(np.int64)
+        np.clip(day_idx, 0, n_days - 1, out=day_idx)
+        daily_n_trades = np.bincount(day_idx, minlength=n_days)[:n_days]
+        if tr_size.size == trade_t.size:
+            daily_volume = np.bincount(
+                day_idx, weights=tr_size, minlength=n_days
+            )[:n_days]
+
     sub = (result.meta.get("l2") or {}).get("vol_subsample") or {}
     if isinstance(sub.get("log_vol"), np.ndarray):
         lv_sub = np.asarray(sub["log_vol"]) - np.asarray(sub["log_phi_sigma"])
@@ -304,6 +331,9 @@ def build_asset_payload(
         daily_ret_obs=daily_obs,
         daily_ret_latent=daily_lat,
         rv_daily_obs=rv,
+        overnight_gaps=np.asarray(result.price.overnight_gaps, dtype=np.float64),
+        daily_volume=daily_volume,
+        daily_n_trades=daily_n_trades,
         log_vol_sub=lv_sub,
         log_vol_sub_step_sec=sub_step,
         crisis_episodes=list(det.get("episodes") or []),
