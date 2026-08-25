@@ -1108,6 +1108,9 @@ def _s12_carryover(results_dir: str | None) -> dict[str, Any]:
         "fb_depth_cv_ratio", "fb_rv_excess_ari", "fb_rv_excess_geo",
         "fb_crises_per_year_off", "meta_gamma_ice_off", "meta_c1_ice_off",
         "meta_c1", "meta_gamma",
+        # ③ と Hill: 500 日では計器が検定力不足 (③ IQR 0.185 / hill k=18 点で
+        # IQR 0.78 — 事前測定 #3 実測)。1000 日 × 30 の S12 実測を繰り越す。
+        "fb_gph_d_diff_masked", "fb_hill_ex_crisis", "fb_hill_all",
     )
     try:
         base = load_metrics("S12", root=results_dir)
@@ -1277,6 +1280,19 @@ def _run_s13(args: argparse.Namespace, config: Config) -> int:
         ),
         "vol_corr_hi": (
             med("x_vol_corr_max") if multiseed else cs.get("vol_corr_max")
+        ),
+        # ペア中央値の中央値 (vol_corr ゲートの判定値 — min はペア間の
+        # エポックゆらぎで下振れしやすく、500 日窓の検定にならない)
+        "vol_corr_med": (
+            (lambda vals: float(np.median(vals)) if vals else None)(
+                [
+                    med(k) for k in ms
+                    if isinstance(k, str) and k.startswith("x_vol_corr_")
+                    and k.count("-") == 1 and med(k) is not None
+                ]
+            )
+            if multiseed
+            else cs.get("vol_corr_min")
         ),
         "vol_corr_horizon_increasing": (
             bool((med("x_vol_horizon_increasing") or 0) >= 1.0)

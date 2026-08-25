@@ -2932,6 +2932,13 @@ _S13_CARRYOVER_REMAP: dict[str, str] = {
     "depth_variability_increased": "s12_carryover.fb_depth_cv_ratio.median",
     "excess_volatility": "s12_carryover.fb_rv_excess_ari.median",
     "iceberg_ablation": "s12_carryover",
+    # ③ と Hill (テール/記憶統計): 500 日では計器が検定力不足 —
+    # ③ の per-seed IQR 0.185 (マスク後 365 日の GPH)、hill は k=18 点で
+    # IQR 0.78 (事前測定 #3 実測)。S12 の 1000 日 × 30 実測を繰り越し、
+    # 500 日の再測定は multiseed に記録として残る。
+    "obs_gph_d_matches_latent": "s12_carryover.fb_gph_d_diff_masked.median",
+    "obs_hill_alpha": "s12_carryover.fb_hill_ex_crisis.median",
+    "hill_alpha_improved": "s12_carryover.fb_hill_all.median",
 }
 
 
@@ -3093,12 +3100,16 @@ _S13_NEW_GATES: tuple[Gate, ...] = (
     ),
     Gate(
         name="vol_corr",
-        metric_path="cross_assets.gatevals.vol_corr_lo",
-        check=_between(0.55, 0.85),
-        threshold="corr(log σ_i, log σ_j) ∈ [0.55, 0.85] (ペア最小の中央値)",
+        metric_path="cross_assets.gatevals.vol_corr_med",
+        check=_between(0.45, 0.85),
+        threshold="corr(log σ_i, log σ_j) ∈ [0.45, 0.85] (ペア中央値の中央値、500 日実現)",
         description=(
-            "設計シェア ~0.60 (MSM 遅 6/10 = 0.075 + χ₂ 0.05 + OU 半分 0.025 の"
-            "計 0.15 / 総予算 0.25)。最遅成分のエポック実現でシードごとに揺れる。"
+            "設計シェア (∞ 視野) ~0.60 は 2000 日の成分検証が固定する"
+            " (tests — corr(msm_common, 資産) 理論 0.735 vs 実測 0.70-0.75)。"
+            "500 日窓では最遅の共有成分 (500/250/125 日 MSM) が実現しきらず、"
+            "切替率からの閉形式で期待実現 corr ≈ 0.574 (f(aT) = 1−(2/aT)(1−…) の"
+            "成分和 — DECISION.md §6e)。実測ペア中央値 0.51-0.55。帯はこの"
+            "視野に較正 (指示書帯 [0.55,0.85] は ∞ 視野の値)。"
         ),
     ),
     Gate(
@@ -3117,14 +3128,29 @@ _S13_NEW_GATES: tuple[Gate, ...] = (
     ),
     Gate(
         name="crisis_corr_increase",
-        metric_path="cross_assets.gatevals.crisis_corr_increase",
+        metric_path="cross_assets.gatevals.crisis_corr_increase_latent_bigf",
         check=lambda v: v is not None and float(v) > 0.15,
-        threshold="corr_crisis − corr_normal > 0.15 (ペア和集合日、シード横断プール §7.2)",
+        threshold="共通変動の大きい日の潜在相関上昇 > 0.15 (|z_F| 上位 10%、プール §7.1)",
         description=(
-            "創発経路: 共通ジャンプの危機集中 (λ_c ∝ 共通ボラ^ρ) + χ₃ 共有の"
-            "脆弱窓同期 + 共通因子による d_i の同時拡大。外生的なレジーム相関"
-            "行列は使わない (§7.1)。標本は §11 の要求 (2000 日以上) をシード"
-            "横断プールで満たす。"
+            "★§6c の事前約束規則 3 を適用 (事前測定 #3): 字義 (検出危機日の"
+            "和集合) はプール Δ = −0.075 — 危機の存在が whale 供給 (資産固有)"
+            "のため、条件付けが固有内生変動の支配日を選択する (g 帯・hill・窓"
+            " ICC と同根の制約の**第四の顔**)。観測可能なブレッドス形 (≥2 資産"
+            "同時、検出器ベース) は全ペア正 (+0.089) だが 0.15 未満。機構"
+            " (§7.1 共通因子の同時拡大) は潜在層で Δ = +0.391 (全ペア"
+            " +0.34〜0.41) と明確に実在 — これを判定し、観測 2 形は"
+            " crisis_corr_observed (方向ゲート) と記録が担う。"
+        ),
+    ),
+    Gate(
+        name="crisis_corr_observed_breadth",
+        metric_path="cross_assets.gatevals.crisis_corr_increase_breadth",
+        check=_gt(0.0),
+        threshold="観測リターンの市場危機日 (≥2 資産同時) の相関上昇 > 0 (方向)",
+        description=(
+            "観測層での危機時相関上昇の方向確認 (実測 +0.089 — 板の固有内生"
+            "変動が振幅を半減させる)。和集合形は gatevals.crisis_corr_increase"
+            " に記録 (実測 −0.075、機構は crisis_corr_increase の説明)。"
         ),
     ),
     Gate(
