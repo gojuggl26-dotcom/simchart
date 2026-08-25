@@ -116,11 +116,35 @@ def max_drawdown(close: np.ndarray) -> float:
 
 
 # ---------------------------------------------------------------------------
+def latent_daily_returns(cfg: Config, seed: int) -> dict[int, np.ndarray]:
+    """潜在 (p*) の日次クローズ・トゥ・クローズ・リターンを資産ごとに返す。
+
+    **板を外した run_multi から取る。** L2 は板 on/off でビット単位一致する
+    (S13 の l2_frozen_multi ゲートが保証) ので潜在経路は同一で、板カーネルを
+    回さない分 6 倍速い。流動性オーバーライドは L3/L1 のパラメータのみなので
+    ここでも外す (L2 に影響しないことは同ゲートが検証済み)。
+    """
+    m = run_multi(cfg.replace(seed=seed).without_book().replace(asset_overrides=()))
+    out: dict[int, np.ndarray] = {}
+    for p in m.payloads:
+        close = np.cumsum(p.daily_ret_latent) + np.concatenate(
+            [[0.0], np.cumsum(p.overnight_gaps)]
+        )
+        r = np.empty(p.n_days)
+        r[0] = p.daily_ret_latent[0]
+        r[1:] = np.diff(close)
+        out[p.asset_index] = r
+    del m
+    return out
+
+
 def generate_runs(cfg: Config, n_runs: int, parts_dir: Path, base_seed: int) -> list[dict]:
     """必要本数に達するまで run_multi を回し、実行ごとに parts へ保存する。
 
-    窓逸脱 (薄板資産の板内生ミッド歩行 — README S13 節) で落ちたシードは
-    記録の上でスキップし、次のシードへ進む。
+    窓逸脱 (板内生ミッド歩行 — README S13 節) で落ちたシードは記録の上で
+    スキップし、次のシードへ進む。各実行では板ありの生成に加えて**板なしの
+    潜在経路**も取り、チャートごとの伝達比 T = Var(観測)/Var(潜在) を
+    parts に保存する (品質選別に使う — build_frames を参照)。
     """
     parts_dir.mkdir(parents=True, exist_ok=True)
     runs: list[dict] = []
@@ -130,6 +154,21 @@ def generate_runs(cfg: Config, n_runs: int, parts_dir: Path, base_seed: int) -> 
     while len(runs) < n_runs:
         part = parts_dir / f"run_seed{seed}.npz"
         if part.exists():
+            z = np.load(part)
+            has_lat = "a0_rlat" in z.files
+            if has_lat:
+                z.close()
+                runs.append({"seed": seed, "path": part})
+                seed += 1
+                continue
+            # 旧版の parts (潜在なし) — 板なしランだけ足して書き直す
+            blob = {k: z[k] for k in z.files}
+            z.close()
+            burn_ = int(round(cfg.book_burn_in_days))
+            for a, r in latent_daily_returns(cfg, seed).items():
+                blob[f"a{a}_rlat"] = r[burn_:]
+            np.savez_compressed(part, **blob)
+            print(f"  seed {seed}: 潜在経路を追加 (既存 parts を再利用)", flush=True)
             runs.append({"seed": seed, "path": part})
             seed += 1
             continue
@@ -140,6 +179,7 @@ def generate_runs(cfg: Config, n_runs: int, parts_dir: Path, base_seed: int) -> 
             print(f"  seed {seed}: スキップ ({str(exc)[:48]})", flush=True)
             seed += 1
             continue
+        latent = latent_daily_returns(cfg, seed)
 
         spd = int(round(cfg.steps_per_day))
         # ★板のウォームアップ期間を捨てる。板は init_levels=30 x init_size=20 の
@@ -164,6 +204,7 @@ def generate_runs(cfg: Config, n_runs: int, parts_dir: Path, base_seed: int) -> 
             blob[f"a{i}_ntr"] = p.daily_n_trades[burn:].astype(np.float64)
             # 日中のみ (ギャップ非合成) の日次リターン — ON 希釈の検証用
             blob[f"a{i}_rid"] = p.daily_ret_obs[burn:]
+            blob[f"a{i}_rlat"] = latent[i][burn:]  # 潜在 cc — 伝達比 T の分母
             blob[f"a{i}_beta"] = np.array([p.beta])
             blob[f"a{i}_kappa"] = np.array([p.kappa])
         np.savez_compressed(part, **blob)
@@ -177,12 +218,23 @@ def generate_runs(cfg: Config, n_runs: int, parts_dir: Path, base_seed: int) -> 
     return runs, skipped
 
 
-def build_frames(cfg: Config, runs: list[dict], n_charts: int):
-    """parts から日足テーブルと index を組み立てる。"""
+def build_frames(cfg: Config, runs: list[dict], n_charts: int, t_max: float):
+    """parts から日足テーブルと index を組み立てる (品質選別つき)。
+
+    ★選別: 伝達比 T = Var(観測日次 cc)/Var(潜在日次 cc) が ``t_max`` 以上の
+    チャートを除外する。板ミッドが p* から decouple した本 (実測で潜在が
+    −0.67% の日に観測が −60.9% という例) を弾くため。
+
+    閾値の根拠は **S12 本番 (単一資産・1000 日・24 有効シード) で実測された
+    増幅の最大値 2.534** (fb_rv_excess_ari)。S12 で起きた水準までは「設計された
+    危機増幅」として通し、それを超える本だけを暴走として落とす — 二重基準を
+    避けるため恣意的な丸い数字ではなくタグ済み本番の実測値を使う。
+    """
     n_days = cfg.n_days - int(round(cfg.book_burn_in_days))  # ウォームアップ除外後
     rows_daily: list[pd.DataFrame] = []
     index_rows: list[dict[str, Any]] = []
     intraday_ret: list[np.ndarray] = []  # 日中のみ日次リターン (ON 希釈の検証)
+    rejected: list[dict[str, Any]] = []
     chart_id = 0
     for run in runs:
         z = np.load(run["path"])
@@ -198,6 +250,21 @@ def build_frames(cfg: Config, runs: list[dict], n_charts: int):
             ret_cc = np.empty(n_days)
             ret_cc[0] = log_c[0] - math.log(o[0])
             ret_cc[1:] = np.diff(log_c)
+
+            # --- 品質選別: 伝達比 ---
+            r_lat = np.asarray(z[f"a{a}_rlat"])
+            v_lat = float(r_lat.var(ddof=1))
+            transmission = float(ret_cc.var(ddof=1) / v_lat) if v_lat > 0 else float("inf")
+            if transmission >= t_max:
+                rejected.append({
+                    "seed": int(run["seed"]), "asset": a,
+                    "transmission": transmission,
+                    "vol_obs": float(ret_cc.std(ddof=1) * math.sqrt(TRADING_DAYS_PER_YEAR)),
+                    "vol_latent": float(math.sqrt(v_lat * TRADING_DAYS_PER_YEAR)),
+                    "max_abs_daily_return": float(np.abs(ret_cc).max()),
+                })
+                continue
+
             rows_daily.append(
                 pd.DataFrame(
                     {
@@ -233,6 +300,15 @@ def build_frames(cfg: Config, runs: list[dict], n_charts: int):
                     "max_drawdown": max_drawdown(c),
                     "volume_per_day": float(vol.mean()),
                     "trades_per_day": float(ntr.mean()),
+                    "transmission": transmission,
+                    "annualized_vol_latent": float(
+                        math.sqrt(v_lat * TRADING_DAYS_PER_YEAR)
+                    ),
+                    # ★伝達比は分散**全体**で見るので、1 日だけ飛んで翌日戻る
+                    # 単発スパイク (板の一時的な暴走の名残) は捕まらない。
+                    # 用途に応じて絞れるよう最大日次リターンも出す
+                    # (潜在の最大は実測 9.1% — これを大きく超える本は要注意)。
+                    "max_abs_daily_return": float(np.abs(ret_cc).max()),
                     "close_digest": hashlib.sha256(
                         np.ascontiguousarray(c, dtype=np.float64).tobytes()
                     ).hexdigest()[:16],
@@ -244,6 +320,7 @@ def build_frames(cfg: Config, runs: list[dict], n_charts: int):
         pd.concat(rows_daily, ignore_index=True),
         pd.DataFrame(index_rows),
         np.stack(intraday_ret),
+        rejected,
     )
 
 
@@ -273,6 +350,25 @@ def ensemble_metrics(
     z_cross = cross / corr_se
     n_pairs = int(cross.size)
     tail = 2.0 * stats.norm.sf(float(np.max(np.abs(z_cross))))
+
+    # ★帰無対照 (符号ランダム化)。素朴な SE 1/√(n-1) は**等分散正規**を仮定した
+    # 式で、この系のリターン (共有 χ による不均一分散 + Hill α ≈ 2.5 の裾) には
+    # 当てはまらない。実際、素朴式では max|z| = 7.4 が p < 1e-9 の「独立性の破れ」
+    # に見えるが、各チャートの |r| 経路 (= 共有ボラ構造・共有された極値日) を
+    # そのままに符号だけ日ごと独立に振り直した帰無分布では max|z| の中央値が
+    # 7.9 で、観測はむしろ**下側**にある。判定はこちらの経験帰無で行う。
+    rng_null = np.random.default_rng(0xC0FFEE)
+    absr = np.abs(ret)
+    n_null = 200
+    null_zsd = np.empty(n_null)
+    null_maxz = np.empty(n_null)
+    for b in range(n_null):
+        s = rng_null.choice([-1.0, 1.0], size=ret.shape)
+        c_b = np.corrcoef(absr * s)[iu][~same_run] / corr_se
+        null_zsd[b] = c_b.std(ddof=1)
+        null_maxz[b] = np.max(np.abs(c_b))
+    obs_zsd = float(z_cross.std(ddof=1))
+    obs_maxz = float(np.max(np.abs(z_cross)))
     theory = theoretical_daily_corr(cfg)
     on_share = cfg.overnight_variance_share if cfg.enable_overnight else 0.0
 
@@ -340,20 +436,31 @@ def ensemble_metrics(
         "assets_per_run": ASSETS_PER_RUN,
         "independence_across_runs": {
             "n_pairs": n_pairs,
-            "corr_se_under_independence": num(corr_se),
             "mean_corr": num(float(cross.mean())),
             "max_abs_corr": num(float(np.max(np.abs(cross)))),
-            "max_abs_z": num(float(np.max(np.abs(z_cross)))),
-            "expected_max_abs_z": num(
+            "z_std": num(obs_zsd),
+            "max_abs_z": num(obs_maxz),
+            # ★判定はこちら (経験帰無)。素朴式の値は下の naive_* に残す。
+            "null_z_std_median": num(float(np.median(null_zsd))),
+            "null_z_std_p95": num(float(np.percentile(null_zsd, 97.5))),
+            "z_std_pvalue_vs_null": num(float(np.mean(null_zsd >= obs_zsd))),
+            "null_max_abs_z_median": num(float(np.median(null_maxz))),
+            "null_max_abs_z_p95": num(float(np.percentile(null_maxz, 97.5))),
+            "max_abs_z_pvalue_vs_null": num(float(np.mean(null_maxz >= obs_maxz))),
+            "n_null_replicates": n_null,
+            "naive_corr_se": num(corr_se),
+            "naive_expected_max_abs_z": num(
                 float(stats.norm.ppf(1.0 - 1.0 / (2.0 * n_pairs)))
             ),
-            "max_abs_z_pvalue": num(
+            "naive_max_abs_z_pvalue": num(
                 float(-np.expm1(n_pairs * np.log1p(-tail)))
             ),
-            "z_std": num(float(z_cross.std(ddof=1))),
             "frac_abs_z_over_1_96": num(float(np.mean(np.abs(z_cross) > 1.96))),
-            "expected_frac_abs_z_over_1_96": 0.05,
-            "note": "実行が違えば全ストリームが独立 (名前ハッシュ RNG)",
+            "note": (
+                "実行が違えば全ストリームが独立 (名前ハッシュ RNG)。判定は符号"
+                "ランダム化の経験帰無で行う — 素朴な SE (等分散正規の式) は"
+                "この系の不均一分散と α≈2.5 の裾では偽陽性を出す"
+            ),
         },
         "correlation_within_run": within,
         "prediction": {
@@ -512,6 +619,12 @@ def main() -> int:
     ap.add_argument("--base-seed", type=int, default=None)
     ap.add_argument("--n-days", type=int, default=None)
     ap.add_argument("--results-dir", type=str, default=None)
+    ap.add_argument(
+        "--t-max", type=float, default=2.534,
+        help="伝達比 Var(観測)/Var(潜在) の上限。これ以上のチャートは板ミッドが"
+             " p* から decouple したものとして除外する。既定は S12 本番 24 シードで"
+             " 実測された増幅の最大値 (fb_rv_excess_ari max = 2.534)",
+    )
     ap.add_argument("--no-plots", action="store_true")
     args = ap.parse_args()
 
@@ -536,11 +649,25 @@ def main() -> int:
     print(
         f"{args.n_charts} 本 = {n_runs} 実行 x {ASSETS_PER_RUN} 銘柄"
         f" ({cfg.n_days} 日 x {cfg.steps_per_day} ステップ, stage={cfg.stage},"
-        f" β={cfg.factor_betas}, base seed={cfg.seed})",
+        f" β={cfg.factor_betas}, base seed={cfg.seed}, 伝達比の上限 {args.t_max})",
         flush=True,
     )
+    # 品質選別で落ちる分だけ実行を追加する (必要本数に達するまで)
     runs, skipped = generate_runs(cfg, n_runs, out_dir / "parts", cfg.seed)
-    daily, index_df, intraday_ret = build_frames(cfg, runs, args.n_charts)
+    while True:
+        daily, index_df, intraday_ret, rejected = build_frames(
+            cfg, runs, args.n_charts, args.t_max
+        )
+        if len(index_df) >= args.n_charts:
+            break
+        need = args.n_charts - len(index_df)
+        add = max(math.ceil(need / ASSETS_PER_RUN), 1)
+        print(f"  選別で {len(rejected)} 本除外 → {need} 本不足。実行を "
+              f"{add} 追加します", flush=True)
+        runs, more_skipped = generate_runs(
+            cfg, len(runs) + add, out_dir / "parts", cfg.seed
+        )
+        skipped = skipped + [s for s in more_skipped if s not in skipped]
 
     daily.to_parquet(out_dir / "daily_ohlcv.parquet", index=False, compression="zstd")
     index_df.to_parquet(out_dir / "charts_index.parquet", index=False, compression="zstd")
@@ -565,6 +692,31 @@ def main() -> int:
             "overnight_composed": bool(cfg.enable_overnight),
             "runtime_sec": time.perf_counter() - started,
         },
+        "screening": {
+            "criterion": "transmission = Var(obs daily cc) / Var(latent daily cc)",
+            "t_max": args.t_max,
+            "t_max_basis": (
+                "S12 本番 (単一資産 1000 日 x 24 有効シード) の fb_rv_excess_ari "
+                "max = 2.534。S12 で実測された増幅までは設計された危機増幅として"
+                "通し、それを超える本を板ミッドの暴走として落とす"
+            ),
+            "n_rejected": len(rejected),
+            "rejected": rejected,
+            "transmission_percentiles": {
+                str(q): float(np.percentile(index_df["transmission"], q))
+                for q in (5, 25, 50, 75, 90, 95, 100)
+            },
+            "transmission_median_by_asset": {
+                str(a): float(index_df.loc[index_df["asset"] == a, "transmission"].median())
+                for a in range(ASSETS_PER_RUN)
+            },
+            "note": (
+                "★暴走は「窓に収まったか」では捕まらない (窓逸脱でスキップされた"
+                "実行とは別に、窓内に留まりながら decouple する本がある)。"
+                "流動性 (実効アンカー束 κ·μ) が低い資産ほど起きやすい — "
+                "資産 1 (κ·μ が参照の 3 倍) は全数が T ≤ 1.6 で健全"
+            ),
+        },
         "ensemble": jsonable(metrics),
     }
     with open(out_dir / "ensemble_metrics.json", "w", encoding="utf-8") as fh:
@@ -578,16 +730,27 @@ def main() -> int:
     print()
     print(f"チャート {metrics['n_charts']} 本 / 実行 {metrics['n_runs']} "
           f"(スキップ {len(skipped)}) / {metrics['n_days']} 日")
-    print(f"  実行間の独立性: z の SD {ind['z_std']:.3f} (独立なら 1) / "
-          f"|z|>1.96 が {ind['frac_abs_z_over_1_96'] * 100:.1f}% (理論 5%) / "
-          f"max|z| p={ind['max_abs_z_pvalue']:.3f}")
+    print(f"  実行間の独立性 (符号ランダム化の帰無で判定):")
+    print(f"    平均相関 {ind['mean_corr']:+.5f} / z の SD {ind['z_std']:.3f} "
+          f"(帰無中央値 {ind['null_z_std_median']:.3f}, p={ind['z_std_pvalue_vs_null']:.3f})")
+    print(f"    max|z| {ind['max_abs_z']:.2f} "
+          f"(帰無中央値 {ind['null_max_abs_z_median']:.2f}, "
+          f"p={ind['max_abs_z_pvalue_vs_null']:.3f})"
+          f"  [素朴式なら p={ind['naive_max_abs_z_pvalue']:.1e} = 偽陽性]")
     for k, v in metrics["correlation_within_run"].items():
         print(f"  実行内 {k}: cc {v['corr_close_to_close']:+.3f} "
               f"(日中 {v['corr_intraday']:+.3f} x 0.8 = "
               f"{v['predicted_cc_from_intraday']:+.3f} 予測、"
               f"差 {v['cc_minus_prediction']:+.3f})")
+    scr = payload["screening"]
+    print(f"  品質選別: 伝達比 T < {args.t_max} で {scr['n_rejected']} 本除外 "
+          f"(T 中央値 {scr['transmission_percentiles']['50']:.2f}, "
+          f"p95 {scr['transmission_percentiles']['95']:.2f}) / "
+          f"資産別中央値 " + ", ".join(
+              f"a{k} {v:.2f}" for k, v in scr["transmission_median_by_asset"].items()))
     print(f"  年率ボラ (cc) 中央値 {metrics['normalization']['annualized_vol_cc_median_all']:.4f} "
-          f"(σ̄ {cfg.sigma_bar})")
+          f"(σ̄ {cfg.sigma_bar}) / 潜在 "
+          f"{index_df['annualized_vol_latent'].median():.4f}")
     print(f"  日次リターン 尖度 {metrics['pooled_daily_returns']['kurtosis']:.2f} / "
           f"|r| ACF(1) {metrics['pooled_daily_returns']['abs_acf_lag1']:+.3f} / "
           f"ACF(1) {metrics['pooled_daily_returns']['acf_lag1']:+.4f}")

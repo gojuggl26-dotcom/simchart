@@ -1,0 +1,648 @@
+{
+  "stage": "S13",
+  "git_commit": "439cfb4ec89c2d6425a1e9f51e518691e2c08110",
+  "git_dirty": true,
+  "config_hash": "09fdfc49bdb06d2834862a1413047710c99033b384f2c6c65e98de156c24c248",
+  "config": {
+    "seed": 42,
+    "n_days": 500,
+    "steps_per_day": 23400,
+    "stage": "S13",
+    "enable_seasonality": true,
+    "enable_overnight": true,
+    "sigma_bar": 0.2217,
+    "mu_drift": 0.0,
+    "p0": 100.0,
+    "enable_msm": true,
+    "enable_slow_ou": true,
+    "enable_rough": true,
+    "msm_k": 10,
+    "msm_b": 2.0,
+    "msm_gamma1_per_day": 0.002,
+    "vol_var_target_msm": 0.125,
+    "vol_var_target_slow": 0.05,
+    "ou_half_life_days": 30.0,
+    "vol_var_budget_total": 0.25,
+    "rough_hurst": 0.08,
+    "rough_half_life_days": 0.75,
+    "vol_var_target_rough": 0.025,
+    "rough_grid_seconds": 60.0,
+    "jump_p_up": 0.42,
+    "jump_eta_up": 56.0,
+    "jump_eta_down": 35.0,
+    "jump_lambda_per_year": 5.0,
+    "jump_vol_exponent": 1.0,
+    "jump_intensity_cap": 10.0,
+    "jump_qv_share_target": 0.12,
+    "leverage_rho_rough": -0.6,
+    "leverage_rho_slow": -0.35,
+    "leverage_mid_half_life_days": 5.0,
+    "leverage_mid_var": 0.0,
+    "leverage_rho_mid": -0.8,
+    "session_type": "continuous",
+    "phi_sigma_slope": -0.2219,
+    "phi_lambda_slope": 0.9374,
+    "phi_sigma_cos": [
+      0.3439,
+      0.0777,
+      0.0
+    ],
+    "phi_sigma_sin": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "phi_lambda_cos": [
+      0.7499,
+      0.125,
+      0.0
+    ],
+    "phi_lambda_sin": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "overnight_variance_share": 0.2,
+    "overnight_jump_prob": 0.06,
+    "overnight_jump_variance_share": 0.35,
+    "enable_jump": true,
+    "enable_leverage": true,
+    "enable_chaos_vol": true,
+    "chaos_system": "mackey_glass",
+    "chaos_tau_delay": 17.0,
+    "chaos_beta": 0.2,
+    "chaos_gamma": 0.1,
+    "chaos_n_exponent": 10.0,
+    "chaos_dt": 0.1,
+    "chaos_ic": 1.2,
+    "chaos_burn_in_units": 1000.0,
+    "chaos_days_per_unit": 0.6042,
+    "vol_var_target_chaos": 0.05,
+    "chaos_normalization": "standardize",
+    "chaos_cache_dir": "cache",
+    "enable_hawkes": true,
+    "hawkes_a": [
+      [
+        0.6722,
+        0.4608,
+        0.1149
+      ],
+      [
+        0.0739,
+        0.4733,
+        0.1077
+      ],
+      [
+        0.0807,
+        0.2491,
+        0.2154
+      ]
+    ],
+    "hawkes_tau_seconds": [
+      0.5,
+      10.0,
+      300.0
+    ],
+    "hawkes_weights": [
+      0.5,
+      0.3,
+      0.2
+    ],
+    "hawkes_mu_mo": 135.95,
+    "hawkes_mu_lo": 226.49,
+    "hawkes_delta0": 1.7061,
+    "hawkes_nbar_ref": 238.95,
+    "hawkes_intensity_cap_mult": 150.0,
+    "hawkes_daily_event_cap": 500000,
+    "enable_chaos_lambda": true,
+    "enable_chaos_branching": true,
+    "chi1_ic": 0.9,
+    "chi1_days_per_unit": 0.0947,
+    "chi1_var_share": 0.25,
+    "chi3_ic": 1.6,
+    "chi3_days_per_unit": 0.2638,
+    "chi3_b": 2.0,
+    "enable_book": true,
+    "tick_size": 0.01,
+    "book_mu_mo": 900.0,
+    "book_alpha_lo": 1500.0,
+    "book_delta_cancel": 5.0,
+    "book_mu_place": 0.9,
+    "book_place_offset": 3.0,
+    "book_max_place_ticks": 200,
+    "book_allow_inspread": true,
+    "book_inspread_cap": 10,
+    "book_size_round_weight": 0.7,
+    "book_size_pareto_alpha": 2.3,
+    "book_lot_values": [
+      1.0,
+      2.0,
+      5.0,
+      10.0
+    ],
+    "book_lot_probs": [
+      0.45,
+      0.25,
+      0.2,
+      0.1
+    ],
+    "book_snapshot_interval_sec": 60.0,
+    "book_snapshot_levels": 10,
+    "book_depth_ticks": 10,
+    "book_burn_in_days": 5.0,
+    "book_init_levels": 30,
+    "book_init_size": 20.0,
+    "book_window_half_ticks": 9900,
+    "book_debug_invariants": false,
+    "enable_metaorder": true,
+    "meta_alpha": 1.6,
+    "meta_n_min": 1,
+    "meta_psi": 0.6,
+    "meta_supply_ratio": 0.5,
+    "meta_pool_cap": 100000,
+    "meta_sequential": false,
+    "enable_iceberg": true,
+    "book_iceberg_frac": 0.15,
+    "book_iceberg_display_lots": 2.0,
+    "book_iceberg_refill_tail": true,
+    "enable_queue_reactive": true,
+    "qr_inspread_slope": 3.0,
+    "qr_spread_ref": 1.0,
+    "qr_inspread_cap": 8.0,
+    "qr_inspread_flat": 0.0,
+    "qr_cx_dist_decay": 0.0,
+    "qr_cx_w_floor": 1.0,
+    "qr_cx_len_pow": 0.0,
+    "qr_cx_back": 0.0,
+    "qr_mo_depth_frac": 0.0,
+    "qr_obi_bias": 0.0,
+    "enable_uncertainty_zones": false,
+    "uz_eta": 0.15,
+    "kappa": 0.2,
+    "kappa_tau_meta_sec": 430.0,
+    "c_vol": 0.65,
+    "c_vol_ma_days": 3.0,
+    "c_vol_v_scale": 0.45,
+    "enable_feedback": true,
+    "enable_jump_hawkes": false,
+    "fb_b_delta": 0.3,
+    "fb_b_place": 0.3,
+    "fb_b_n": 2.0,
+    "fb_c_delta": 0.018,
+    "fb_c_place": 0.018,
+    "fb_u_scale": 2.0,
+    "fb_u_center": 0.0,
+    "fb_n_min": 0.75,
+    "fb_n_max": 0.95,
+    "fb_rv_short_halflife_min": 15.0,
+    "fb_rv_long_halflife_days": 2.0,
+    "crisis_k_sigma": 8.0,
+    "crisis_spread_mult": 5.0,
+    "crisis_norm_halflife_days": 30.0,
+    "crisis_freq_per_year_lo": 5.0,
+    "crisis_freq_per_year_hi": 150.0,
+    "n_assets": 3,
+    "factor_betas": [
+      0.6,
+      0.8,
+      0.4
+    ],
+    "msm_k_common": 6,
+    "ou_common_share": 0.5,
+    "jump_common_share": 0.5,
+    "asset_overrides": [
+      {},
+      {
+        "kappa": 0.3,
+        "hawkes_mu_mo": 271.9,
+        "hawkes_mu_lo": 452.98,
+        "hawkes_nbar_ref": 477.9
+      },
+      {
+        "kappa": 0.1,
+        "hawkes_mu_mo": 54.38,
+        "hawkes_mu_lo": 90.596,
+        "hawkes_nbar_ref": 95.58
+      }
+    ],
+    "validation": {
+      "primary_bar_sec": 60,
+      "scales_sec": [
+        1,
+        2,
+        5,
+        10,
+        30,
+        60,
+        120,
+        300,
+        600,
+        900,
+        1800,
+        23400
+      ],
+      "min_obs_for_gate": 10000,
+      "acf_max_lag": 100,
+      "acf_abs_max_lag": 1000,
+      "ljung_box_lags": [
+        1,
+        5,
+        10,
+        20,
+        50
+      ],
+      "ljung_box_primary_lag": 20,
+      "gph_bandwidth_exponent": 0.65,
+      "gph_bandwidth_profile": [
+        0.5,
+        0.6,
+        0.65,
+        0.7,
+        0.8
+      ],
+      "lw_bandwidth_exponent": 0.65,
+      "hill_k_fracs": [
+        0.005,
+        0.01,
+        0.02,
+        0.05,
+        0.1
+      ],
+      "hill_primary_k_frac": 0.05,
+      "qq_n_points": 201,
+      "vr_qs": [
+        2,
+        4,
+        8,
+        16,
+        32,
+        64
+      ],
+      "zeta_qs": [
+        0.5,
+        1.0,
+        1.5,
+        2.0,
+        2.5,
+        3.0
+      ],
+      "adf_maxlag": 10,
+      "micro_max_lag": 200,
+      "micro_fit_lag_range": [
+        5,
+        200
+      ],
+      "rng_probe_draws": 1000,
+      "daily_acf_max_lag": 150,
+      "daily_powerlaw_lag_range": [
+        1,
+        100
+      ],
+      "daily_gph_bandwidth_exponent": 0.65,
+      "daily_scales_days": [
+        1,
+        2,
+        5,
+        10,
+        20,
+        50
+      ],
+      "daily_min_obs_for_gate": 250,
+      "daily_zeta_qs": [
+        0.5,
+        1.0,
+        1.5,
+        2.0,
+        2.5,
+        3.0
+      ],
+      "ensemble_n_paths": 200000,
+      "rough_h_scales_seconds": [
+        300,
+        600,
+        1200,
+        1800,
+        3600,
+        7200,
+        14400
+      ],
+      "rough_h_qs": [
+        0.5,
+        1.0,
+        1.5,
+        2.0,
+        3.0
+      ],
+      "rv_window_seconds": 1800,
+      "vol_incr_acf_max_lag": 60,
+      "inv_tol_gph_d_abs": 0.03,
+      "inv_tol_powerlaw_gamma_rel": 0.1,
+      "inv_tol_acf_profile_mean_abs": 0.035,
+      "inv_tol_kurtosis_daily_increase": 0.5,
+      "inv_tol_zeta_c2_abs": 0.005,
+      "scale_invariance_steps_per_day": 390,
+      "si_tol_kurtosis_rel": 0.25,
+      "si_tol_gph_d_abs": 0.1,
+      "si_tol_acf1_abs": 0.07,
+      "si_tol_var_logvol_abs": 0.11
+    }
+  },
+  "generation": {
+    "n_charts": 100,
+    "n_runs": 38,
+    "assets_per_run": 3,
+    "seeds_used": [
+      42,
+      43,
+      44,
+      45,
+      46,
+      47,
+      48,
+      50,
+      51,
+      52,
+      53,
+      54,
+      56,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63,
+      64,
+      65,
+      66,
+      67,
+      68,
+      69,
+      70,
+      71,
+      73,
+      74,
+      75,
+      76,
+      77,
+      78,
+      79,
+      80,
+      81,
+      82,
+      84
+    ],
+    "seeds_skipped": [
+      {
+        "seed": 49,
+        "error": "資産 2: ZI ミッドが板の絶対ティック窓から逸脱しました。 book_window_half_ticks を広げるか期間を見直すこと。"
+      },
+      {
+        "seed": 55,
+        "error": "資産 1: ZI ミッドが板の絶対ティック窓から逸脱しました。 book_window_half_ticks を広げるか期間を見直すこと。"
+      },
+      {
+        "seed": 57,
+        "error": "資産 0: ZI ミッドが板の絶対ティック窓から逸脱しました。 book_window_half_ticks を広げるか期間を見直すこと。"
+      },
+      {
+        "seed": 72,
+        "error": "資産 2: ZI ミッドが板の絶対ティック窓から逸脱しました。 book_window_half_ticks を広げるか期間を見直すこと。"
+      },
+      {
+        "seed": 83,
+        "error": "資産 0: ZI ミッドが板の絶対ティック窓から逸脱しました。 book_window_half_ticks を広げるか期間を見直すこと。"
+      }
+    ],
+    "overnight_composed": true,
+    "runtime_sec": 1052.4122980999527
+  },
+  "screening": {
+    "criterion": "transmission = Var(obs daily cc) / Var(latent daily cc)",
+    "t_max": 2.534,
+    "t_max_basis": "S12 本番 (単一資産 1000 日 x 24 有効シード) の fb_rv_excess_ari max = 2.534。S12 で実測された増幅までは設計された危機増幅として通し、それを超える本を板ミッドの暴走として落とす",
+    "n_rejected": 12,
+    "rejected": [
+      {
+        "seed": 44,
+        "asset": 2,
+        "transmission": 4.829632017655448,
+        "vol_obs": 0.3811870940393091,
+        "vol_latent": 0.17345274099653538,
+        "max_abs_daily_return": 0.1992926332919831
+      },
+      {
+        "seed": 46,
+        "asset": 2,
+        "transmission": 3.1994845296364813,
+        "vol_obs": 0.43531069068685413,
+        "vol_latent": 0.2433656759341995,
+        "max_abs_daily_return": 0.23476221850942203
+      },
+      {
+        "seed": 48,
+        "asset": 2,
+        "transmission": 4.233992839107834,
+        "vol_obs": 0.38214087559782395,
+        "vol_latent": 0.18571562096792057,
+        "max_abs_daily_return": 0.23792488626996988
+      },
+      {
+        "seed": 51,
+        "asset": 2,
+        "transmission": 2.7064057937504944,
+        "vol_obs": 0.3112835379081895,
+        "vol_latent": 0.1892168013372289,
+        "max_abs_daily_return": 0.17401921394121445
+      },
+      {
+        "seed": 54,
+        "asset": 2,
+        "transmission": 4.405259606526796,
+        "vol_obs": 0.46484815211130787,
+        "vol_latent": 0.22147532895205851,
+        "max_abs_daily_return": 0.44936031891064054
+      },
+      {
+        "seed": 56,
+        "asset": 0,
+        "transmission": 2.5510693965559885,
+        "vol_obs": 0.4127918278754819,
+        "vol_latent": 0.25844608303577515,
+        "max_abs_daily_return": 0.21066714930656616
+      },
+      {
+        "seed": 64,
+        "asset": 2,
+        "transmission": 6.3299120213720235,
+        "vol_obs": 0.5585494207116986,
+        "vol_latent": 0.22200500667242287,
+        "max_abs_daily_return": 0.6087013521707023
+      },
+      {
+        "seed": 65,
+        "asset": 0,
+        "transmission": 3.0637970105825914,
+        "vol_obs": 0.3502296559032196,
+        "vol_latent": 0.20008886624583844,
+        "max_abs_daily_return": 0.1947347762171665
+      },
+      {
+        "seed": 77,
+        "asset": 0,
+        "transmission": 4.226619095191114,
+        "vol_obs": 0.5726146865785393,
+        "vol_latent": 0.2785261187601616,
+        "max_abs_daily_return": 0.5069824837391121
+      },
+      {
+        "seed": 78,
+        "asset": 0,
+        "transmission": 2.842698780952452,
+        "vol_obs": 0.3059455087784311,
+        "vol_latent": 0.18145906158213737,
+        "max_abs_daily_return": 0.18321171468014708
+      },
+      {
+        "seed": 78,
+        "asset": 2,
+        "transmission": 3.595133014103174,
+        "vol_obs": 0.36426949804095327,
+        "vol_latent": 0.19211679181653446,
+        "max_abs_daily_return": 0.19235746542900767
+      },
+      {
+        "seed": 79,
+        "asset": 0,
+        "transmission": 4.6550541910475784,
+        "vol_obs": 0.4470840368447083,
+        "vol_latent": 0.20721767333517496,
+        "max_abs_daily_return": 0.4292641333316576
+      }
+    ],
+    "transmission_percentiles": {
+      "5": 0.8501177383622283,
+      "25": 1.003803806975995,
+      "50": 1.1908655635005938,
+      "75": 1.478660102030502,
+      "90": 1.7331371969342326,
+      "95": 1.9090150045351382,
+      "100": 2.3513213410096374
+    },
+    "transmission_median_by_asset": {
+      "0": 1.249750461409895,
+      "1": 1.0379384120607054,
+      "2": 1.3451623157275803
+    },
+    "note": "★暴走は「窓に収まったか」では捕まらない (窓逸脱でスキップされた実行とは別に、窓内に留まりながら decouple する本がある)。流動性 (実効アンカー束 κ·μ) が低い資産ほど起きやすい — 資産 1 (κ·μ が参照の 3 倍) は全数が T ≤ 1.6 で健全"
+  },
+  "ensemble": {
+    "stage": "S13",
+    "n_charts": 100,
+    "n_days": 495,
+    "n_runs": 38,
+    "assets_per_run": 3,
+    "independence_across_runs": {
+      "n_pairs": 4862,
+      "mean_corr": -0.001105658927515935,
+      "max_abs_corr": 0.2361114104339228,
+      "z_std": 1.0870746512055975,
+      "max_abs_z": 5.247838362576119,
+      "null_z_std_median": 1.0804203341001184,
+      "null_z_std_p95": 1.0993047396073263,
+      "z_std_pvalue_vs_null": 0.23,
+      "null_max_abs_z_median": 6.255843077240168,
+      "null_max_abs_z_p95": 7.6862976776701615,
+      "max_abs_z_pvalue_vs_null": 0.79,
+      "n_null_replicates": 200,
+      "naive_corr_se": 0.04499212706658475,
+      "naive_expected_max_abs_z": 3.7119400896821793,
+      "naive_max_abs_z_pvalue": 0.0007479539302409892,
+      "frac_abs_z_over_1_96": 0.07178116001645414,
+      "note": "実行が違えば全ストリームが独立 (名前ハッシュ RNG)。判定は符号ランダム化の経験帰無で行う — 素朴な SE (等分散正規の式) はこの系の不均一分散と α≈2.5 の裾では偽陽性を出す"
+    },
+    "correlation_within_run": {
+      "0-1": {
+        "corr_close_to_close": 0.18273914689105175,
+        "corr_intraday": 0.23911994387564695,
+        "predicted_cc_from_intraday": 0.19129595510051756,
+        "cc_minus_prediction": -0.008556808209465805,
+        "latent_theory_intraday": 0.4424588638299747,
+        "n_pairs": 32
+      },
+      "0-2": {
+        "corr_close_to_close": 0.08295102985979948,
+        "corr_intraday": 0.11041425956802285,
+        "predicted_cc_from_intraday": 0.08833140765441828,
+        "cc_minus_prediction": -0.005380377794618807,
+        "latent_theory_intraday": 0.25122943191498737,
+        "n_pairs": 26
+      },
+      "1-2": {
+        "corr_close_to_close": 0.12270978661552628,
+        "corr_intraday": 0.1596898115496822,
+        "predicted_cc_from_intraday": 0.12775184923974578,
+        "cc_minus_prediction": -0.0050420626242194955,
+        "latent_theory_intraday": 0.31497257588664984,
+        "n_pairs": 30
+      }
+    },
+    "prediction": {
+      "rule": "corr_cc = corr_intraday x (1 - overnight_variance_share)",
+      "overnight_variance_share": 0.2,
+      "why": "ON ギャップは資産別ストリーム (l0.overnight) 由来で資産間に共分散を持たない。合成すると分子は不変・分母が 1/(1-share) 倍になるので相関はちょうど (1-share) 倍に希釈される",
+      "max_abs_deviation": 0.008556808209465805
+    },
+    "normalization": {
+      "sigma_bar": 0.2217,
+      "annualized_vol_cc_median_all": 0.23360988881800887,
+      "note": "クローズ・トゥ・クローズ SD x √252。板の伝達率 T_daily ≈ 0.99 とマイクロ構造ノイズの両方が乗るので σ̄ 丁度にはならない",
+      "martingale_gross_mean": 1.1493703523574845,
+      "martingale_se": 0.030118974092249017
+    },
+    "per_asset": {
+      "0": {
+        "n_charts": 33,
+        "annualized_vol_cc_median": 0.23841782812939308,
+        "realized_vol_5min_median": 0.039539381580419704,
+        "volume_per_day_median": 10369.626262626263,
+        "trades_per_day_median": 3710.1676767676768,
+        "kurtosis_median": 11.720264541975238,
+        "max_drawdown_median": 0.24135398396819097
+      },
+      "1": {
+        "n_charts": 37,
+        "annualized_vol_cc_median": 0.22175125550040453,
+        "realized_vol_5min_median": 0.036156124258415565,
+        "volume_per_day_median": 18870.056565656567,
+        "trades_per_day_median": 6756.361616161616,
+        "kurtosis_median": 11.559117505591303,
+        "max_drawdown_median": 0.24215968572729962
+      },
+      "2": {
+        "n_charts": 30,
+        "annualized_vol_cc_median": 0.24586020627212019,
+        "realized_vol_5min_median": 0.0534632603800838,
+        "volume_per_day_median": 3806.7060606060604,
+        "trades_per_day_median": 1365.0646464646466,
+        "kurtosis_median": 12.002783093425144,
+        "max_drawdown_median": 0.26549953469382126
+      }
+    },
+    "pooled_daily_returns": {
+      "n": 49500,
+      "std": 0.015183565854576662,
+      "kurtosis": 26.992708812253507,
+      "skewness": -0.21576700041064917,
+      "acf_lag1": -0.04507458075217132,
+      "acf_lag1_z": -10.028461127421727,
+      "abs_acf_lag1": 0.2554284892860341
+    },
+    "ohlc": {
+      "mean_log_range": 0.011025219204449894,
+      "mean_abs_body": 0.007889065607629642,
+      "range_to_body_ratio": 1.3975316916856704,
+      "note": "高値・安値は 1 秒経路から取得 (終値だけからは復元できない量)"
+    },
+    "runtime_sec": 1052.068875099998
+  }
+}
