@@ -315,6 +315,152 @@ def compose_log_sigma(
     return result
 
 
+def simulate_msm_path(
+    cfg, rng: np.random.Generator, t_days: np.ndarray, component_range=None
+) -> tuple[np.ndarray, dict]:
+    """MSM の ``0.5 * sum_i log M_i(t)`` を成分レンジ指定つきで生成する。
+
+    :meth:`GBMPriceLayer._simulate_msm` の実体 (アルゴリズムの説明はそちら)。
+    S13 の共通因子 (cross_factor) と資産固有側が**この 1 つの関数**を使う —
+    式を 2 か所に書くと片方だけ直して乖離する事故が起きるため。
+
+    - ``component_range=None`` は全成分 [0, k)。**S12 までの経路とビット単位同一**
+      (乱数消費列・浮動小数の演算順序とも変更なし)。
+    - m0 は常に全体の配分 (vol_var_target_msm, k) から解く — 部分集合でも
+      1 成分あたりの分散寄与は変わらない (共有分割は周辺分布を保存する §4.2)。
+    """
+    k = cfg.msm_k
+    lo, hi = (0, k) if component_range is None else component_range
+    if not (0 <= lo <= hi <= k):
+        raise ValueError(f"component_range ({lo}, {hi}) が [0, {k}] の外です")
+    m0 = solve_m0(k, cfg.vol_var_target_msm)
+    log_hi = math.log(m0)
+    log_lo = math.log(2.0 - m0)
+    T = float(t_days[-1])
+    n_points = int(t_days.shape[0])
+
+    switch_hash = hashlib.sha256()
+    n_switches: list[int] = []
+    occupancy_hi: list[float] = []
+    bounds_per_component: list[np.ndarray] = []
+    values_per_component: list[np.ndarray] = []
+
+    for i in range(lo, hi):
+        gamma_i = cfg.msm_gamma1_per_day * cfg.msm_b**i
+        n_switch = int(rng.poisson(gamma_i * T))
+        switch_times = np.sort(rng.uniform(0.0, T, n_switch))
+        # 区間は n_switch + 1 個。先頭が初期値で、定常分布 (等確率) から引く。
+        states = rng.integers(0, 2, n_switch + 1)
+
+        # 切替 m 以降の状態を使い始める最初の格子点。
+        # bounds[m] <= j  <=>  switch_times[m] <= t_days[j] なので、
+        # 素朴版の状態番号 (自分以下の切替の個数) と厳密に一致する。
+        bounds = np.searchsorted(t_days, switch_times, side="left")
+        np.clip(bounds, 0, n_points, out=bounds)
+        log_values = np.where(states == 1, log_hi, log_lo)
+        bounds_per_component.append(bounds)
+        values_per_component.append(log_values)
+
+        seg_len = np.diff(np.concatenate((np.zeros(1, dtype=np.int64), bounds,
+                                          np.full(1, n_points, dtype=np.int64))))
+        occupancy_hi.append(float(seg_len[states == 1].sum() / n_points))
+
+        switch_hash.update(np.int64(n_switch).tobytes())
+        switch_hash.update(np.ascontiguousarray(switch_times).tobytes())
+        switch_hash.update(np.ascontiguousarray(states).tobytes())
+        n_switches.append(n_switch)
+
+    # 全成分の切替点を統合。区間数は sum(n_switch) + 1 で、格子点数とは無関係。
+    starts = np.unique(
+        np.concatenate((np.zeros(1, dtype=np.int64), *bounds_per_component))
+        if bounds_per_component
+        else np.zeros(1, dtype=np.int64)
+    )
+    starts = starts[starts < n_points]
+    ends = np.append(starts[1:], n_points)
+    seg_value = np.zeros(starts.size, dtype=np.float64)
+    for bounds, log_values in zip(bounds_per_component, values_per_component):
+        seg_value += log_values[np.searchsorted(bounds, starts, side="right")]
+    seg_value *= 0.5
+
+    total = np.empty(n_points, dtype=np.float64)
+    for a, b, value in zip(starts, ends, seg_value):
+        total[a:b] = value
+    diag = {
+        "k": k,
+        "component_range": [int(lo), int(hi)],
+        "b": cfg.msm_b,
+        "gamma_per_day": [cfg.msm_gamma1_per_day * cfg.msm_b**i for i in range(lo, hi)],
+        "m0": m0,
+        "target_var_log_sigma": cfg.vol_var_target_msm,
+        "theoretical_var_log_sigma": msm_theoretical_var_log_sigma(k, m0),
+        "n_switches": n_switches,
+        "expected_switches": [
+            cfg.msm_gamma1_per_day * cfg.msm_b**i * T for i in range(lo, hi)
+        ],
+        "occupancy_hi": occupancy_hi,
+        "horizon_days": T,
+        "n_merged_segments": int(starts.size),
+        # 切替過程のダイジェスト。解像度を変えても一致することが
+        # 「物理時間定義」の直接証拠になる (test_scale_invariance)。
+        "switch_digest": switch_hash.hexdigest(),
+    }
+    return total, diag
+
+
+def simulate_ou_path(
+    rng: np.random.Generator,
+    t_days: np.ndarray,
+    theta_per_day: float,
+    var_x: float,
+    driver: np.ndarray | None = None,
+) -> tuple[np.ndarray, dict]:
+    """平均 0 の OU を厳密離散化で生成する (:meth:`GBMPriceLayer._simulate_slow_ou` の実体)。
+
+    乱数消費は (x0 -> z 列) の順で固定。``driver`` があれば z 列は消費しない
+    (レバレッジ = 駆動の置き換え)。S13 の共通 OU (cross_factor) と資産固有側が
+    この 1 つを使う。
+    """
+    dt = np.diff(t_days)
+    if dt.size and abs(dt.min() - dt.max()) > 1e-12 * max(dt.max(), 1.0):
+        raise NotImplementedError(
+            "非一様グリッド上の OU は S4 (オーバーナイト導入) で実装します。"
+            " 厳密離散化自体は刻みごとの係数で対応可能です。"
+        )
+    step_days = float(dt[0])
+    a = math.exp(-theta_per_day * step_days)
+    s = math.sqrt(var_x * (1.0 - a * a))
+
+    x0 = float(rng.normal(0.0, math.sqrt(var_x)))
+    if driver is None:
+        z = rng.standard_normal(t_days.shape[0] - 1)
+    else:
+        if driver.shape[0] != t_days.shape[0] - 1:
+            raise ValueError("OU 駆動列の長さがステップ数と一致しません")
+        z = driver
+    # X_j = a X_{j-1} + s z_j  (j >= 1) を lfilter で。zi = [a * x0] により
+    # y[0] = s z[0] + a x0 = X_1 となる。
+    y, _ = signal.lfilter([s], [1.0, -a], z, zi=np.array([a * x0]))
+    if driver is None:
+        del z
+    x = np.empty(t_days.shape[0], dtype=np.float64)
+    x[0] = x0
+    x[1:] = y
+    del y
+    diag = {
+        "theta_per_day": theta_per_day,
+        "target_var": var_x,
+        "eta_per_sqrt_day": math.sqrt(2.0 * theta_per_day * var_x),
+        "step_days": step_days,
+        "ar_coeff": a,
+        "x0": x0,
+        "sample_var": float(x.var()),
+        "sample_mean": float(x.mean()),
+        "driver": "external" if driver is not None else "independent",
+    }
+    return x, diag
+
+
 # ---------------------------------------------------------------------------
 class GBMPriceLayer:
     """log p*(t) を生成する。S1 では確率ボラつき GBM。"""
@@ -327,11 +473,20 @@ class GBMPriceLayer:
         rng: RNGRegistry,
         calendar: ConstantCalendar,
         activity: ConstantActivity | None = None,
+        factor=None,
     ) -> None:
         self._config = config
         self._rng = rng
         self._calendar = calendar
         self._activity = activity
+        #: S13: (beta_i, CommonFactorState)。None なら単一資産 (S12 までと同一経路)。
+        if factor is not None:
+            beta_i, common_state = factor
+            self._factor_beta = float(beta_i)
+            self._common = common_state
+        else:
+            self._factor_beta = 0.0
+            self._common = None
         #: 秒 -> 年 の換算。年 = 252 立会日 x 1 セッションの秒数。
         self._seconds_per_year = TRADING_DAYS_PER_YEAR * calendar.session_seconds()
         #: 秒 -> 日 の換算。gamma_i と theta は「1 日あたり」の物理時間定義 (§7)。
@@ -413,7 +568,7 @@ class GBMPriceLayer:
     # ------------------------------------------------------------------
     # S1: MSM 成分
     # ------------------------------------------------------------------
-    def _simulate_msm(self, t_days: np.ndarray) -> np.ndarray:
+    def _simulate_msm(self, t_days: np.ndarray, component_range=None) -> np.ndarray:
         """0.5 * sum_i log M_i(t) をグリッド上で生成する (切替時刻ベース)。
 
         per-step の Bernoulli ループは k*N 回の乱数生成になり 11.7M ステップでは
@@ -438,79 +593,16 @@ class GBMPriceLayer:
         ``(((0 + v_0) + v_1) + ... ) * 0.5`` を成分順に計算しており、素朴版が
         格子点ごとに行う浮動小数演算と順序も含めて同一だからである
         (tests/test_s1_vol.py がリファレンス実装との一致を固定している)。
+
+        S13: ``component_range=(lo, hi)`` で成分の部分集合だけを生成する
+        (共通 = 遅い側 [0, k_c)、固有 = 速い側 [k_c, k))。実体は
+        :func:`simulate_msm_path` — 共通側 (cross_factor) と単一の情報源を共有する。
+        既定 (None) は全成分 [0, k) で、S12 までとビット単位同一。
         """
-        cfg = self._config
-        rng = self._rng.get("l2.vol_msm")
-        k = cfg.msm_k
-        m0 = solve_m0(k, cfg.vol_var_target_msm)
-        log_hi = math.log(m0)
-        log_lo = math.log(2.0 - m0)
-        T = float(t_days[-1])
-        n_points = int(t_days.shape[0])
-
-        switch_hash = hashlib.sha256()
-        n_switches: list[int] = []
-        occupancy_hi: list[float] = []
-        bounds_per_component: list[np.ndarray] = []
-        values_per_component: list[np.ndarray] = []
-
-        for i in range(k):
-            gamma_i = cfg.msm_gamma1_per_day * cfg.msm_b**i
-            n_switch = int(rng.poisson(gamma_i * T))
-            switch_times = np.sort(rng.uniform(0.0, T, n_switch))
-            # 区間は n_switch + 1 個。先頭が初期値で、定常分布 (等確率) から引く。
-            states = rng.integers(0, 2, n_switch + 1)
-
-            # 切替 m 以降の状態を使い始める最初の格子点。
-            # bounds[m] <= j  <=>  switch_times[m] <= t_days[j] なので、
-            # 素朴版の状態番号 (自分以下の切替の個数) と厳密に一致する。
-            bounds = np.searchsorted(t_days, switch_times, side="left")
-            np.clip(bounds, 0, n_points, out=bounds)
-            log_values = np.where(states == 1, log_hi, log_lo)
-            bounds_per_component.append(bounds)
-            values_per_component.append(log_values)
-
-            seg_len = np.diff(np.concatenate((np.zeros(1, dtype=np.int64), bounds,
-                                              np.full(1, n_points, dtype=np.int64))))
-            occupancy_hi.append(float(seg_len[states == 1].sum() / n_points))
-
-            switch_hash.update(np.int64(n_switch).tobytes())
-            switch_hash.update(np.ascontiguousarray(switch_times).tobytes())
-            switch_hash.update(np.ascontiguousarray(states).tobytes())
-            n_switches.append(n_switch)
-
-        # 全成分の切替点を統合。区間数は sum(n_switch) + 1 で、格子点数とは無関係。
-        starts = np.unique(
-            np.concatenate((np.zeros(1, dtype=np.int64), *bounds_per_component))
+        total, diag = simulate_msm_path(
+            self._config, self._rng.get("l2.vol_msm"), t_days, component_range
         )
-        starts = starts[starts < n_points]
-        ends = np.append(starts[1:], n_points)
-        seg_value = np.zeros(starts.size, dtype=np.float64)
-        for bounds, log_values in zip(bounds_per_component, values_per_component):
-            seg_value += log_values[np.searchsorted(bounds, starts, side="right")]
-        seg_value *= 0.5
-
-        total = np.empty(n_points, dtype=np.float64)
-        for a, b, value in zip(starts, ends, seg_value):
-            total[a:b] = value
-        self.last_diagnostics["msm"] = {
-            "k": k,
-            "b": cfg.msm_b,
-            "gamma_per_day": [cfg.msm_gamma1_per_day * cfg.msm_b**i for i in range(k)],
-            "m0": m0,
-            "target_var_log_sigma": cfg.vol_var_target_msm,
-            "theoretical_var_log_sigma": msm_theoretical_var_log_sigma(k, m0),
-            "n_switches": n_switches,
-            "expected_switches": [
-                cfg.msm_gamma1_per_day * cfg.msm_b**i * T for i in range(k)
-            ],
-            "occupancy_hi": occupancy_hi,
-            "horizon_days": T,
-            "n_merged_segments": int(starts.size),
-            # 切替過程のダイジェスト。解像度を変えても一致することが
-            # 「物理時間定義」の直接証拠になる (test_scale_invariance)。
-            "switch_digest": switch_hash.hexdigest(),
-        }
+        self.last_diagnostics["msm"] = diag
         return total
 
     # ------------------------------------------------------------------
@@ -544,52 +636,15 @@ class GBMPriceLayer:
             前段階照合の証人 (x0 の厳密一致) はレバレッジ有効時も機能する。
         """
         cfg = self._config
-        rng = self._rng.get("l2.vol_slow")
         theta = math.log(2.0) / cfg.ou_half_life_days  # [1/日]
         # S3 の中速成分は slow の予算 (0.05) の内数として再配分される。
         var_x = var_override if var_override is not None else cfg.vol_var_target_slow
-
-        dt = np.diff(t_days)
-        if dt.size and abs(dt.min() - dt.max()) > 1e-12 * max(dt.max(), 1.0):
-            raise NotImplementedError(
-                "非一様グリッド上の OU は S4 (オーバーナイト導入) で実装します。"
-                " 厳密離散化自体は刻みごとの係数で対応可能です。"
-            )
-        step_days = float(dt[0])
-        a = math.exp(-theta * step_days)
-        s = math.sqrt(var_x * (1.0 - a * a))
-
-        x0 = float(rng.normal(0.0, math.sqrt(var_x)))
-        if driver is None:
-            z = rng.standard_normal(t_days.shape[0] - 1)
-        else:
-            if driver.shape[0] != t_days.shape[0] - 1:
-                raise ValueError("OU 駆動列の長さがステップ数と一致しません")
-            z = driver
-        # X_j = a X_{j-1} + s z_j  (j >= 1) を lfilter で。zi = [a * x0] により
-        # y[0] = s z[0] + a x0 = X_1 となる。
-        y, _ = signal.lfilter([s], [1.0, -a], z, zi=np.array([a * x0]))
-        # z はもう不要 (driver は呼び出し側の所有なので触らない)。本番では 1 配列
-        # 936MB なので、x を確保する前に解放して同時に生きる大配列を減らす。
-        if driver is None:
-            del z
-        x = np.empty(t_days.shape[0], dtype=np.float64)
-        x[0] = x0
-        x[1:] = y
-        del y
-
-        self.last_diagnostics["slow_ou"] = {
-            "theta_per_day": theta,
-            "half_life_days": cfg.ou_half_life_days,
-            "target_var": var_x,
-            "eta_per_sqrt_day": math.sqrt(2.0 * theta * var_x),
-            "step_days": step_days,
-            "ar_coeff": a,
-            "x0": x0,
-            "sample_var": float(x.var()),
-            "sample_mean": float(x.mean()),
-            "driver": "leverage" if driver is not None else "independent",
-        }
+        x, diag = simulate_ou_path(
+            self._rng.get("l2.vol_slow"), t_days, theta, var_x, driver
+        )
+        diag["half_life_days"] = cfg.ou_half_life_days
+        diag["driver"] = "leverage" if driver is not None else "independent"
+        self.last_diagnostics["slow_ou"] = diag
         return x
 
     # ------------------------------------------------------------------
@@ -941,7 +996,12 @@ class GBMPriceLayer:
         np.minimum(lam, cfg.jump_intensity_cap, out=lam)
         # S4 補正 (ON 取り分 + phi の Jensen 効果) — 詳細は jump_intensity_scale。
         intensity_scale = self.jump_intensity_scale
-        lam *= cfg.jump_lambda_per_year * intensity_scale  # [1/年]
+        # S13: 共通 (システマティック) ジャンプがあるとき、資産固有側は (1−s_J)。
+        # 総強度 λ0 は共通 + 固有で S12 と同じ (資産あたりの QV 予算保存 §4.3)。
+        idio_share = (
+            1.0 - cfg.jump_common_share if self._common is not None else 1.0
+        )
+        lam *= cfg.jump_lambda_per_year * intensity_scale * idio_share  # [1/年]
 
         u = self._rng.get("l2.jump_time").uniform(size=n_steps)
         prob = lam * dt_years
@@ -974,7 +1034,13 @@ class GBMPriceLayer:
         )
         lam_eff = -float(compensation.mean()) / (k_comp * dt_years)  # 実効平均強度
         diffusion_qv = sig_bar**2
-        jump_qv = lam_eff * e_j2
+        # S13: jv_share_theory は**共通ジャンプ込みの総量**で報告する (固有だけだと
+        # (1−s_J) 倍に見え、QV 予算の照合が誤る)。共通側の実効強度は
+        # cross_factor が同じ規約 (補償平均 / (k dt)) で計算した値。
+        lam_eff_common = 0.0
+        if self._common is not None and self._common.jump_lam_eff > 0.0:
+            lam_eff_common = self._common.jump_lam_eff
+        jump_qv = (lam_eff + lam_eff_common) * e_j2
         self.last_diagnostics["jump"] = {
             "p_up": cfg.jump_p_up,
             "eta_up": cfg.jump_eta_up,
@@ -988,6 +1054,9 @@ class GBMPriceLayer:
             # S4 の強度補正。1.0 なら補正なし (S0〜S3)。
             "intensity_scale_s4": intensity_scale,
             "lambda_effective_per_year": lam_eff,
+            # S13: 共通ジャンプの内訳 (単一資産では 1.0 / 0.0)。
+            "idio_intensity_share": idio_share,
+            "lambda_effective_common_per_year": lam_eff_common,
             "n_jumps": n_jumps,
             "n_up": int(up.sum()),
             "mean_jump": float(sizes.mean()) if n_jumps else None,
@@ -1211,10 +1280,29 @@ class GBMPriceLayer:
                 if x_mid is not None
                 else None
             )
+            # S13: 共通 OU があるときの固有側は残り (1−f_c) 分。
+            if self._common is not None and self._common.ou_common_var > 0.0:
+                slow_var = cfg.vol_var_target_slow - self._common.ou_common_var
             x_slow = self._simulate_slow_ou(t_days, driver=ou_driver, var_override=slow_var)
+            # 凸性補正は OU 族の**合計**分散 (共通 + 固有 = 総予算) に対して行う。
+            # x_mid の場合のみ、後段の加算ブロックが mid の分を足し戻す。
             var_slow = cfg.vol_var_target_slow if x_mid is None else slow_var
+            # S13: 共通 OU を加算 (固有配列は自分の所有なので in-place 可)。
+            if self._common is not None and isinstance(self._common.x_slow, np.ndarray):
+                x_slow += self._common.x_slow
         if cfg.enable_msm:
-            half_log_msm = self._simulate_msm(t_days)
+            # S13: 共有分割 — 固有は速い側 [k_c, k)、共通 (遅い側 [0, k_c)) を加算。
+            if self._common is not None and self._common.msm_k_common > 0:
+                k_c = self._common.msm_k_common
+                if k_c < cfg.msm_k:
+                    half_log_msm = self._simulate_msm(
+                        t_days, component_range=(k_c, cfg.msm_k)
+                    )
+                    half_log_msm += self._common.half_log_msm
+                else:
+                    half_log_msm = self._common.half_log_msm.copy()
+            else:
+                half_log_msm = self._simulate_msm(t_days)
         if x_mid is not None:
             # 合成上は slow チャンネル (OU 族) に合算する。凸性補正も加算。
             if isinstance(x_slow, np.ndarray):
@@ -1340,6 +1428,38 @@ class GBMPriceLayer:
         return log_vol
 
     # ------------------------------------------------------------------
+    # S13: 因子合成
+    # ------------------------------------------------------------------
+    def _compose_factor_innovation(self, z: np.ndarray) -> np.ndarray:
+        """z_i = β_i z_F + √(1−β_i²) z_i^idio (指示書 §4.1)。
+
+        z (固有チャネル — bridge 済み) を in-place で合成後の革新に変換する。
+        両項とも線形なので、固有側の bridge が保証するセル内無相関・単位分散は
+        合成後も厳密に保たれる (z_F は iid、bridge 項と独立)。資産間の per-step
+        相関は全スケールで β_i β_j。
+
+        β=0 は完全スキップ (乗算すら行わない) — 退化テスト (§8.3) が
+        「因子経路を通しても資産 0 は S12 とビット単位一致」を固定する。
+        """
+        if self._common is None or self._factor_beta == 0.0:
+            return z
+        beta = self._factor_beta
+        s_id = math.sqrt(1.0 - beta * beta)
+        z_f = self._common.z_f
+        if z_f.shape[0] != z.shape[0]:
+            raise ValueError(
+                f"共通因子の長さ ({z_f.shape[0]}) がステップ数 ({z.shape[0]}) と一致しません"
+            )
+        # 本番では 1 配列 187MB (1000日)。一時配列をチャンクに抑えて合成する。
+        chunk = 8_000_000
+        for i0 in range(0, z.shape[0], chunk):
+            i1 = min(i0 + chunk, z.shape[0])
+            seg = z[i0:i1]
+            seg *= s_id
+            seg += beta * z_f[i0:i1]
+        return z
+
+    # ------------------------------------------------------------------
     def simulate(self, t: np.ndarray) -> PriceProcess:
         """時刻グリッド ``t`` (秒) 上で log p* を生成する。
 
@@ -1374,6 +1494,9 @@ class GBMPriceLayer:
 
             # 長期チャンネル: OU の駆動 xi = rho_slow z + sqrt(1-rho^2) w2。
             # z を先に構成してから xi を導出する (順序を逆にしない — §6.3)。
+            # ★S13: xi は**固有チャネルの z** (合成前) から作る — 固有 OU の駆動
+            # (指示書 §4.4 の「固有チャネルに同じ ρ」)。共通 OU の駆動は
+            # cross_factor が z_F から同じ ρ_slow で作る (共通チャネル側)。
             rho_s = cfg.leverage_rho_slow
             xi = self._rng.get("l2.leverage_slow").standard_normal(n - 1)
             xi *= math.sqrt(1.0 - rho_s * rho_s)
@@ -1391,6 +1514,10 @@ class GBMPriceLayer:
                 if cfg.leverage_mid_var > 0.0
                 else None
             )
+            # S13: 因子合成 z_i = β z_F + √(1−β²) z_id (§4.1)。xi (固有 OU 駆動) の
+            # 構成後・z_acf の測定前に行う — z_acf は**合成後**のセル内無相関
+            # (各資産で個別に再検証すべき箇所 §4.1) を測る。
+            z = self._compose_factor_innovation(z)
             log_vol = self._log_vol_path(
                 t, ou_driver=xi, y_rough_pre=y_rough_pre, x_mid=x_mid
             )
@@ -1398,10 +1525,18 @@ class GBMPriceLayer:
 
             lev_diag = self.last_diagnostics["leverage"]
             lev_diag["corr_slow_realized"] = corr_slow
+            if self._common is not None:
+                # 合成後の周辺レバレッジの理論係数 (記録)。ラフは固有チャネルに
+                # しか存在しない (§4.3 共有禁止) ため √(1−β²) 希釈が構造的に残る。
+                b_ = self._factor_beta
+                lev_diag["rho_rough_marginal_theory"] = (
+                    cfg.leverage_rho_rough * math.sqrt(1.0 - b_ * b_)
+                )
             # z のセル内無相関の直接テスト (§6.4)。増分構築で z を潰す前に測る。
             n_days_grid = int(round((t[-1] - t[0]) / self._seconds_per_day))
             lev_diag["z_acf"] = self._z_autocorrelation(z, max(n_days_grid, 1))
         else:
+            z = self._compose_factor_innovation(z)
             log_vol = self._log_vol_path(t)
 
         sigma_left = np.exp(log_vol[:-1])
@@ -1456,6 +1591,21 @@ class GBMPriceLayer:
             increments += jump_add
             del jump_add, jump_compensation
 
+        # S13: 共通 (システマティック) ジャンプ — 全資産に**同一の対数サイズ**で
+        # 入る (§4.3「市場全体のニュース」)。補償も共通側で計算済み (同一配列を
+        # 全資産が読む — increments += は共有配列を変異させない)。
+        if (
+            self._common is not None
+            and self._common.jump_idx is not None
+            and cfg.enable_jump
+        ):
+            increments += self._common.jump_comp
+            if self._common.jump_idx.size:
+                increments[self._common.jump_idx] += self._common.jump_sizes
+                jump_times = np.sort(
+                    np.concatenate([jump_times, t[1:][self._common.jump_idx]])
+                )
+
         log_p = np.empty(n, dtype=np.float64)
         log_p[0] = math.log(self._config.p0)
         np.cumsum(increments, out=log_p[1:])
@@ -1488,10 +1638,11 @@ def build_price_layer(
     rng: RNGRegistry,
     calendar: ConstantCalendar,
     activity: ConstantActivity,
+    factor=None,
 ) -> GBMPriceLayer:
     if config.enable_overnight and not config.enable_jump:
         raise ValueError(
             "enable_overnight=True には enable_jump=True が必要です"
             " (ON ジャンプは S3 の Kou パラメータを ON 用倍率で使うため)"
         )
-    return GBMPriceLayer(config, rng, calendar, activity)
+    return GBMPriceLayer(config, rng, calendar, activity, factor=factor)

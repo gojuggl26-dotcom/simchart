@@ -31,8 +31,11 @@ import numpy as np
 
 __all__ = [
     "RNGRegistry",
+    "AssetStreamView",
     "UnknownStreamError",
     "derive_seed",
+    "asset_stream_name",
+    "asset_stream_names",
     "STREAM_NAMES",
     "RESERVED_STREAM_NAMES",
     "KNOWN_STREAMS",
@@ -61,6 +64,14 @@ STREAM_NAMES: tuple[str, ...] = (
     "l2.leverage_mid",  # 中速レバレッジ成分の x0 と直交駆動 (S3)
     # --- S4 で追加 ---
     "l0.overnight",  # オーバーナイト・ギャップの拡散とジャンプ (S4)
+    # --- S13 で追加: 多資産の共通因子 (資産に依存しない市場全体の乱数) ---
+    # ★共通ストリームは n_assets にも資産の追加にも依存しない (§8.2 の不変性の
+    # 前提)。資産固有ストリームは下の asset_stream_name() で導出する。
+    "cross.vol_msm",  # 共通 MSM (遅い側 k_c 成分)
+    "cross.vol_slow",  # 共通 緩慢 OU (x0 と駆動)
+    "cross.leverage_slow",  # 共通 OU 駆動の直交成分 (レバレッジ有効時)
+    "cross.jump_time",  # 共通 (システマティック) ジャンプの時刻
+    "cross.jump_size",  # 共通ジャンプの符号と大きさ
 )
 
 #: 後段で必要になることが設計上ほぼ確実なストリーム。先に名前だけ確保しておく。
@@ -172,3 +183,78 @@ class RNGRegistry:
             f"RNGRegistry(master_seed={self._master}, strict={self._strict}, "
             f"used={len(self._order)})"
         )
+
+
+# ---------------------------------------------------------------------------
+# S13: 資産別の名前空間
+# ---------------------------------------------------------------------------
+def asset_stream_name(name: str, asset_index: int) -> str:
+    """資産 ``asset_index`` のストリーム名を返す。
+
+    **資産 0 はレガシー名 (接尾辞なし) をそのまま使う。** これが §8.3 の
+    「n_assets=1 は S12 と厳密一致」を成立させる: N=1 では因子パラメータが
+    全て退化 (共有 0) し、資産 0 の固有ストリーム = S12 のストリームになるので、
+    消費列がビット単位で一致する。資産 1 以降は ``.asset{i}`` を付ける。
+    名前ハッシュ方式なので、資産を何本足しても既存資産の系列は変わらない
+    (§8.2 — 逐次 spawn を使わないことがここでも効く)。
+
+    ``cross.*`` (共通因子) は資産に属さないので接尾辞を付けてはならない。
+    """
+    if name.startswith("cross."):
+        raise ValueError(f"共通ストリーム {name!r} に資産接尾辞は付けられません")
+    if asset_index < 0:
+        raise ValueError("asset_index は 0 以上である必要があります")
+    return name if asset_index == 0 else f"{name}.asset{asset_index}"
+
+
+def asset_stream_names(n_assets: int) -> tuple[str, ...]:
+    """資産 1..n-1 の全派生ストリーム名 (RNGRegistry の extra_streams 用)。"""
+    per_asset = tuple(
+        n for n in STREAM_NAMES + RESERVED_STREAM_NAMES if not n.startswith("cross.")
+    )
+    return tuple(
+        asset_stream_name(name, i)
+        for i in range(1, max(n_assets, 1))
+        for name in per_asset
+    )
+
+
+class AssetStreamView:
+    """資産 1 本分の視界に絞った RNGRegistry のビュー。
+
+    層のコード (l2_price / l3_book など) は ``rng.get("l2.diffusion")`` のように
+    レガシー名で引く。このビューを渡すと名前が資産別に写像されるので、
+    **層のコードは 1 文字も変えずに**多資産化できる。共通因子 (``cross.*``) は
+    ビューを通さず素の registry から引くこと (資産に属さないため)。
+    """
+
+    def __init__(self, registry: RNGRegistry, asset_index: int) -> None:
+        self._registry = registry
+        self._asset_index = int(asset_index)
+
+    @property
+    def master_seed(self) -> int:
+        return self._registry.master_seed
+
+    @property
+    def asset_index(self) -> int:
+        return self._asset_index
+
+    def _map(self, name: str) -> str:
+        return asset_stream_name(name, self._asset_index)
+
+    def get(self, name: str) -> np.random.Generator:
+        return self._registry.get(self._map(name))
+
+    def child_seed(self, name: str) -> int:
+        return self._registry.child_seed(self._map(name))
+
+    def fingerprint(self, names: Sequence[str] | None = None) -> dict[str, int]:
+        target = tuple(names) if names is not None else STREAM_NAMES
+        return {name: self.child_seed(name) for name in target if not name.startswith("cross.")}
+
+    def used_streams(self) -> tuple[str, ...]:
+        return self._registry.used_streams()
+
+    def __repr__(self) -> str:  # pragma: no cover - デバッグ用
+        return f"AssetStreamView(asset={self._asset_index}, registry={self._registry!r})"

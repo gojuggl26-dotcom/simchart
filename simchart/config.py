@@ -39,7 +39,7 @@ STAGES: tuple[str, ...] = tuple(f"S{i}" for i in range(14))
 #: 現時点で実装が存在する段階。段階を進めるたびにここへ追加する。
 IMPLEMENTED_STAGES: tuple[str, ...] = (
     "S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "S11",
-    "S12",
+    "S12", "S13",
 )
 
 #: 年率ボラを 1 ステップ分に落とすときの営業日数。
@@ -705,8 +705,33 @@ class Config:
     crisis_freq_per_year_lo: float = 5.0
     crisis_freq_per_year_hi: float = 150.0
 
-    # --- 多資産 ---
-    n_assets: int = 1  # S13
+    # --- 多資産 (S13) ---
+    #: 資産数。1 = 単一資産 (S12 までと完全同一のコードパス — 因子機構は一切
+    #: 構築されない)。2 以上で run_multi が有効になる。
+    n_assets: int = 1
+    #: 各資産の共通因子ローディング β_i (指示書 §4.1: z_i = β_i z_F +
+    #: √(1−β_i²) z_i^idio)。長さは n_assets。資産間の革新相関は β_i β_j。
+    #: ★β=1 は禁止 (固有チャネルが消えると bridge レバレッジと固有ラフの
+    #: 経路が乗らない)。β=0 は退化テスト用に許可 (資産 0 が S12 とビット一致)。
+    factor_betas: tuple[float, ...] = ()
+    #: MSM の共通成分数 k_c (指示書 §4.2: **遅い側**から k_c 個を全資産で共有)。
+    #: 成分 i の切替率は γ₁·b^i なので i=0..k_c−1 が遅い側。推奨 6/10。
+    #: ★速い側を共有するとボラ相関の水平依存が逆になる (§14 の禁止事項)。
+    msm_k_common: int = 0
+    #: 緩慢 OU の共通分散シェア f_c (指示書 §4.3: 共通 + 固有の 2 成分に分割)。
+    #: 共通 OU の分散 = f_c·vol_var_target_slow、固有 = (1−f_c)·同。
+    ou_common_share: float = 0.0
+    #: ジャンプの共通 (システマティック) 強度シェア s_J (指示書 §4.3)。
+    #: 共通ジャンプは全資産に**同一の対数サイズ**で入る (市場全体のニュース)。
+    #: 総強度 λ0 のうち s_J が共通、(1−s_J) が資産固有 — 資産あたりの
+    #: ジャンプ QV 予算は S12 と厳密に同じ (marginal_preservation)。
+    jump_common_share: float = 0.0
+    #: 資産別の流動性オーバーライド (指示書 §6.2 — リードラグは流動性差から
+    #: 創発させる)。空 = 全資産同一。長さ n_assets の辞書タプルで、資産 0
+    #: (参照資産) は**空辞書必須** (S12 と同一パラメータ)。許可キーは
+    #: _S13_OVERRIDE_KEYS (流動性・ティック・κ のみ — L2/カオス/フィードバック
+    #: 構造には触れない §2)。
+    asset_overrides: tuple[Any, ...] = ()
 
     # --- 検証スイートの測定器設定 (モデル設定ではない) ---
     validation: ValidationConfig = field(default_factory=ValidationConfig)
@@ -755,11 +780,6 @@ class Config:
             value = getattr(self, name)
             if value != neutral:
                 raise _not_implemented(name, stage, what, where, value)
-        if self.n_assets > 1:
-            raise _not_implemented(
-                "n_assets", "S13", "多資産 (共通因子と Hayashi-Yoshida 共分散)",
-                "simchart/pipeline.py", self.n_assets,
-            )
 
     #: フラグごとの従属パラメータ。フラグが False のままこれらを既定値から動かしても
     #: 何も起きない (暗黙 no-op) ため、その組み合わせを構成エラーとして弾く。
@@ -810,6 +830,21 @@ class Config:
     _S9_UZ_PARAMS = ("uz_eta",)
     _S12_CHI1_PARAMS = ("chi1_ic", "chi1_days_per_unit", "chi1_var_share")
     _S12_CHI3_PARAMS = ("chi3_ic", "chi3_days_per_unit", "chi3_b")
+    #: S13 の因子パラメータ。n_assets=1 では**全て既定値必須** (暗黙 no-op ガード —
+    #: N=1 は S12 と同一コードパスであり、因子機構は一切構築されない)。
+    _S13_FACTOR_PARAMS = (
+        "factor_betas", "msm_k_common", "ou_common_share", "jump_common_share",
+        "asset_overrides",
+    )
+    #: asset_overrides で許可するキー (指示書 §6.2 の流動性異質化のみ)。
+    #: L2 の因子構造・カオス・フィードバックのパラメータは資産間で共通
+    #: (触ると「作らないもの」§2 の境界を破る)。
+    _S13_OVERRIDE_KEYS = frozenset({
+        "tick_size", "kappa",
+        "hawkes_mu_mo", "hawkes_mu_lo", "hawkes_delta0", "hawkes_nbar_ref",
+        "book_mu_mo", "book_alpha_lo", "book_delta_cancel",
+        "book_init_size", "book_init_levels", "book_window_half_ticks",
+    })
     _S11_FB_PARAMS = (
         "fb_b_delta", "fb_b_place", "fb_b_n", "fb_u_scale", "fb_u_center",
         "fb_c_delta", "fb_c_place",
@@ -1277,6 +1312,73 @@ class Config:
                 f" ({self.vol_var_budget_total}) を超えています (指示書 §5.2:"
                 f" chi_2 の 25% 超は ③⑱ を薄めるため禁止)。"
             )
+        self._check_s13()
+
+    def _check_s13(self) -> None:
+        defaults = {f.name: f.default for f in dataclasses.fields(type(self))}
+        if self.n_assets == 1:
+            changed = [
+                n for n in self._S13_FACTOR_PARAMS if getattr(self, n) != defaults[n]
+            ]
+            if changed:
+                raise ValueError(
+                    f"n_assets=1 のまま {', '.join(changed)} が既定値から変更されて"
+                    f"います。単一資産では因子機構は構築されない (S12 と同一コード"
+                    f"パス — §8.3 のビット単位回帰の前提) ため、暗黙 no-op として"
+                    f"弾きます。"
+                )
+            return
+        if self.stage != "S13":
+            raise ValueError(f"n_assets={self.n_assets} は S13 でのみ有効です (stage={self.stage})")
+        if len(self.factor_betas) != self.n_assets:
+            raise ValueError(
+                f"factor_betas の長さ ({len(self.factor_betas)}) が n_assets"
+                f" ({self.n_assets}) と一致しません"
+            )
+        for i, b in enumerate(self.factor_betas):
+            if not (0.0 <= float(b) < 1.0):
+                raise ValueError(
+                    f"factor_betas[{i}] = {b} は [0, 1) の外です (β=1 は固有チャネル"
+                    f" — bridge レバレッジと固有ラフ — を消すため禁止)"
+                )
+        if not (0 <= self.msm_k_common <= self.msm_k):
+            raise ValueError("msm_k_common は [0, msm_k] の範囲が必要です")
+        if self.msm_k_common > 0 and not self.enable_msm:
+            raise ValueError("msm_k_common > 0 には enable_msm=True が必要です")
+        if not (0.0 <= self.ou_common_share <= 1.0):
+            raise ValueError("ou_common_share は [0, 1] の範囲が必要です")
+        if self.ou_common_share > 0 and not self.enable_slow_ou:
+            raise ValueError("ou_common_share > 0 には enable_slow_ou=True が必要です")
+        if not (0.0 <= self.jump_common_share <= 1.0):
+            raise ValueError("jump_common_share は [0, 1] の範囲が必要です")
+        if self.jump_common_share > 0 and not self.enable_jump:
+            raise ValueError("jump_common_share > 0 には enable_jump=True が必要です")
+        if self.leverage_mid_var != 0.0:
+            raise ValueError(
+                "n_assets > 1 では leverage_mid_var=0 が必要です (中速レバレッジは"
+                " 因子合成に配線されていない — 既定で無効の成分)"
+            )
+        if self.asset_overrides:
+            if len(self.asset_overrides) != self.n_assets:
+                raise ValueError(
+                    f"asset_overrides の長さ ({len(self.asset_overrides)}) が"
+                    f" n_assets ({self.n_assets}) と一致しません"
+                )
+            for i, ov in enumerate(self.asset_overrides):
+                if not isinstance(ov, Mapping):
+                    raise TypeError(f"asset_overrides[{i}] は辞書である必要があります")
+                if i == 0 and len(ov) > 0:
+                    raise ValueError(
+                        "asset_overrides[0] は空辞書必須です (資産 0 = 参照資産、"
+                        "S12 と同一パラメータ — 指示書 §10)"
+                    )
+                bad = set(ov) - self._S13_OVERRIDE_KEYS
+                if bad:
+                    raise ValueError(
+                        f"asset_overrides[{i}] に許可されないキーがあります:"
+                        f" {sorted(bad)}。許可 = 流動性・ティック・κ のみ"
+                        f" ({sorted(self._S13_OVERRIDE_KEYS)})"
+                    )
 
     # ------------------------------------------------------------------
     # 導出量
@@ -1312,6 +1414,27 @@ class Config:
             enable_queue_reactive=False, enable_uncertainty_zones=False,
             **resets,
         )
+
+    def n1_config(self) -> "Config":
+        """多資産設定を N=1 に退化させた設定 (§8.3 の回帰テスト用)。
+
+        因子パラメータを既定値に戻すと N=1 は S12 と**同一コードパス**になる
+        (因子機構は一切構築されず、資産 0 の固有ストリーム = レガシー名)。
+        """
+        defaults = {f.name: f.default for f in dataclasses.fields(type(self))}
+        return self.replace(
+            n_assets=1,
+            **{n: defaults[n] for n in self._S13_FACTOR_PARAMS},
+        )
+
+    def asset_config(self, asset_index: int) -> "Config":
+        """資産 ``asset_index`` の実効設定 (流動性オーバーライド適用済み)。"""
+        if not (0 <= asset_index < self.n_assets):
+            raise IndexError(f"asset_index {asset_index} は [0, {self.n_assets}) の外です")
+        if not self.asset_overrides:
+            return self
+        ov = dict(self.asset_overrides[asset_index])
+        return self.replace(**ov) if ov else self
 
     @property
     def total_steps(self) -> int:

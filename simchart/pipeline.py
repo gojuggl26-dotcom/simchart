@@ -12,6 +12,7 @@ S6 では ``EventDriver`` を足して ``select_driver`` の分岐を 1 行増�
 
 from __future__ import annotations
 
+import math
 import platform
 import sys
 import time
@@ -27,17 +28,23 @@ from .layers import (
     build_calendar,
     build_price_layer,
 )
-from .rng import STREAM_NAMES, RNGRegistry
+from .rng import STREAM_NAMES, AssetStreamView, RNGRegistry, asset_stream_names
 from .types import BookSnapshot, EventLog, Observation, PriceProcess, StageResult
 
 __all__ = [
     "run",
+    "run_multi",
     "run_twice",
     "determinism_check",
     "rng_stability_check",
     "rng_diffusion_check",
     "scale_invariance_check",
     "baseline_invariance_check",
+    "factor_degeneracy_check",
+    "asset_addition_check",
+    "n1_regression_check",
+    "AssetPayload",
+    "MultiAssetResult",
     "BASELINE_STAGE",
     "GridDriver",
 ]
@@ -91,20 +98,30 @@ def select_driver(config: Config) -> GridDriver:
     return GridDriver()
 
 
-def _build_layers(config: Config, rng: RNGRegistry) -> _Layers:
+def _build_layers(config: Config, rng: RNGRegistry, factor=None) -> _Layers:
     calendar = build_calendar(config, rng)
     activity = build_activity(config, rng, calendar)
-    price = build_price_layer(config, rng, calendar, activity)
+    price = build_price_layer(config, rng, calendar, activity, factor=factor)
     book = build_book_layer(config, rng, calendar, activity)
     return _Layers(calendar=calendar, activity=activity, price=price, book=book)
 
 
-def run(config: Config, *, rng: RNGRegistry | None = None) -> StageResult:
-    """設定を 1 回実行して :class:`~simchart.types.StageResult` を返す。"""
+def run(config: Config, *, rng: RNGRegistry | None = None, _factor=None) -> StageResult:
+    """設定を 1 回実行して :class:`~simchart.types.StageResult` を返す。
+
+    ``_factor`` は S13 の内部引数 ((β_i, CommonFactorState) — :func:`run_multi`
+    だけが渡す)。n_assets > 1 の設定を素の ``run`` に渡すのは誤用なので弾く
+    (単一資産として黙って走ると因子構造が静かに欠落する)。
+    """
+    if config.n_assets > 1 and _factor is None:
+        raise ValueError(
+            f"n_assets={config.n_assets} の設定は run_multi() で実行してください"
+            " (run() は単一資産専用 — 因子構造が構築されません)"
+        )
     started = time.perf_counter()
     registry = rng if rng is not None else RNGRegistry(config.seed)
 
-    layers = _build_layers(config, registry)
+    layers = _build_layers(config, registry, factor=_factor)
     driver = select_driver(config)
     price, observation, events, book = driver(layers)
 
@@ -148,6 +165,316 @@ def run(config: Config, *, rng: RNGRegistry | None = None) -> StageResult:
         rng_fingerprint=registry.fingerprint(),
         meta=meta,
     )
+
+
+# ---------------------------------------------------------------------------
+# S13: 多資産実行
+# ---------------------------------------------------------------------------
+@dataclass
+class AssetPayload:
+    """資産 1 本分のクロス測定素材 (フル StageResult より 1 桁小さい保持形)。
+
+    ★観測ミッドの格子は float32 で保持する。量子化誤差はリターン分散の
+    ~0.1% (独立ノイズ) で、相関・Epps・リードラグの測定には効かない。
+    イベント時刻・約定値・日次系列・潜在サブサンプルは float64 のまま。
+    """
+
+    asset_index: int
+    beta: float
+    tick_size: float
+    kappa: float
+    obs_log_price_f32: Any  # np.ndarray (float32、観測グリッド全点)
+    obs_t0: float
+    obs_step_sec: float
+    session_seconds: float
+    n_days: int
+    trade_t: Any  # 集約約定の時刻 (float64)
+    trade_log_vwap: Any  # 集約約定の対数 VWAP (float64)
+    pstar_at_trades: Any  # 潜在 log p* を各約定時刻でサンプル (float64)
+    daily_ret_obs: Any
+    daily_ret_latent: Any
+    rv_daily_obs: Any
+    log_vol_sub: Any  # 1 分サブサンプルの潜在 log σ (φ 除去済み)
+    log_vol_sub_step_sec: float
+    crisis_episodes: list
+    crisis_step_sec: float
+    fb_u_grid: Any
+    fb_u_step_sec: float
+    throughput: float | None
+    spread_median: float | None
+    result_digest: str
+    var_log_sigma_path: float
+
+
+@dataclass
+class MultiAssetResult:
+    """run_multi の出力。資産 0 (参照資産) だけフル StageResult を保持する。"""
+
+    stage: str
+    config: Config
+    asset0: StageResult
+    payloads: list  # list[AssetPayload]、添字 = 資産番号
+    common_diagnostics: dict
+    factor_daily: Any  # z_F の日次集計 (Σz/√spd — β̂ 記録用)
+    runtime_sec: float
+    digests: dict
+
+
+def build_asset_payload(
+    result: StageResult, cfg: Config, asset_index: int, beta: float
+) -> AssetPayload:
+    """StageResult からクロス測定素材を抽出する (呼び出し後、結果は破棄可)。"""
+    from .validation import feedback as fbv
+
+    obs = result.observation
+    lp = np.asarray(obs.log_price)
+    spd = int(round(obs.session_seconds / obs.step_seconds))
+    n_days = int(round((obs.t[-1] - obs.t[0]) / obs.session_seconds))
+
+    daily_obs = obs.to_bars(obs.session_seconds).returns()
+    # 日次実現分散 (観測 1 秒リターン)
+    rv = np.empty(n_days, dtype=np.float64)
+    for d0 in range(0, n_days, 250):
+        d1 = min(d0 + 250, n_days)
+        seg = lp[d0 * spd : d1 * spd + 1]
+        rv[d0:d1] = (np.diff(seg) ** 2).reshape(d1 - d0, spd).sum(axis=1)
+
+    # 潜在側
+    ps = np.asarray(result.price.log_p_star)
+    step_g = float(result.price.t[1] - result.price.t[0])
+    spd_g = int(round(obs.session_seconds / step_g))
+    daily_lat = np.diff(ps[::spd_g])
+
+    ev_meta = result.events.meta if isinstance(result.events.meta, dict) else {}
+    trade_t = np.asarray(ev_meta.get("agg_trade_t", np.empty(0)), dtype=np.float64)
+    trade_px = np.asarray(
+        ev_meta.get("agg_trade_log_vwap", np.empty(0)), dtype=np.float64
+    )
+    if trade_t.size:
+        idx = np.floor((trade_t - result.price.t[0]) / step_g + 1e-9).astype(np.int64)
+        np.clip(idx, 0, ps.shape[0] - 1, out=idx)
+        pstar_at_trades = ps[idx]
+    else:
+        pstar_at_trades = np.empty(0, dtype=np.float64)
+
+    sub = (result.meta.get("l2") or {}).get("vol_subsample") or {}
+    if isinstance(sub.get("log_vol"), np.ndarray):
+        lv_sub = np.asarray(sub["log_vol"]) - np.asarray(sub["log_phi_sigma"])
+        sub_step = float(sub["stride"]) * float(sub["step_seconds"])
+        var_ls = float(lv_sub.var())
+    else:
+        lv_sub = np.empty(0)
+        sub_step = 60.0
+        var_ls = float("nan")
+
+    det = (
+        fbv.crisis_detect(result, cfg)
+        if cfg.enable_feedback
+        else {"episodes": [], "step_sec": 60.0}
+    )
+    fb_u = np.asarray(ev_meta.get("fb_u_grid", np.empty(0)), dtype=np.float64)
+
+    ev_meta_l3 = result.meta.get("l3") or {}
+    bb = np.asarray(ev_meta.get("best_bid_tick", np.empty(0)))
+    ba = np.asarray(ev_meta.get("best_ask_tick", np.empty(0)))
+    spread_med = None
+    if bb.size:
+        burn = cfg.book_burn_in_days * obs.session_seconds
+        m = (bb >= 0) & (ba >= 0) & (result.events.t >= burn)
+        if m.any():
+            spread_med = float(np.median((ba[m] - bb[m])))
+
+    return AssetPayload(
+        asset_index=asset_index,
+        beta=float(beta),
+        tick_size=float(cfg.tick_size),
+        kappa=float(cfg.kappa),
+        obs_log_price_f32=lp.astype(np.float32),
+        obs_t0=float(obs.t[0]),
+        obs_step_sec=float(obs.step_seconds),
+        session_seconds=float(obs.session_seconds),
+        n_days=n_days,
+        trade_t=trade_t,
+        trade_log_vwap=trade_px,
+        pstar_at_trades=pstar_at_trades,
+        daily_ret_obs=daily_obs,
+        daily_ret_latent=daily_lat,
+        rv_daily_obs=rv,
+        log_vol_sub=lv_sub,
+        log_vol_sub_step_sec=sub_step,
+        crisis_episodes=list(det.get("episodes") or []),
+        crisis_step_sec=float(det.get("step_sec") or 60.0),
+        fb_u_grid=fb_u,
+        fb_u_step_sec=float(ev_meta.get("fb_u_step_sec", 60.0)),
+        throughput=ev_meta_l3.get("throughput_events_per_sec"),
+        spread_median=spread_med,
+        result_digest=result.digest(),
+        var_log_sigma_path=var_ls,
+    )
+
+
+def run_multi(config: Config) -> MultiAssetResult:
+    """多資産実行 (S13)。
+
+    構成 (§8.2 の不変性が構造から従う):
+
+    1. 共通因子状態を ``cross.*`` ストリームから **1 回だけ**生成する
+       (n_assets にも資産オーバーライドにも依存しない)
+    2. 資産ごとに独立の層スタックを ``AssetStreamView`` (資産別 RNG 名前空間)
+       で構築し、逐次実行する。資産間の結合は (a) L2 の因子合成と
+       (b) 決定論の χ 系列 (設定共有で自動) だけ — L3 のイベント時刻は
+       資産間で完全に独立 (これが Epps の発生機構 §3)
+    3. 資産 0 (参照資産) はフル結果を保持、他はクロス測定素材だけ残す。
+       メモリピークを 1 資産分に抑えるため資産 0 を**最後に**回す
+    """
+    from .layers.cross_factor import build_common_state
+
+    if config.n_assets < 2:
+        raise ValueError("run_multi は n_assets >= 2 専用です (単一資産は run)")
+    started = time.perf_counter()
+    registry = RNGRegistry(
+        config.seed, extra_streams=asset_stream_names(config.n_assets)
+    )
+    calendar = build_calendar(config, registry)
+    t = calendar.simulation_grid()
+    common = build_common_state(config, registry, calendar, t)
+
+    n = config.n_assets
+    payloads: list = [None] * n
+    digests: dict = {}
+    asset0: StageResult | None = None
+    for i in list(range(1, n)) + [0]:
+        cfg_i = config.asset_config(i)
+        view = AssetStreamView(registry, i)
+        try:
+            res = run(cfg_i, rng=view, _factor=(config.factor_betas[i], common))
+        except RuntimeError as exc:
+            raise RuntimeError(f"資産 {i}: {exc}") from exc
+        digests[i] = res.digest()
+        payloads[i] = build_asset_payload(res, cfg_i, i, config.factor_betas[i])
+        if i == 0:
+            asset0 = res
+        del res
+
+    spd = int(round(calendar.session_seconds() / (t[1] - t[0])))
+    n_days_grid = int(round((t[-1] - t[0]) / calendar.session_seconds()))
+    zf = common.z_f[: n_days_grid * spd]
+    factor_daily = zf.reshape(n_days_grid, spd).sum(axis=1) / math.sqrt(spd)
+
+    assert asset0 is not None
+    return MultiAssetResult(
+        stage=config.stage,
+        config=config,
+        asset0=asset0,
+        payloads=payloads,
+        common_diagnostics=dict(common.diagnostics),
+        factor_daily=factor_daily,
+        runtime_sec=time.perf_counter() - started,
+        digests=digests,
+    )
+
+
+# ---------------------------------------------------------------------------
+# S13: 構造検査 (ゲート asset_addition_invariance / n1_regression)
+# ---------------------------------------------------------------------------
+def factor_degeneracy_check(config: Config, n_days: int = 30) -> dict[str, Any]:
+    """§8.3 の実体: **因子コードパスを通しても**退化条件で S12 と一致するか。
+
+    N=2・β_0=0・共有シェア全 0 の多資産実行における資産 0 の系列が、同一シードの
+    単一資産実行 (S12 コードパス) とビット単位で一致することを確認する。
+    ビット単位の構造性質なので規模に依存しない — 小規模 (30 日) で回す。
+    """
+    single = config.n1_config().replace(n_days=n_days)
+    beta1 = float(config.factor_betas[1]) if len(config.factor_betas) > 1 else 0.5
+    multi = config.replace(
+        n_days=n_days,
+        n_assets=2,
+        factor_betas=(0.0, beta1),
+        msm_k_common=0,
+        ou_common_share=0.0,
+        jump_common_share=0.0,
+        asset_overrides=(),
+    )
+    r_single = run(single)
+    m = run_multi(multi)
+    match = bool(m.digests[0] == r_single.digest())
+    return {
+        "match": match,
+        "digest_single": r_single.digest(),
+        "digest_asset0_degenerate": m.digests[0],
+        "n_days": n_days,
+        "basis": "N=2 β0=0 共有 0 の因子経路 vs 単一資産経路 (ビット単位)",
+    }
+
+
+def asset_addition_check(config: Config, n_days: int = 30) -> dict[str, Any]:
+    """§8.2 の実体: 資産を 1 本追加しても既存資産がビット単位で不変か。
+
+    n_assets vs n_assets+1 の 2 つの多資産実行で、既存の全資産のダイジェストを
+    比較する。名前ハッシュ RNG の最終試験 — 逐次 spawn の混入はここで露見する。
+    """
+    base = config.replace(n_days=n_days)
+    extra_overrides = (
+        (*config.asset_overrides, {}) if config.asset_overrides else ()
+    )
+    plus = config.replace(
+        n_days=n_days,
+        n_assets=config.n_assets + 1,
+        factor_betas=(*config.factor_betas, 0.5),
+        asset_overrides=extra_overrides,
+    )
+    m_base = run_multi(base)
+    m_plus = run_multi(plus)
+    per_asset = {
+        str(i): bool(m_base.digests[i] == m_plus.digests[i])
+        for i in range(config.n_assets)
+    }
+    return {
+        "bitwise": bool(all(per_asset.values())),
+        "per_asset": per_asset,
+        "n_assets_base": config.n_assets,
+        "n_assets_plus": config.n_assets + 1,
+        "n_days": n_days,
+    }
+
+
+def n1_regression_check(config: Config, results_root: str | None = None) -> dict[str, Any]:
+    """§8.3: n_assets=1 の退化設定が S12 の保存済み結果とビット単位一致するか。
+
+    同一の seed・n_days・steps_per_day のときだけダイジェスト照合が成立する
+    (S12 本番は seed 42・1000 日)。視野が違う場合は記録に降格し、判定は
+    :func:`factor_degeneracy_check` (規模非依存のビット単位検査) が担う。
+    """
+    from .report import load_metrics
+
+    cfg1 = config.n1_config()
+    res = run(cfg1)
+    digest = res.digest()
+    out: dict[str, Any] = {"digest_n1": digest, "n_days": cfg1.n_days, "seed": cfg1.seed}
+    try:
+        base = load_metrics("S12", root=results_root)
+    except FileNotFoundError as exc:
+        out.update({"match": None, "comparable": False, "error": str(exc)})
+        return out
+    bc = base.get("config") or {}
+    comparable = (
+        int(bc.get("seed", -1)) == cfg1.seed
+        and int(bc.get("n_days", -1)) == cfg1.n_days
+        and int(bc.get("steps_per_day", -1)) == cfg1.steps_per_day
+    )
+    expected = (
+        ((base.get("metrics") or {}).get("runtime") or {}).get("pipeline") or {}
+    ).get("result_digest")
+    out.update({
+        "comparable": bool(comparable),
+        "expected_s12_digest": expected,
+        "match": bool(digest == expected) if (comparable and expected) else None,
+        "note": None if comparable else (
+            "視野/シードが S12 本番と異なるため照合は記録のみ"
+            " (ビット単位の判定は factor_degeneracy が担う)"
+        ),
+    })
+    return out
 
 
 # ---------------------------------------------------------------------------

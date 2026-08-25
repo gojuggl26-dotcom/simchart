@@ -56,17 +56,26 @@ def test_jump_hawkes_raises_until_s11d() -> None:
     assert "S11" in str(excinfo.value)
 
 
-def test_multi_asset_raises_for_s13() -> None:
-    with pytest.raises(NotImplementedError) as excinfo:
+def test_multi_asset_requires_s13_stage_and_betas() -> None:
+    # S13 で実装済み。ただし多資産は S13 の stage と β の宣言が必要で、
+    # 単独の n_assets 指定は構成エラーとして止まる (暗黙 no-op 防止)。
+    with pytest.raises(ValueError) as excinfo:
         Config(n_assets=3)
     assert "S13" in str(excinfo.value)
 
 
-def test_unimplemented_stage_raises() -> None:
-    # 実装が進んだら「次の未実装段階」へ更新する (S12 の実装で S12 -> S13)。
-    with pytest.raises(NotImplementedError) as excinfo:
-        Config(stage="S13")
-    assert "S13" in str(excinfo.value)
+def test_n1_forbids_factor_params() -> None:
+    # n_assets=1 で因子パラメータを動かすのは暗黙 no-op (§8.3 の前提が壊れる)。
+    with pytest.raises(ValueError) as excinfo:
+        Config(msm_k_common=6)
+    assert "no-op" in str(excinfo.value) or "n_assets" in str(excinfo.value)
+
+
+def test_all_stages_implemented() -> None:
+    # 全 13 段階が実装済み (工程完了)。未知の段階名だけが弾かれる。
+    from simchart.config import IMPLEMENTED_STAGES, STAGES
+
+    assert IMPLEMENTED_STAGES == STAGES
 
 
 def test_unknown_stage_is_a_value_error() -> None:
