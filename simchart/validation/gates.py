@@ -2906,6 +2906,228 @@ _S12_NEW_GATES: tuple[Gate, ...] = (
 
 S12_GATES: tuple[Gate, ...] = _S12_INHERITED_GATES + _S12_NEW_GATES
 
+
+# ---------------------------------------------------------------------------
+# S13 のゲート (多資産 — 指示書 §10)
+# ---------------------------------------------------------------------------
+#: S12 のベースライン照合 (runtime.baseline_invariance.*) に依存するゲート。
+#: S13 では L2 の再構成 (因子合成) が段階の差分そのものなので S12 メトリクスとの
+#: 直接照合は成立しない — 凍結性の検証は**ビット単位の構造検査 3 種**
+#: (n1_regression / factor_degeneracy / asset_addition) と l2_frozen_multi
+#: (板 off 多資産ランとの潜在照合) に置き換える。
+_S13_BASELINE_REPLACED = frozenset({
+    "inv_gph_d", "inv_absr_acf_profile", "inv_zeta_c2", "inv_rng_s1_streams",
+    "inv_jv_share", "inv_l2_frozen", "no_l2_feedback", "inv_absr_powerlaw_r2",
+})
+
+#: ペア (off 対) 計器のゲート → S12 本番の実測値 (metrics.s12_carryover) を読む。
+#: 帯と check は S12 と同一。繰り越しの妥当性は n1_regression のビット単位一致が
+#: 担保する (ループ機構のコードパスは S12 と同一で、因子合成・χ 共有は
+#: フィードバック経路に入らない)。§11「参照資産の単変量性質は S12 の結果を流用」。
+_S13_CARRYOVER_REMAP: dict[str, str] = {
+    "loop_gain": "s12_carryover.fb_g_30min.median",
+    "feedback_ablation": "s12_carryover.fb_g_daily.median",
+    "no_divergence": "s12_carryover.fb_divergences.max",
+    "cpl_transmission_daily": "s12_carryover.fb_T_daily_off.median",
+    "depth_variability_increased": "s12_carryover.fb_depth_cv_ratio.median",
+    "excess_volatility": "s12_carryover.fb_rv_excess_ari.median",
+    "iceberg_ablation": "s12_carryover",
+}
+
+
+def _s13_remap(g: Gate) -> Gate:
+    if g.name in _S13_CARRYOVER_REMAP:
+        return Gate(
+            name=g.name,
+            metric_path=_S13_CARRYOVER_REMAP[g.name],
+            check=g.check,
+            critical=g.critical,
+            threshold=g.threshold + " [S12 繰り越し]",
+            description=(
+                "S12 本番 (30 シード) の実測値を繰り越して判定 (§11)。"
+                "妥当性は n1_regression (ビット単位) が担保。 " + g.description
+            ),
+        )
+    if g.name == "multiseed_coverage":
+        return Gate(
+            name=g.name, metric_path=g.metric_path,
+            check=lambda v: v is not None and int(v) >= 4,
+            threshold="窓逸脱スキップ後の有効シード数 ≥ 4 (S13 は §11 の縮小規模)",
+            description=(
+                "クロス相関系は 1000 日 × 5 シードで速く収束する (§11)。"
+                "whale 支配の単変量中央値は S12 の 30 シード基盤を繰り越すため、"
+                "S13 のシード数はクロス測定の要求で決まる。"
+            ),
+        )
+    return g
+
+
+_S13_INHERITED_GATES: tuple[Gate, ...] = tuple(
+    _s13_remap(g) for g in S12_GATES if g.name not in _S13_BASELINE_REPLACED
+) + (
+    Gate(
+        name="absr_powerlaw_r2_recorded",
+        metric_path="daily.acf_abs_r_powerlaw.r2",
+        check=_gt(0.45),
+        critical=False,
+        threshold="|r| ACF べき則の R² > 0.45 (記録 — S12 と同じ χ₁ 設計振動込み)",
+        description="S12 の inv_absr_powerlaw_r2 の S13 形 (直接パス参照)。",
+    ),
+)
+
+_S13_NEW_GATES: tuple[Gate, ...] = (
+    # --- 構造検査 (critical — §8 の最終試験) ---
+    Gate(
+        name="asset_addition_invariance",
+        metric_path="runtime.multi_asset_checks.asset_addition.bitwise",
+        check=lambda v: v is True,
+        threshold="資産追加で既存資産がビット単位不変 (§8.2 — RNG 設計の最終試験)",
+        description=(
+            "N → N+1 の 2 つの run_multi で既存全資産のダイジェストを照合。"
+            "共通因子は自身のストリーム、固有成分は資産名を含むストリームから"
+            "生成されるので、名前ハッシュ RNG (S0 §5) が正しければ不変。"
+        ),
+    ),
+    Gate(
+        name="n1_regression",
+        metric_path="runtime.multi_asset_checks.n1_regression",
+        check=lambda v: (
+            isinstance(v, Mapping)
+            and (
+                v.get("match") is True
+                or (v.get("match") is None and v.get("comparable") is False)
+            )
+        ),
+        threshold="n_assets=1 退化が S12 本番とビット単位一致 (§8.3)",
+        description=(
+            "同一 seed/n_days なら S12 の result_digest と厳密一致する"
+            " (視野が違う場合は factor_degeneracy が判定を担い、ここは記録)。"
+        ),
+    ),
+    Gate(
+        name="factor_degeneracy",
+        metric_path="runtime.multi_asset_checks.factor_degeneracy.match",
+        check=lambda v: v is True,
+        threshold="因子経路 (N=2, β₀=0, 共有 0) の資産 0 が S12 経路とビット単位一致",
+        description="§8.3 の実体 — 因子コードパス自体の退化を固定する。",
+    ),
+    Gate(
+        name="l2_frozen_multi",
+        metric_path="runtime.multi_asset_checks.l2_frozen_multi.passed",
+        check=lambda v: v is True,
+        threshold="板 off の run_multi と全資産の潜在系列が一致 (L2 凍結の S13 形)",
+        description="板は L2 を読むが書かない — S6 以来の凍結検証の多資産版。",
+    ),
+    Gate(
+        name="marginal_preservation",
+        metric_path="cross_assets.marginal.budget_identity_ok",
+        check=lambda v: v is True,
+        threshold="共有分割の分散予算が資産あたり厳密に S12 と同一 (§4.2/§10)",
+        description=(
+            "共通 + 固有の分散目標の合計 = 単一資産の総予算 (構成の恒等式) と、"
+            "資産別の経路 Var(log σ) の記録。E[M]=1 なので分割は周辺分布を保存。"
+        ),
+    ),
+    Gate(
+        name="s12_carryover_valid",
+        metric_path="s12_carryover.available",
+        check=lambda v: v is True,
+        threshold="S12 本番の繰り越し値が読めている (results/S12/metrics.json)",
+        description="ペア計器 (g・発散・T_off・⑭・iceberg) の繰り越し前提。",
+    ),
+    # --- クロス資産の創発性質 (critical — §10) ---
+    Gate(
+        name="epps_effect_present",
+        metric_path="cross_assets.gatevals.epps_ratio",
+        check=lambda v: v is not None and float(v) < 0.7,
+        threshold="1 分サンプリング相関 < 日次相関 × 0.7 (§10 — 非同期性からの創発)",
+        description=(
+            "Epps は実装しない (§3) — 資産ごとに独立なイベント時刻の前値"
+            "サンプルで自動発生する。約定 VWAP 系列で測る (ペア中央値)。"
+        ),
+    ),
+    Gate(
+        name="epps_monotone",
+        metric_path="cross_assets.gatevals.epps_monotone",
+        check=lambda v: v is True,
+        threshold="サンプリング間隔とともに相関が単調増加・飽和 (許容ステップ −0.03)",
+        description="1min → 5min → 15min → 30min → 日次の相関列。",
+    ),
+    Gate(
+        name="hayashi_yoshida_recovers",
+        metric_path="cross_assets.gatevals.hy_max_abs_err",
+        check=lambda v: v is not None and float(v) <= 0.05,
+        threshold="HY 推定量が真の相関 ±0.05 (全ペア × 間引き 1/2/4 × 全シード最大)",
+        description=(
+            "p* を**各資産の実約定時刻**でサンプルした系列に HY を適用し、"
+            "潜在 1 分リターンの実現相関 (真値) と照合 — 推定量と非同期性の"
+            "検定 (§3「HY で真の相関に戻るか」の実装)。板約定値での HY は"
+            "マイクロ構造減衰込みの記録 (pairs.*.hy_book_vwap)。"
+        ),
+    ),
+    Gate(
+        name="daily_corr_matches",
+        metric_path="cross_assets.gatevals.daily_corr_err",
+        check=lambda v: v is not None and float(v) <= 0.05,
+        threshold="潜在日次リターン相関が因子構造の理論値 ±0.05 (全ペア最大の中央値)",
+        description=(
+            "理論値 = β_iβ_j·D·(1−j_s) + s_J·j_s (D = 固有ボラの対数正規希釈、"
+            "cross.theoretical_daily_corr)。観測 (板ミッド) 側は"
+            " pairs.*.daily_corr_obs に記録 (追跡ラグの希釈込み)。"
+        ),
+    ),
+    Gate(
+        name="vol_corr",
+        metric_path="cross_assets.gatevals.vol_corr_lo",
+        check=_between(0.55, 0.85),
+        threshold="corr(log σ_i, log σ_j) ∈ [0.55, 0.85] (ペア最小の中央値)",
+        description=(
+            "設計シェア ~0.60 (MSM 遅 6/10 = 0.075 + χ₂ 0.05 + OU 半分 0.025 の"
+            "計 0.15 / 総予算 0.25)。最遅成分のエポック実現でシードごとに揺れる。"
+        ),
+    ),
+    Gate(
+        name="vol_corr_ceiling",
+        metric_path="cross_assets.gatevals.vol_corr_hi",
+        check=lambda v: v is not None and float(v) <= 0.85,
+        threshold="ボラ相関の上限 0.85 (ペア最大の中央値 — 固有成分の存在確認)",
+        description="1 に張り付いたらラフ/速い MSM の固有性が壊れている。",
+    ),
+    Gate(
+        name="vol_corr_horizon",
+        metric_path="cross_assets.gatevals.vol_corr_horizon_increasing",
+        check=lambda v: v is True,
+        threshold="ボラ相関が長期ほど高い (log RV 1 日 vs 20 日ブロック、§4.2 の創発)",
+        description="共有しているのが遅い成分だから — 速い側を共有すると逆転する。",
+    ),
+    Gate(
+        name="crisis_corr_increase",
+        metric_path="cross_assets.gatevals.crisis_corr_increase",
+        check=lambda v: v is not None and float(v) > 0.15,
+        threshold="corr_crisis − corr_normal > 0.15 (ペア和集合日、シード横断プール §7.2)",
+        description=(
+            "創発経路: 共通ジャンプの危機集中 (λ_c ∝ 共通ボラ^ρ) + χ₃ 共有の"
+            "脆弱窓同期 + 共通因子による d_i の同時拡大。外生的なレジーム相関"
+            "行列は使わない (§7.1)。標本は §11 の要求 (2000 日以上) をシード"
+            "横断プールで満たす。"
+        ),
+    ),
+    Gate(
+        name="lead_lag_present",
+        metric_path="cross_assets.gatevals.leadlag_asym_1_2",
+        check=lambda v: v is not None and float(v) > 0.0,
+        threshold="流動性順のリードラグ非対称 > 0 (資産1 (κ=0.3) → 資産2 (κ=0.1))",
+        description=(
+            "交差相関 corr(r_fast(t), r_slow(t+ℓ)) の正ラグ側優位 (60 秒バー、"
+            "±30 分)。ピーク位置は gatevals.leadlag_peak_1_2 に記録。"
+            "明示的なリードラグ項は入れていない — 追随速度差 (κ・レート) からの"
+            "創発 (§6)。"
+        ),
+    ),
+)
+
+S13_GATES: tuple[Gate, ...] = _S13_INHERITED_GATES + _S13_NEW_GATES
+
 #: 段階ごとのゲート。S13 を実装するときはここに追加する。
 STAGE_GATES: dict[str, tuple[Gate, ...]] = {
     "S0": S0_GATES,
@@ -2921,6 +3143,7 @@ STAGE_GATES: dict[str, tuple[Gate, ...]] = {
     "S10": S10_GATES,
     "S11": S11_GATES,
     "S12": S12_GATES,
+    "S13": S13_GATES,
 }
 
 

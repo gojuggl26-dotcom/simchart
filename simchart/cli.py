@@ -376,50 +376,22 @@ def _u_time_mean(result, config: Config) -> float | None:
     return float(u[burn:].mean()) if u.size > burn else None
 
 
-def _feedback_seed_stats(result, config: Config, result_off) -> dict[str, float | None]:
-    """S11 のシード別フィードバック統計 (multiseed の中央値判定用)。
+def _feedback_solo_stats(result, config: Config) -> dict[str, float | None]:
+    """S11/S13 のシード別フィードバック統計のうち **off 対を要しない**部分。
 
-    ペア量 (ループゲイン g・発散) は同一シードの off 対で測る (§4.1 — L2 経路が
-    同一なので L2 起因が厳密に相殺する)。危機統計もここで収集。
+    S13 の多資産ループは参照資産についてこれだけを収集する (ペア量 g・発散・
+    T_off・深さ CV 比は S12 から繰り越し — ループ機構は n1 回帰がビット単位で
+    同一と保証しており、§11 の「参照資産の単変量性質は S12 の結果を流用」の実装)。
     """
     from .validation import feedback as fbv
 
     import numpy as np
 
-    g = fbv.loop_gain_estimate(result, result_off, config)
-    div = fbv.divergence_monitor(result, config, result_off=result_off)
     det = fbv.crisis_detect(result, config)
     ana = fbv.crisis_anatomy(
         result, config, detection=det if det.get("status") == "ok" else None
     )
     fb = (result.meta.get("l3") or {}).get("feedback") or {}
-
-    # ⑭ デプス変動の増大 — 同一シード off 対との CV 比 (基準値不要のペア計器)
-    def _depth_cv(res) -> float | None:
-        bk = res.book
-        d = np.asarray(bk.bid_sz, dtype=np.float64).sum(axis=1) + np.asarray(
-            bk.ask_sz, dtype=np.float64
-        ).sum(axis=1)
-        d = d[d > 0]
-        return float(d.std() / d.mean()) if d.size > 100 and d.mean() > 0 else None
-
-    cv_on = _depth_cv(result)
-    cv_off = _depth_cv(result_off)
-
-    # 結合忠実度 (T_daily) は **off 対で判定** — g ∈ [0.3,0.6] は日次分散の増幅を
-    # 強制するので、on 側の T ±0.07 は指示書内部で矛盾する (S11e 実測 T_on ~1.9)。
-    # κ/σ̄ はフィードバックが触らないため off 対がその検証。on 側は超過として記録
-    # (幾何/算術の分解: 典型日 +8% / 平均分散 ×2 = 裾駆動 — 危機の物理そのもの)。
-    from .validation.coupling import transmission
-
-    t_off = transmission(result_off, config)
-    from .validation.feedback import _log_rv_series
-
-    lon = _log_rv_series(result.observation, config, 23400.0)
-    loff = _log_rv_series(result_off.observation, config, 23400.0)
-    n_c = min(lon.size, loff.size)
-    rv_geo = float(np.exp(lon[:n_c].mean() - loff[:n_c].mean()))
-    rv_ari = float(np.exp(lon[:n_c]).mean() / np.exp(loff[:n_c]).mean())
 
     # ⑧ の判定は**危機日除外の Hill α** (指示書 §6.2 の分解そのもの)。全体 α は
     # 増幅が whale 日に集中するため構造的に低下する (フロンティア実測 — 記録)。
@@ -499,11 +471,7 @@ def _feedback_seed_stats(result, config: Config, result_off) -> dict[str, float 
         return (d_o - d_l) if (d_o is not None and d_l is not None) else None
 
     return {
-        "fb_g_30min": g.get("g_30min"),
-        "fb_g_daily": g.get("g_daily"),
-        "fb_divergences": div.get("n_divergences"),
         "fb_crises_per_year": det.get("per_year"),
-        "fb_crises_per_year_off": fbv.crisis_detect(result_off, config).get("per_year"),
         "fb_recovery30_dislocation": ana.get("recovery_30min_dislocation"),
         "fb_recovery1d_dislocation": ana.get("recovery_1day_dislocation"),
         "fb_recovery1d_catchup": ana.get("recovery_1day_catchup"),
@@ -511,9 +479,6 @@ def _feedback_seed_stats(result, config: Config, result_off) -> dict[str, float 
         "fb_crisis_duration_min": ana.get("duration_min_median"),
         "fb_crisis_spread_ratio": ana.get("max_spread_ratio_median"),
         "fb_crisis_depth_ratio": ana.get("min_depth_ratio_median"),
-        "fb_depth_cv_ratio": (
-            cv_on / cv_off if (cv_on is not None and cv_off) else None
-        ),
         "fb_nt_mean": fb.get("nt_mean"),
         "fb_nt_mean_time": (
             float(np.mean(nt_s)) if (nt_s := _nt_series(result, config)) is not None
@@ -525,13 +490,63 @@ def _feedback_seed_stats(result, config: Config, result_off) -> dict[str, float 
         # それ自体は「活動は驚きに集中する」という情報なので別名で記録。
         "fb_u_mean_time": _u_time_mean(result, config),
         "fb_u_mean_event": fb.get("u_mean"),
-        "fb_T_daily_off": t_off.get("T_daily"),
-        "fb_rv_excess_geo": rv_geo,
-        "fb_rv_excess_ari": rv_ari,
         "fb_gph_d_diff_masked": _masked_gph_diff(),
         "fb_hill_all": hill_all,
         "fb_hill_ex_crisis": hill_ex,
     }
+
+
+def _feedback_seed_stats(result, config: Config, result_off) -> dict[str, float | None]:
+    """S11 のシード別フィードバック統計 (multiseed の中央値判定用)。
+
+    ペア量 (ループゲイン g・発散) は同一シードの off 対で測る (§4.1 — L2 経路が
+    同一なので L2 起因が厳密に相殺する)。ソロ部分は :func:`_feedback_solo_stats`。
+    """
+    from .validation import feedback as fbv
+
+    import numpy as np
+
+    out = _feedback_solo_stats(result, config)
+    g = fbv.loop_gain_estimate(result, result_off, config)
+    div = fbv.divergence_monitor(result, config, result_off=result_off)
+
+    # ⑭ デプス変動の増大 — 同一シード off 対との CV 比 (基準値不要のペア計器)
+    def _depth_cv(res) -> float | None:
+        bk = res.book
+        d = np.asarray(bk.bid_sz, dtype=np.float64).sum(axis=1) + np.asarray(
+            bk.ask_sz, dtype=np.float64
+        ).sum(axis=1)
+        d = d[d > 0]
+        return float(d.std() / d.mean()) if d.size > 100 and d.mean() > 0 else None
+
+    cv_on = _depth_cv(result)
+    cv_off = _depth_cv(result_off)
+
+    # 結合忠実度 (T_daily) は **off 対で判定** — g ∈ [0.3,0.6] は日次分散の増幅を
+    # 強制するので、on 側の T ±0.07 は指示書内部で矛盾する (S11e 実測 T_on ~1.9)。
+    # κ/σ̄ はフィードバックが触らないため off 対がその検証。on 側は超過として記録
+    # (幾何/算術の分解: 典型日 +8% / 平均分散 ×2 = 裾駆動 — 危機の物理そのもの)。
+    from .validation.coupling import transmission
+
+    t_off = transmission(result_off, config)
+    from .validation.feedback import _log_rv_series
+
+    lon = _log_rv_series(result.observation, config, 23400.0)
+    loff = _log_rv_series(result_off.observation, config, 23400.0)
+    n_c = min(lon.size, loff.size)
+    out.update({
+        "fb_g_30min": g.get("g_30min"),
+        "fb_g_daily": g.get("g_daily"),
+        "fb_divergences": div.get("n_divergences"),
+        "fb_crises_per_year_off": fbv.crisis_detect(result_off, config).get("per_year"),
+        "fb_depth_cv_ratio": (
+            cv_on / cv_off if (cv_on is not None and cv_off) else None
+        ),
+        "fb_T_daily_off": t_off.get("T_daily"),
+        "fb_rv_excess_geo": float(np.exp(lon[:n_c].mean() - loff[:n_c].mean())),
+        "fb_rv_excess_ari": float(np.exp(lon[:n_c]).mean() / np.exp(loff[:n_c]).mean()),
+    })
+    return out
 
 
 def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
@@ -815,6 +830,513 @@ def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
     return out
 
 
+def _path_seed_stats_s13(result, config: Config) -> dict[str, float | None]:
+    """S13 用: 参照資産のシード別経路統計 (S12 の _run_multiseed 内の
+    インラインブロックと同じキー・同じ計算)。
+
+    ★S12 ループはタグ済みの回帰資産なので触らない — ここは意図的な小さな
+    複製で、キー名の一致は compare S12 S13 の前提。
+    """
+    import numpy as np
+    from scipy import stats as sp_stats
+
+    from .validation.memory import gph_estimator, leverage_function
+    from .validation.scaling import realized_variance
+    from .validation.tails import bns_jump_test, hill_by_scale, hill_estimator
+
+    obs = result.observation
+    r_daily = obs.to_bars(obs.session_seconds).returns()
+    steps_per_day = int(round(obs.session_seconds / obs.step_seconds))
+    step_r = np.diff(obs.log_price)
+    rv_daily = realized_variance(step_r, steps_per_day)
+    out: dict[str, float | None] = {}
+    out["hill_alpha"] = hill_estimator(r_daily, 0.05, "both").get("alpha")
+    out["leverage_corr"] = leverage_function(r_daily, rv_daily, horizons=(0, 1)).get(
+        "corr_r_rv_h1"
+    )
+    out["jv_share"] = bns_jump_test(step_r, steps_per_day).get("jv_share")
+    out["skewness_daily"] = float(sp_stats.skew(r_daily, bias=False))
+    out["hill_scale_slope"] = hill_by_scale(r_daily).get("slope_vs_log_scale")
+    bw = config.validation.daily_gph_bandwidth_exponent
+    out["gph_d"] = gph_estimator(np.abs(r_daily), bw).get("d")
+    ps = result.price.log_p_star
+    step_g = float(result.price.t[1] - result.price.t[0])
+    spd_g = int(round(obs.session_seconds / step_g))
+    r_daily_lat = np.diff(np.asarray(ps)[::spd_g])
+    d_lat = gph_estimator(np.abs(r_daily_lat), bw).get("d")
+    out["gph_d_latent"] = d_lat
+    out["gph_d_obs_minus_latent"] = (
+        out["gph_d"] - d_lat if (out["gph_d"] is not None and d_lat is not None) else None
+    )
+    stride5 = max(1, int(round(300.0 / obs.step_seconds)))
+    out["jv_share_5min"] = bns_jump_test(
+        np.diff(obs.log_price[::stride5]), steps_per_day // stride5
+    ).get("jv_share")
+    sk_lat = float(sp_stats.skew(r_daily_lat, bias=False))
+    out["skew_daily_latent"] = sk_lat
+    out["skew_obs_minus_latent"] = out["skewness_daily"] - sk_lat
+    return out
+
+
+def _run_multiseed_s13(config: Config, n_seeds: int) -> dict[str, Any]:
+    """S13 の多シード判定: 各シードで run_multi し、参照資産のソロ統計と
+    クロス資産統計を収集する。
+
+    ペア量 (g・発散・T_off・深さ CV・iceberg) は収集しない — S12 から繰り越す
+    (§11「参照資産の単変量性質は S12 の結果を流用」、繰り越しの妥当性は
+    n1 回帰のビット単位一致が担保する。metrics.s12_carryover を参照)。
+    危機時相関はシード横断で日次系列をプールして測る (§11 の 2000 日以上の
+    要求を 1000 日 × n シードのプールで満たす — 単一メカニズムの定常標本)。
+    """
+    import numpy as np
+
+    from .pipeline import run_multi
+    from .validation import feedback as fbv2
+    from .validation.cross import conditional_correlation, cross_asset_metrics
+
+    per_seed: dict[str, list] = {}
+    skipped_seeds: list[dict[str, str]] = []
+    chi_hashes: list[str] = []
+    cross_seed_paths: list[np.ndarray] = []
+    fb_window_vecs: list = []
+    fb_nt_window_vecs: list = []
+    pooled_pairs: dict[str, dict[str, list]] = {}
+    seeds = [config.seed + i for i in range(n_seeds)]
+    for i, seed in enumerate(seeds):
+        seed_config = config.replace(seed=seed)
+        try:
+            multi = run_multi(seed_config)
+        except RuntimeError as exc:
+            skipped_seeds.append({"seed": str(seed), "leg": "main", "error": str(exc)})
+            print(f"      シード {seed} ({i + 1}/{n_seeds}) スキップ: {exc}", flush=True)
+            continue
+        result = multi.asset0
+
+        for key_, val_ in _path_seed_stats_s13(result, seed_config).items():
+            per_seed.setdefault(key_, []).append(val_)
+        for helper in (_book_seed_stats, _hawkes_seed_stats, _meta_seed_stats,
+                       _qr_seed_stats, _coupling_seed_stats, _feedback_solo_stats):
+            for key_, val_ in helper(result, seed_config).items():
+                per_seed.setdefault(key_, []).append(val_)
+
+        # χ₂ の決定性とレバレッジ希釈 (ソロ — S12 ループと同じ計器)
+        sub = result.meta["l2"]["vol_subsample"]
+        lv_with = np.asarray(sub["log_vol"]) - np.asarray(sub["log_phi_sigma"])
+        lv_without = lv_with - np.asarray(sub["chi_term"]) + float(sub["c_chi"])
+        v_w, v_wo = float(lv_with.var()), float(lv_without.var())
+        per_seed.setdefault("dilution_sd_ratio", []).append(
+            float(np.sqrt(v_wo / v_w)) if v_w > 0 else None
+        )
+        cross_seed_paths.append(lv_with[::5].astype(np.float64))
+        chi_hashes.append(result.meta["l2"]["chaos"]["sha256"])
+        del lv_with, lv_without
+
+        # 窓再現性 (参照資産、S12 §8 と同じ計器)
+        det_w = fbv2.crisis_detect(result, seed_config)
+        fb_window_vecs.append(
+            fbv2.crisis_window_counts(result, seed_config, 5.0, detection=det_w)
+        )
+        fb_nt_window_vecs.append(_nt_window_means(result, seed_config, 5.0))
+
+        # クロス資産統計 (このシード)
+        cm = cross_asset_metrics(multi, seed_config)
+        sm = cm.get("summary") or {}
+        for key_src, key_dst in (
+            ("hy_max_abs_err", "x_hy_max_abs_err"),
+            ("epps_ratio_median", "x_epps_ratio"),
+            ("daily_corr_latent_max_abs_err", "x_daily_corr_err"),
+            ("vol_corr_min", "x_vol_corr_min"),
+            ("vol_corr_max", "x_vol_corr_max"),
+            ("crisis_corr_increase_median", "x_crisis_corr_increase_seed"),
+        ):
+            per_seed.setdefault(key_dst, []).append(sm.get(key_src))
+        per_seed.setdefault("x_epps_monotone", []).append(
+            1.0 if sm.get("epps_monotone_all") else 0.0
+        )
+        per_seed.setdefault("x_vol_horizon_increasing", []).append(
+            1.0 if sm.get("vol_corr_horizon_increasing_all") else 0.0
+        )
+        for pk, pv in (cm.get("pairs") or {}).items():
+            ll = pv.get("lead_lag") or {}
+            if ll.get("status") == "ok":
+                per_seed.setdefault(f"x_leadlag_peak_{pk}", []).append(
+                    float(ll["peak_lag"])
+                )
+                per_seed.setdefault(f"x_leadlag_asym_{pk}", []).append(
+                    ll["asymmetry_i_leads"]
+                )
+            per_seed.setdefault(f"x_vol_corr_{pk}", []).append(pv.get("vol_corr_latent"))
+            per_seed.setdefault(f"x_daily_corr_latent_{pk}", []).append(
+                pv.get("daily_corr_latent")
+            )
+            per_seed.setdefault(f"x_daily_corr_obs_{pk}", []).append(
+                pv.get("daily_corr_obs")
+            )
+        for pa in cm.get("per_asset") or []:
+            ai = pa["asset_index"]
+            per_seed.setdefault(f"x_throughput_a{ai}", []).append(
+                pa.get("throughput_events_per_sec")
+            )
+            per_seed.setdefault(f"x_spread_a{ai}", []).append(
+                pa.get("spread_median_ticks")
+            )
+            per_seed.setdefault(f"x_trades_a{ai}", []).append(float(pa["n_trades"]))
+
+        # 危機時相関のプール素材 (§11: 2000 日以上 → シード横断プール)
+        from .validation.cross import crisis_day_mask
+
+        pl = multi.payloads
+        for a in range(len(pl)):
+            for b in range(a + 1, len(pl)):
+                key = f"{a}-{b}"
+                n_dd = min(pl[a].daily_ret_obs.size, pl[b].daily_ret_obs.size,
+                           pl[a].n_days, pl[b].n_days)
+                mask = crisis_day_mask(
+                    pl[a].crisis_episodes, pl[a].crisis_step_sec, n_dd
+                ) | crisis_day_mask(pl[b].crisis_episodes, pl[b].crisis_step_sec, n_dd)
+                slot = pooled_pairs.setdefault(key, {"di": [], "dj": [], "m": []})
+                slot["di"].append(pl[a].daily_ret_obs[:n_dd])
+                slot["dj"].append(pl[b].daily_ret_obs[:n_dd])
+                slot["m"].append(mask)
+        del multi, result
+        print(f"      シード {seed} ({i + 1}/{n_seeds}) 完了", flush=True)
+
+    out: dict[str, Any] = {
+        "n_seeds": n_seeds,
+        "seeds": seeds,
+        "skipped_seeds": skipped_seeds,
+        "n_completed": n_seeds - sum(1 for s in skipped_seeds if s["leg"] == "main"),
+    }
+    if cross_seed_paths:
+        from .validation.scaling import cross_seed_correlation
+
+        out["cross_seed_corr"] = cross_seed_correlation(cross_seed_paths)
+        out["chi_hash_all_equal"] = bool(len(set(chi_hashes)) == 1)
+        out["chi_hashes"] = chi_hashes
+        del cross_seed_paths
+    if fb_window_vecs:
+        from .validation.feedback import crisis_window_reproducibility
+
+        out["fb_window_repro"] = crisis_window_reproducibility(fb_window_vecs)
+        nt_ok = [v for v in fb_nt_window_vecs if v is not None]
+        out["fb_nt_window_corr"] = crisis_window_reproducibility(nt_ok)
+        if len(fb_window_vecs) >= 3:
+            n_c = min(v.size for v in fb_window_vecs)
+            M = np.stack([np.asarray(v)[:n_c] for v in fb_window_vecs])
+            var_b = float(M.mean(axis=0).var())
+            var_w = float(M.var(axis=0).mean())
+            var_chi = max(var_b - var_w / M.shape[0], 0.0)
+            out["fb_window_repro"]["icc_chi3_share"] = (
+                var_chi / (var_chi + var_w) if (var_chi + var_w) > 0 else None
+            )
+    # 危機時相関 (プール): ペアごとに全シードの日次系列を連結して条件付き相関
+    pooled_out: dict[str, Any] = {}
+    increases: list[float] = []
+    for key, slot in pooled_pairs.items():
+        di = np.concatenate(slot["di"])
+        dj = np.concatenate(slot["dj"])
+        mm = np.concatenate(slot["m"])
+        cc = conditional_correlation(di, dj, mm)
+        pooled_out[key] = cc
+        if cc.get("status") == "ok":
+            increases.append(cc["increase"])
+    out["x_crisis_corr_pooled"] = pooled_out
+    out["x_crisis_corr_increase_pooled_median"] = (
+        float(np.median(increases)) if increases else None
+    )
+    out["x_crisis_pooled_days"] = (
+        int(sum(v.size for v in next(iter(pooled_pairs.values()))["di"]))
+        if pooled_pairs else 0
+    )
+
+    for name, values in per_seed.items():
+        clean = [v for v in values if v is not None]
+        if not clean:
+            out[name] = {"median": None, "values": values}
+            continue
+        arr = np.array(clean, dtype=np.float64)
+        q1, q3 = float(np.percentile(arr, 25)), float(np.percentile(arr, 75))
+        out[name] = {
+            "median": float(np.median(arr)),
+            "iqr": q3 - q1, "q1": q1, "q3": q3,
+            "min": float(arr.min()), "max": float(arr.max()),
+            "values": values,
+        }
+    return out
+
+
+def _s12_carryover(results_dir: str | None) -> dict[str, Any]:
+    """S12 本番の multiseed 中央値からペア計器の値を繰り越す (§11)。
+
+    繰り越しの妥当性は n1_regression (ビット単位一致) が担保する: ループ機構の
+    コードパスは S12 と同一で、多資産の結合 (因子合成・χ 共有) はフィードバック
+    経路に入らない。値は「参照資産の単変量性質」として S12 の実測をそのまま使う。
+    """
+    from .report import load_metrics
+
+    keys = (
+        "fb_g_30min", "fb_g_daily", "fb_divergences", "fb_T_daily_off",
+        "fb_depth_cv_ratio", "fb_rv_excess_ari", "fb_rv_excess_geo",
+        "fb_crises_per_year_off", "meta_gamma_ice_off", "meta_c1_ice_off",
+        "meta_c1", "meta_gamma",
+    )
+    try:
+        base = load_metrics("S12", root=results_dir)
+    except FileNotFoundError as exc:
+        return {"available": False, "error": str(exc)}
+    ms = (base.get("metrics") or {}).get("multiseed") or {}
+    out: dict[str, Any] = {"available": True, "source": "results/S12/metrics.json",
+                           "source_git": base.get("git_commit")}
+    for k in keys:
+        info = ms.get(k) or {}
+        out[k] = {kk: info.get(kk) for kk in ("median", "q1", "q3", "min", "max")}
+    return out
+
+
+def _run_s13(args: argparse.Namespace, config: Config) -> int:
+    """S13 (多資産) の run フロー。単一資産の cmd_run と同じ段取りで、
+    実行を run_multi に、構造検査を n1/退化/資産追加のビット単位検査に替える。"""
+    import numpy as np
+
+    from .pipeline import (
+        asset_addition_check,
+        factor_degeneracy_check,
+        n1_regression_check,
+        run as run_pipeline_single,
+        run_multi,
+    )
+    from .validation.cross import cross_asset_metrics
+
+    started = time.perf_counter()
+    stage = config.stage
+    from .report import git_info
+
+    git_at_start = git_info()
+    print(f"[1/6] 多資産実行 stage={stage} seed={config.seed} n_assets={config.n_assets} "
+          f"n_days={config.n_days} betas={config.factor_betas}")
+    multi = run_multi(config)
+    result = multi.asset0
+    print(f"      完了 ({multi.runtime_sec:.2f} 秒, 資産 {config.n_assets} 本)")
+
+    print("[2/6] 決定性の確認 (run_multi を再実行し全資産のダイジェスト照合)")
+    multi2 = run_multi(config)
+    det_ok = bool(multi.digests == multi2.digests)
+    determinism = {
+        "bitwise_identical": det_ok,
+        "digests_match": det_ok,
+        "per_asset": {str(k): bool(multi.digests[k] == multi2.digests[k])
+                      for k in multi.digests},
+    }
+    del multi2
+    print(f"      ビット単位一致: {det_ok}")
+
+    print("[3/6] RNG 安定性 + 多資産の構造検査 (§8)")
+    rng_stability = rng_stability_check(config)
+    rng_diffusion = rng_diffusion_check(config, result)
+    print(f"      既存ストリーム不変: {rng_stability['unchanged']} / "
+          f"l2.diffusion 一致 (資産0): {rng_diffusion['match']}")
+    cfg_n1 = config.n1_config()
+    r_n1 = run_pipeline_single(cfg_n1)
+    n1 = n1_regression_check(config, results_root=args.results_dir, result=r_n1)
+    print(f"      n1 回帰 (S12 ダイジェスト照合): {n1.get('match')}")
+    degen = factor_degeneracy_check(config)
+    print(f"      因子経路の退化 (β=0 ビット単位): {degen['match']}")
+    addition = asset_addition_check(config)
+    print(f"      資産追加の不変性 (N={config.n_assets}→{config.n_assets + 1}): "
+          f"{addition['bitwise']}")
+    # L2 凍結 (板は L2 を読むが書かない) — 板 off の多資産ランと潜在側を照合。
+    # ★流動性オーバーライドも外す: 許可キーは全て L3/L1 のパラメータで L2 には
+    # 一切入らない (config の _S13_OVERRIDE_KEYS 検証がそれを保証している) ため、
+    # 外しても L2 側の比較対象は変わらない — むしろ「オーバーライドが L2 に
+    # 漏れていない」ことの検証を兼ねる。
+    multi_off = run_multi(config.without_book().replace(asset_overrides=()))
+    l2_frozen = {
+        "passed": True, "per_asset": {},
+        "basis": "板 off の run_multi との潜在 (日次リターン + log σ サブサンプル) 照合",
+    }
+    for i_, p_ in enumerate(multi.payloads):
+        of_p = multi_off.payloads[i_]
+        same = bool(
+            np.array_equal(p_.daily_ret_latent, of_p.daily_ret_latent)
+            and np.array_equal(p_.log_vol_sub, of_p.log_vol_sub)
+        )
+        l2_frozen["per_asset"][str(i_)] = same
+        l2_frozen["passed"] = l2_frozen["passed"] and same
+    del multi_off
+    print(f"      L2 凍結 (全資産): {l2_frozen['passed']}")
+
+    # 時間スケール不変性は n1 退化脚で判定する (L2 生成器の物理時間定義は
+    # 因子分割後も同一の generator — 共通/固有とも simulate_msm_path /
+    # simulate_ou_path を通る。多資産での再測定は板実現の独立性で S10 と
+    # 同じ理由により検定にならない)。
+    try:
+        scale_invariance = scale_invariance_check(cfg_n1, r_n1)
+    except RuntimeError as exc:
+        scale_invariance = {
+            "passed": None, "skipped": f"対照解像度ランが失敗: {exc}", "checks": {},
+        }
+    del r_n1
+
+    print("[4/6] 検証スイート (参照資産) + クロス資産測定")
+    validation_started = time.perf_counter()
+    # §9: suite の cross.hayashi_yoshida を初めて有効化する (p* を各資産の
+    # 実約定時刻でサンプルした系列 — 推定量と非同期性の検定対象)
+    result.meta["assets"] = [
+        (p.trade_t, p.pstar_at_trades) for p in multi.payloads[:2]
+    ]
+    metrics = run_all(result, config)
+    errors = collect_errors(metrics)
+    metrics["cross_assets"] = cross_asset_metrics(multi, config)
+    metrics["s12_carryover"] = _s12_carryover(args.results_dir)
+
+    multi_runtime_sec = multi.runtime_sec
+    asset_digests = {str(k): v for k, v in multi.digests.items()}
+    multiseed = None
+    if args.seeds and args.seeds > 1:
+        print(f"[4c/6] 多シード判定 ({args.seeds} シード — run_multi ループ)")
+        del multi  # メモリ: ループ中はメインの結果を保持しない (metrics に抽出済み)
+        multiseed = _run_multiseed_s13(config, args.seeds)
+        for name in (
+            "x_hy_max_abs_err", "x_epps_ratio", "x_daily_corr_err",
+            "x_vol_corr_min", "x_crisis_corr_increase_seed",
+            "hill_alpha", "fb_hill_ex_crisis", "fb_gph_d_diff_masked",
+            "fb_nt_mean_time", "fb_crises_per_year", "qr_eta_trade",
+        ):
+            info = multiseed.get(name) or {}
+            if isinstance(info, dict) and info.get("median") is not None:
+                print(f"      {name}: median={info['median']:+.4f}  IQR={info['iqr']:.4f}")
+        pooled = multiseed.get("x_crisis_corr_increase_pooled_median")
+        if pooled is not None:
+            print(f"      crisis_corr_increase (プール): {pooled:+.4f}")
+        metrics["multiseed"] = multiseed
+
+    # クロスのゲート値: 多シードがあればその中央値/プール、無ければ主シード値
+    cs = metrics["cross_assets"].get("summary") or {}
+    ms = multiseed or {}
+    def med(key: str):
+        info = ms.get(key) or {}
+        return info.get("median") if isinstance(info, dict) else None
+    metrics["cross_assets"]["gatevals"] = {
+        "hy_max_abs_err": (
+            (ms.get("x_hy_max_abs_err") or {}).get("max")
+            if multiseed else cs.get("hy_max_abs_err")
+        ),
+        "epps_ratio": med("x_epps_ratio") if multiseed else cs.get("epps_ratio_median"),
+        "epps_monotone": (
+            bool((med("x_epps_monotone") or 0) >= 1.0)
+            if multiseed else cs.get("epps_monotone_all")
+        ),
+        # ★per-seed の max 誤差はサンプリング雑音 (1000 日で SE≈0.032、3 ペア
+        # max の期待値 ~0.05) がゲート幅 ±0.05 を食い潰す — シード中央値の
+        # 相関 vs 理論で判定する (5 シード中央値の SE ≈ 0.018、ペア max ~0.04)。
+        "daily_corr_err": (
+            max(
+                (
+                    abs(med(f"x_daily_corr_latent_{pk}") - tv)
+                    for pk, tv in (
+                        (metrics["cross_assets"].get("theory") or {}).get("pairs") or {}
+                    ).items()
+                    if med(f"x_daily_corr_latent_{pk}") is not None and tv is not None
+                ),
+                default=None,
+            )
+            if multiseed
+            else cs.get("daily_corr_latent_max_abs_err")
+        ),
+        "vol_corr_lo": (
+            med("x_vol_corr_min") if multiseed else cs.get("vol_corr_min")
+        ),
+        "vol_corr_hi": (
+            med("x_vol_corr_max") if multiseed else cs.get("vol_corr_max")
+        ),
+        "vol_corr_horizon_increasing": (
+            bool((med("x_vol_horizon_increasing") or 0) >= 1.0)
+            if multiseed else cs.get("vol_corr_horizon_increasing_all")
+        ),
+        "crisis_corr_increase": (
+            ms.get("x_crisis_corr_increase_pooled_median")
+            if multiseed else cs.get("crisis_corr_increase_median")
+        ),
+        "leadlag_asym_1_2": med("x_leadlag_asym_1-2") if multiseed else (
+            ((metrics["cross_assets"].get("pairs") or {}).get("1-2") or {})
+            .get("lead_lag", {}).get("asymmetry_i_leads")
+        ),
+        "leadlag_peak_1_2": med("x_leadlag_peak_1-2") if multiseed else (
+            ((metrics["cross_assets"].get("pairs") or {}).get("1-2") or {})
+            .get("lead_lag", {}).get("peak_lag")
+        ),
+    }
+
+    metrics["runtime"] = {
+        "pipeline": {
+            "completed": True,
+            "runtime_sec": multi_runtime_sec,
+            "driver": "multi_asset",
+            "layers": result.meta.get("layers"),
+            "grid": result.meta.get("grid"),
+            "rng_streams_used": result.meta.get("rng_streams_used"),
+            "environment": result.meta.get("environment"),
+            "result_digest": result.digest(),
+            "asset_digests": asset_digests,
+        },
+        "determinism": determinism,
+        "rng_stability": rng_stability,
+        "rng_diffusion": rng_diffusion,
+        **({"scale_invariance": scale_invariance} if scale_invariance is not None else {}),
+        "multi_asset_checks": {
+            "n1_regression": n1,
+            "factor_degeneracy": degen,
+            "asset_addition": addition,
+            "l2_frozen_multi": l2_frozen,
+        },
+        "validation": {
+            "all_callable": not errors,
+            "n_errors": len(errors),
+            "errors": errors,
+            "runtime_sec": time.perf_counter() - validation_started,
+        },
+        "artifacts": {"metrics_json_ok": False, "reason": "書き出し前"},
+        "rng_fingerprint": result.rng_fingerprint,
+    }
+    print(f"      指標の算出完了 ({metrics['runtime']['validation']['runtime_sec']:.2f} 秒, "
+          f"エラー {len(errors)} 件)")
+
+    gates = gates_for(stage)
+    gate_results = evaluate(gates, metrics)
+    summary = summarize(gate_results)
+
+    print("[5/6] 結果の書き出しと読み直し")
+    total_runtime = time.perf_counter() - started
+    path = write_metrics(
+        stage, config, metrics, gate_results, summary, total_runtime,
+        root=args.results_dir, git=git_at_start,
+    )
+    verification = verify_metrics_file(path)
+    metrics["runtime"]["artifacts"] = verification
+    gate_results = evaluate(gates, metrics)
+    summary = summarize(gate_results)
+    total_runtime = time.perf_counter() - started
+    path = write_metrics(
+        stage, config, metrics, gate_results, summary, total_runtime,
+        root=args.results_dir, git=git_at_start,
+    )
+    print(f"      {path} ({verification.get('size_bytes', 0):,} バイト)")
+
+    if not args.no_plots:
+        print("[6/6] プロット")
+        plots = make_plots(metrics, stage, result=result, root=args.results_dir)
+        for plot_path in plots:
+            print(f"      {plot_path.name}")
+    else:
+        print("[6/6] プロットは --no-plots によりスキップ")
+
+    _print_key_metrics(metrics)
+    _print_na(metrics)
+    _print_gates(gate_results, summary)
+    print(f"\n所要時間 {total_runtime:.1f} 秒")
+    return 0 if summary["all_critical_passed"] else 1
+
+
 def _print_gates(gate_results, summary: Mapping[str, Any]) -> None:
     name_width = max(len(g.name) for g in gate_results)
     print()
@@ -909,6 +1431,8 @@ def _print_na(metrics: Mapping[str, Any]) -> None:
 def cmd_run(args: argparse.Namespace) -> int:
     started = time.perf_counter()
     config = _build_config(args)
+    if config.n_assets > 1:
+        return _run_s13(args, config)
     stage = config.stage
     # ★コード版数は**実行開始時点**で確定する。書き出し時に取ると自分の出力
     # (metrics.json) が status に映って dirty が常に True になる (report.py 参照)。

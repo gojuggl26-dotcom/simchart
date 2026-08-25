@@ -191,6 +191,7 @@ class AssetPayload:
     trade_t: Any  # 集約約定の時刻 (float64)
     trade_log_vwap: Any  # 集約約定の対数 VWAP (float64)
     pstar_at_trades: Any  # 潜在 log p* を各約定時刻でサンプル (float64)
+    pstar_1min: Any  # 潜在 log p* の 1 分サブサンプル (HY の真値照合用)
     daily_ret_obs: Any
     daily_ret_latent: Any
     rv_daily_obs: Any
@@ -256,6 +257,8 @@ def build_asset_payload(
         pstar_at_trades = ps[idx]
     else:
         pstar_at_trades = np.empty(0, dtype=np.float64)
+    stride_1m = max(int(round(60.0 / step_g)), 1)
+    pstar_1min = ps[::stride_1m].copy()
 
     sub = (result.meta.get("l2") or {}).get("vol_subsample") or {}
     if isinstance(sub.get("log_vol"), np.ndarray):
@@ -297,6 +300,7 @@ def build_asset_payload(
         trade_t=trade_t,
         trade_log_vwap=trade_px,
         pstar_at_trades=pstar_at_trades,
+        pstar_1min=pstar_1min,
         daily_ret_obs=daily_obs,
         daily_ret_latent=daily_lat,
         rv_daily_obs=rv,
@@ -438,17 +442,22 @@ def asset_addition_check(config: Config, n_days: int = 30) -> dict[str, Any]:
     }
 
 
-def n1_regression_check(config: Config, results_root: str | None = None) -> dict[str, Any]:
+def n1_regression_check(
+    config: Config,
+    results_root: str | None = None,
+    result: StageResult | None = None,
+) -> dict[str, Any]:
     """§8.3: n_assets=1 の退化設定が S12 の保存済み結果とビット単位一致するか。
 
     同一の seed・n_days・steps_per_day のときだけダイジェスト照合が成立する
     (S12 本番は seed 42・1000 日)。視野が違う場合は記録に降格し、判定は
     :func:`factor_degeneracy_check` (規模非依存のビット単位検査) が担う。
+    ``result`` に n1 退化脚の実行済み結果を渡すと再実行しない (SI 検査と共用)。
     """
     from .report import load_metrics
 
     cfg1 = config.n1_config()
-    res = run(cfg1)
+    res = result if result is not None else run(cfg1)
     digest = res.digest()
     out: dict[str, Any] = {"digest_n1": digest, "n_days": cfg1.n_days, "seed": cfg1.seed}
     try:
