@@ -170,6 +170,9 @@ def test_compare_needs_two_stages(run_dir: Path) -> None:
     assert main(["compare", "--stages", "S0", "--results-dir", str(run_dir)]) == 2
 
 
-def test_cli_refuses_an_unimplemented_stage(run_dir: Path) -> None:
-    # 実装が進んだら「次の未実装段階」へ更新する (S12 の実装で S12 -> S13)。
-    assert main(["run", "--stage", "S13", "--results-dir", str(run_dir), *SMALL_RUN]) == 3
+def test_cli_refuses_an_unknown_stage(run_dir: Path) -> None:
+    # 全 13 段階が実装済み (S13 で工程完了)。未知の段階名は ValueError → 非 0 終了。
+    import pytest
+
+    with pytest.raises(SystemExit):
+        main(["run", "--stage", "S99", "--results-dir", str(run_dir), *SMALL_RUN])

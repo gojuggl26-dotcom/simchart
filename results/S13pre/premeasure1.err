@@ -1,0 +1,33 @@
+Traceback (most recent call last):
+  File "E:\模擬チャート生成\simchart\pipeline.py", line 354, in run_multi
+    res = run(cfg_i, rng=view, _factor=(config.factor_betas[i], common))
+  File "E:\模擬チャート生成\simchart\pipeline.py", line 126, in run
+    price, observation, events, book = driver(layers)
+                                       ~~~~~~^^^^^^^^
+  File "E:\模擬チャート生成\simchart\pipeline.py", line 85, in __call__
+    observation, events, book = layers.book.observe(price, layers.calendar, layers.activity)
+                                ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\模擬チャート生成\simchart\layers\l3_book.py", line 519, in observe
+    raise RuntimeError(
+    ...<2 lines>...
+    )
+RuntimeError: ZI ミッドが板の絶対ティック窓から逸脱しました。 book_window_half_ticks を広げるか期間を見直すこと。
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "<frozen runpy>", line 203, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "E:\模擬チャート生成\simchart\cli.py", line 1695, in <module>
+    raise SystemExit(main())
+                     ~~~~^^
+  File "E:\模擬チャート生成\simchart\cli.py", line 1685, in main
+    return int(args.func(args))
+               ~~~~~~~~~^^^^^^
+  File "E:\模擬チャート生成\simchart\cli.py", line 1435, in cmd_run
+    return _run_s13(args, config)
+  File "E:\模擬チャート生成\simchart\cli.py", line 1117, in _run_s13
+    multi = run_multi(config)
+  File "E:\模擬チャート生成\simchart\pipeline.py", line 356, in run_multi
+    raise RuntimeError(f"資産 {i}: {exc}") from exc
+RuntimeError: 資産 2: ZI ミッドが板の絶対ティック窓から逸脱しました。 book_window_half_ticks を広げるか期間を見直すこと。
