@@ -47,7 +47,7 @@ import pandas as pd
 from scipy import stats
 
 from simchart import Config, run
-from simchart.config import IMPLEMENTED_FLAGS, SESSION_SECONDS, TRADING_DAYS_PER_YEAR
+from simchart.config import IMPLEMENTED_FLAGS
 from simchart.report import git_info, results_dir
 from simchart.validation.base import jsonable, num
 
@@ -130,16 +130,23 @@ def generate(args: argparse.Namespace) -> int:
     if args.recompute:
         # 再計算は保存済みの設定を読むので、段階ガード (フラグの整合検査) は不要。
         # --stage S1 だけ渡しても通るよう、ガードより前に分岐する。
-        stage = args.stage or (Config.load(args.config).stage if args.config else "S0")
+        _cfg = Config.load(args.config) if args.config else None
+        stage = args.stage or (_cfg.stage if _cfg else "S0")
+        if _cfg is not None and _cfg.market_type != "equity":
+            stage = f"perp_{stage}"
         out_dir = results_dir(stage, args.results_dir) / "charts"
         return recompute(out_dir, args)
 
     base = build_base_config(args)
-    stage = base.stage
+    # ★時間軸は config の単一情報源から取る (S0-perp §4)。定数直書きだと
+    # perp (365 日 / 86,400 秒) で年率換算が √(365/252) = 1.20 倍ずれる。
+    # 結果ラベルも market_type で分ける — perp を stage 名のまま書くと
+    # 株式のベースライン (results/S0/charts) を上書きしてしまう。
+    stage = base.stage if base.market_type == "equity" else f"perp_{base.stage}"
     n_days, steps_per_day = base.n_days, base.steps_per_day
-    session_seconds = SESSION_SECONDS
+    session_seconds = base.seconds_per_day
     step_seconds = session_seconds / steps_per_day
-    seconds_per_year = TRADING_DAYS_PER_YEAR * session_seconds
+    seconds_per_year = base.ann_days * session_seconds
 
     if args.intraday_bar_sec % step_seconds != 0:
         raise ValueError("intraday_bar_sec が刻みの整数倍ではありません")
@@ -295,7 +302,7 @@ def _generate_chunk(
         low_px[sl] = np.exp(l)
         close_px[sl] = np.exp(c)
         log_return[sl] = c - o
-        realized_vol[sl] = np.sqrt(rv_daily * TRADING_DAYS_PER_YEAR)
+        realized_vol[sl] = np.sqrt(rv_daily * base.ann_days)
 
         daily_ret = c - o
         index_rows.append(
@@ -306,7 +313,7 @@ def _generate_chunk(
                 "last_close": float(np.exp(c[-1])),
                 "total_log_return": float(c[-1] - o[0]),
                 "realized_vol_annualized": float(
-                    np.sqrt(rv_daily.sum() / n_days * TRADING_DAYS_PER_YEAR)
+                    np.sqrt(rv_daily.sum() / n_days * base.ann_days)
                 ),
                 "daily_return_mean": float(daily_ret.mean()),
                 "daily_return_std": float(daily_ret.std(ddof=1)),
@@ -462,7 +469,7 @@ def recompute(out_dir: Path, args: argparse.Namespace) -> int:
     n_days = int(daily["day"].max()) + 1
     print(f"既存の {n_charts} 本 x {n_days} 日 から集団検証を作り直します")
 
-    seconds_per_year = TRADING_DAYS_PER_YEAR * 6.5 * 3600.0
+    seconds_per_year = base.ann_days * base.seconds_per_day
     metrics = ensemble_metrics(
         daily, index_df, base, n_charts, n_days, seconds_per_year,
         float(payload["generation"].get("runtime_sec", 0.0)),
@@ -514,7 +521,7 @@ def ensemble_metrics(
     returns = daily["log_return"].to_numpy().reshape(n_charts, n_days)
     pooled = returns.ravel()
     terminal = returns.sum(axis=1)
-    horizon_years = n_days / TRADING_DAYS_PER_YEAR
+    horizon_years = n_days / config.ann_days
     sigma = config.sigma_bar
 
     # --- 1. 実現ボラ ---
@@ -547,7 +554,7 @@ def ensemble_metrics(
 
     # --- 0. 段階に依らない不変量 ---
     is_s0 = not any(getattr(config, f) for f in IMPLEMENTED_FLAGS)
-    horizon_years_u = n_days / TRADING_DAYS_PER_YEAR
+    horizon_years_u = n_days / config.ann_days
     # 実現分散 (年率) = 各チャートの Σr²/T。実現ボラの二乗ではなく分散で平均する
     # ことが重要 — E[σ] != sqrt(E[σ²]) なので、ボラが変動する段階では実現ボラの
     # 平均は σ̄ より小さくなる (Jensen)。正規化条件は分散の側にある。
@@ -587,7 +594,7 @@ def ensemble_metrics(
     # 復元できない量なので、ここが合うことが「日中を本当に見ている」証拠になる。
     # 1 秒刻みの離散標本なので値幅はわずかに過小になる (刻み間の極値を見逃すため)。
     # Broadie-Glasserman-Kou の補正で相対 -2*0.5826*sqrt(dt/T) 程度。
-    sigma_day = sigma / math.sqrt(TRADING_DAYS_PER_YEAR)
+    sigma_day = sigma / math.sqrt(config.ann_days)
     steps_per_day = config.steps_per_day
     log_range = np.log(daily["high"].to_numpy() / daily["low"].to_numpy())
     abs_body = np.abs(daily["log_return"].to_numpy())
@@ -648,9 +655,9 @@ def ensemble_metrics(
         "pooled_daily_returns": {
             "n": int(n_pooled),
             "mean": num(pooled.mean()),
-            "expected_mean": num(-0.5 * sigma**2 / TRADING_DAYS_PER_YEAR),
+            "expected_mean": num(-0.5 * sigma**2 / config.ann_days),
             "std": num(pooled.std(ddof=1)),
-            "expected_std": num(sigma / math.sqrt(TRADING_DAYS_PER_YEAR)),
+            "expected_std": num(sigma / math.sqrt(config.ann_days)),
             "skewness": num(stats.skew(pooled, bias=False)),
             # 尖度 3 は定数ボラ段階の期待値。S1 以降は 3 より大きいのが正しい。
             "kurtosis": num(stats.kurtosis(pooled, fisher=False, bias=False)),
@@ -744,7 +751,7 @@ def make_plots(
 
     # 2. ファンチャート (理論分位点と重ねる)
     days = np.arange(1, n_days + 1)
-    horizon = days / TRADING_DAYS_PER_YEAR
+    horizon = days / config.ann_days
     sigma, mu = config.sigma_bar, config.mu_drift
     fig, ax = plt.subplots(figsize=(9, 4.4))
     for lo, hi, alpha in ((5, 95, 0.18), (25, 75, 0.28)):
@@ -775,7 +782,7 @@ def make_plots(
 
     # 3. 終端分布
     terminal = np.log(close[:, -1] / p0)
-    horizon_total = n_days / TRADING_DAYS_PER_YEAR
+    horizon_total = n_days / config.ann_days
     fig, axes = plt.subplots(1, 2, figsize=(11, 3.8))
     axes[0].hist(terminal, bins=50, density=True, alpha=0.65)
     grid = np.linspace(terminal.min(), terminal.max(), 400)
