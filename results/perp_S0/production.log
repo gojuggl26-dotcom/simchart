@@ -1,0 +1,104 @@
+[1/6] 実行 stage=perp_S0 seed=42 n_days=2800 steps_per_day=1440
+      完了 (0.14 秒, グリッド 4,032,001 点)
+[2/6] 決定性の確認 (同一シードで再実行)
+      ビット単位一致: True
+[3/6] RNG ストリーム安定性の確認
+      既存ストリーム不変: True / 相互に別系列: True
+      l2.diffusion 消費列の一致: True
+[3b/6] 時間スケール不変性 (steps_per_day=288 で対照実行)
+      日次統計の一致: True
+[4/6] 検証スイート
+      指標の算出完了 (12.73 秒, エラー 0 件)
+[5/6] 結果の書き出しと読み直し
+      E:\模擬チャート生成\results\perp_S0\metrics.json (190,979 バイト)
+[6/6] プロット
+      price_path.png
+      qq_normal.png
+      acf.png
+      kurtosis_by_scale.png
+      zeta_q.png
+      signature_plot.png
+      daily_absr_acf.png
+      variance_ratio.png
+
+主要指標
+---------------------------------------------
+  基準粒度 (秒)               60
+  リターン本数                 4032000
+  尖度                     3.00388
+  歪度                     -5.1330e-04
+  Hill alpha (k=5%)      5.99502
+  Hill 不安定度              0.71902
+  QQ の R^2               1
+  ACF(r) ラグ1             -1.0945e-04
+  ACF(|r|) ラグ1           -5.8939e-04
+  Ljung-Box p (ラグ20)     0.17792
+  GPH d (|r|)            0.00704471
+  local Whittle d (|r|)  0.0112762
+  分散比 max|VR-1|          0.00947155
+  尖度のスケール依存 max|k-3|     0.0220638
+  zeta_q 直線性 R^2         1
+  zeta_q の傾き             0.500033
+  signature plot 最大乖離    0.0085156
+  ADF p (log P)          0.199733
+  ADF p (r)              0
+  日次 尖度                  2.93564
+  日次 ACF(|r|) ラグ1        0.00180314
+  日次 GPH d (|r|)         -0.0225408
+  日次 |r| ACF べき則 R^2     0.0828751
+  日次 zeta_q 直線性 R^2      0.999752
+  尖度の減衰傾き (日次→複数日)       1.73815
+  Var(log σ) 断面          -
+  予算シェア 断面 (分母 0.25)     -
+  予算使用率 断面               -
+  E[σ²]/σ̄² 断面           -
+  粗さ H (潜在, 5分〜4時間)      -
+  粗さ ζ_q 線形性 R²          -
+  粗さ H (RV 側, 記録のみ)      -3.7541e-04
+  ボラ増分 ACF(1) (60秒)      -
+  ラフ予算シェア (経路)           -
+
+該当なし (not_applicable) の指標
+----------------------------------------------------------------------
+  micro.sign_acf: 注文流イベントが無いため測定できません。S6 で板層、S8 でメタオーダー分割を入れた段階で初めて意味を持ちます。
+  micro.response_function: 注文流イベントが無いため測定できません。S6 で板層、S8 でメタオーダー分割を入れた段階で初めて意味を持ちます。
+  micro.propagator: 注文流イベントが無いため測定できません。S6 で板層、S8 でメタオーダー分割を入れた段階で初めて意味を持ちます。
+  micro.impact_consistency: gamma または beta が未推定です。符号自己相関 (S8) と propagator (S8) の両方が揃って初めて判定できます。
+  micro.sqrt_law: メタオーダーの記録がありません。S8 でメタオーダー分割を実装した段階で測定できるようになります。
+  micro.branching_ratio: イベントが無いため分岐比を再推定できません。自己励起は S7 で導入します。
+  cross.hayashi_yoshida: 資産が 1 本しかないため測定できません。多資産は S13 で導入します。
+  cross.lead_lag: 資産が 1 本しかないため測定できません。多資産は S13 で導入します。
+
+ゲート判定
+----------------------------------------------------------------------------------
+  [PASS] pipeline_runs             true
+  [PASS] determinism               true
+  [PASS] rng_stability             true
+  [PASS] rng_streams_distinct      true
+  [PASS] acf_r_lag1                -0.219766
+  [PASS] acf_abs_r_lag1            -1.18348
+  [PASS] ljung_box                 0.17792
+  [PASS] gph_d                     0.00704471
+  [PASS] variance_ratio            0.00947155
+  [PASS] kurtosis                  3.00388
+  [PASS] kurtosis_flat             0.0220638
+  [PASS] zeta_q_linear             1
+  [PASS] signature_plot_flat       0.0085156
+  [PASS] adf                       true
+  [PASS] validation_callable       true
+  [PASS] artifacts_written         true
+  [PASS] ann_days_365              365
+  [PASS] seconds_per_day_86400     86400
+  [PASS] scale_invariance          true
+  [PASS] time_grid_single_source   true
+  [PASS] phi_sigma_normalization   4.5343e-05
+  [PASS] phi_lambda_normalization  4.3743e-05
+  [PASS] chaos_tau_band            29.9985
+  [PASS] config_validation         true
+  [PASS] l4_stub_raises            true
+  [PASS] validation_perp_callable  {"basis_stats":{"status":"not_applicable","reason":"基差・fundi
+  [PASS] weekly_profile_flat       1.00279
+----------------------------------------------------------------------------------
+  合格 27/27 / critical 27 件中 全て合格
+
+所要時間 13.6 秒

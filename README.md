@@ -2212,6 +2212,96 @@ Hill 全体:                  S12 2.41          S13 3.12 (★視野差 — 500 �
 
 ---
 
+## perp フォーク (ブランチ `perp` — S0-perp: PerpDEX (CLOB・24/7) 骨格層)
+
+**同一リポジトリ・同一パッケージで `market_type` により分岐する** (別リポジトリに
+しない — 株式側の全ゲートとベースライン fixture が共有コアの回帰テストとして
+機能し続けることがフォークの前提)。ブランチ運用: `master` = 株式 (S0〜S13)、
+`perp` = このフォーク。分岐は**レイヤー実装の差し替え** (`build_calendar` が
+`PerpCalendar` を選択) で行い、共通コア (rng / grid / L2 の確率過程 / 検証) は
+分岐しない。
+
+### 最重要ゲート: 株式のビット単位不変
+
+フォーク作業前の master (3439798) で S0/S3/S12/S13 の 4 構成 (RNG・L2 全成分・
+板・結合・フィードバック・χ・多資産の全経路) のダイジェストを
+`tests/baselines_equity_fork.json` に固定し、`tests/test_perp_fork.py::
+test_equity_baselines_unchanged_*` が毎回再実行して照合する — **時間軸
+リファクタと全 perp 追加の後も 4 構成すべてビット単位一致** (全体 377 テスト
+グリーン)。market_type は乱数の鍵に入れない (§6.2 — 入れると株式の全経路が
+変わる)。
+
+### 指示書 §3「既存不備 3 件」の検証結果: **本リポジトリには存在しない (main への反映なし)**
+
+指示書は別構造 (`market_sim/`・crc32 RNGBank・390 steps) を参照しており、
+記述された不備を実コードで測定検証した:
+
+| §3 の指摘 | 実測 | 解決済み段階 |
+|---|---|---|
+| φ_σ が mean-1 正規化 (分散が Jensen で超過) | mean(φ_σ²) = **0.99999** / mean(φ_λ) = **0.99999**、`normalize_phi_sigma` / `normalize_phi_lambda` に分離済み | S4 |
+| χ₂ の特徴時間 1 日 (日周期と混同) | 設計 **30.0 日**・S12 本番実測 29.998 日・日周期帯パワー 8.8e-16。perp の週次帯 (5〜10 日) の外 | S5 |
+| ON が「日中の 2 倍」で曖昧 | フィールドは **`overnight_variance_share = 0.20`** (cc 分散シェア)・実測比 1.036 | S4 |
+
+3 件とも tests/test_perp_fork.py が恒久固定し、perp ゲート
+(phi_sigma_normalization / phi_lambda_normalization / chaos_tau_band) が
+毎実行で機構を検査する。
+
+### 時間軸の単一情報源 (§4 — 24/7 化の最大事故要因)
+
+`simchart/grid.py` の `TimeGrid` + `config.ann_days` / `config.seconds_per_day`
+が唯一の定義点。生成系の直接参照 (TRADING_DAYS_PER_YEAR / SESSION_SECONDS /
+23400 リテラル) は掃引済みで、tokenize ベースのコード検査ゲート
+(time_grid_single_source) が再発を監視する。検証系の 23 箇所も
+`obs.session_seconds` / `cfg.seconds_per_day` 経由に統一 (equity は同一 float
+なのでビット不変 — fixture が証明)。
+
+| | equity | perp_clob |
+|---|---|---|
+| ann_days | 252 | **365** |
+| seconds_per_day | 23,400 (6.5h) | **86,400** (24h) |
+| steps_per_day (基準 config) | 23,400 (1 秒) | **1,440** (1 分) |
+| sigma_bar | 0.2217 | **0.60** |
+| セッション | continuous + ON ギャップ | **24h 連続・ギャップなし** |
+
+### S0-perp で宣言した perp フラグ (実装は担当段階で)
+
+| フラグ / パラメータ | 担当 | 内容 |
+|---|---|---|
+| enable_weekly_seasonality, weekly_period_hours | S4-perp | 週次 168h の φ (UTC 日内 + 週次の 2 周期) |
+| block_time_ms, sequencer_rule | S6-perp | ブロック時間の離散化・シーケンサ規則 |
+| enable_funding, funding_interval_hours, funding_cap | S10-perp | TWAP 基差 → funding |
+| enable_arbitrageur, arb_threshold_bps | S10-perp | 現物-perp 裁定 (基差の定常化) |
+| enable_positions, enable_liquidation, position_repr, maintenance_margin, max_leverage, leverage_pareto_alpha, partial_liquidation_frac | S11-perp | L4 建玉・清算 (**S10-perp で基差が定常になってから** L3⇄L4 を閉じる) |
+| enable_insurance_fund, enable_adl | S11-perp | 保険基金・ADL |
+| enable_cross_margin | S13-perp | クロスマージン (多資産) |
+| chaos_branching_target | S12-perp | χ₃ の注入先切替 (n_t / leverage_appetite) |
+
+RNG ストリーム追加: `l3.arbitrageur` / `l4.leverage_choice` /
+`l4.position_assign` / `l4.liquidation_order` (既存名は不変更)。L4 は
+`layers/l4_positions.py` のスタブ + `types_perp.py` (PositionBook / FundingState /
+LiquidationEvent)。`validation/perp.py` は全 11 関数を宣言済み (S6/S10/S11-perp
+分は not_applicable を返す — 形を先に固定する S0 の規約)。
+
+### S0-perp 本番 (2,800 日 = 400 週 × 1,440 分足、GBM のみ)
+
+**27/27 ゲート全合格** (13.6 秒)。株式 S0 と同じく「非現実的なのが正解」:
+
+| 量 | 実測 | ゲート |
+|---|---|---|
+| 尖度 (1 分、N=4.03M) | **3.0039** | [2.7, 3.3] ✓ (SE 0.0024) |
+| ACF(1) の z | −0.22 | \|z\| < 2 ✓ (60 日スモークの +3.12 は seed42 の抽選 — 5 シードで ±1.6 を確認) |
+| GPH d / VR 最大乖離 | 0.007 / 0.009 | ✓ |
+| **時間スケール不変性** (1440 vs 288 steps) | 一致 | ✓ (§4.3 — 24/7 化の最重要検査) |
+| **週内プロファイル** (7 ビン) | max/min = **1.0028** | < 1.05 ✓ 平坦 (週次季節性は S4-perp) |
+| φ 正規化機構 | 誤差 4.5e-5 / 4.4e-5 | ±0.001 ✓ |
+| 年率換算 | ann_days=365・86,400 s/日 | ✓ (σ_step = 0.60/√(365·1440) をテストが固定) |
+| config 検証 §5.3 / L4 スタブ発火 | 全発火 | ✓ |
+
+実行: `uv run python -m simchart.cli run --config configs/s0_perp.yaml`
+(結果は `results/perp_S0/` — 株式の `results/S0` ベースラインとは衝突しない)。
+
+---
+
 ## S13 実装時の参照 (旧「S13 の追加先」)
 
 S2 で「記録のみ」ゲート (`absr_acf_powerlaw` / `zeta_q_nonlinear`) の昇格可否を
