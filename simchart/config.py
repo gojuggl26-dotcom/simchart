@@ -1050,6 +1050,11 @@ class Config:
         ):
             if not getattr(self, flag):
                 changed = [n for n in params if getattr(self, n) != defaults[n]]
+                # perp では session_type='24h' が (季節性と無関係に) 必須値なので
+                # S4 の従属ガードから外す — 24/7 はカレンダー構造であって
+                # 季節性の従属パラメータではない (S0-perp §5.3)。
+                if flag == "enable_seasonality" and self.market_type == "perp_clob":
+                    changed = [n for n in changed if n != "session_type"]
                 if changed:
                     raise ValueError(
                         f"{flag}=False のまま {', '.join(changed)} が既定値から変更されています。"

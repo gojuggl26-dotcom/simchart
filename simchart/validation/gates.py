@@ -3169,6 +3169,122 @@ _S13_NEW_GATES: tuple[Gate, ...] = (
 
 S13_GATES: tuple[Gate, ...] = _S13_INHERITED_GATES + _S13_NEW_GATES
 
+
+# ---------------------------------------------------------------------------
+# perp フォーク (S0-perp §9 / §11)
+# ---------------------------------------------------------------------------
+#: ★株式のゲート定義は一切変更しない (§9)。perp は**別の集合**として定義し、
+#: cmd_run が実行ラベル ("perp_S0") で選択する。GBM 統計は株式 S0 と同一基準
+#: (S0_GATES をそのまま承継 — §10「perp らしい統計量は S1-perp 以降」)。
+def _perp_placeholders_ok(value: Any) -> bool:
+    """S10/S11-perp の関数群が全て ok / not_applicable で返っていること。"""
+    if not isinstance(value, Mapping) or not value:
+        return False
+    return all(
+        isinstance(v, Mapping) and v.get("status") in ("ok", "not_applicable")
+        for v in value.values()
+    )
+
+
+_PERP_S0_NEW_GATES: tuple[Gate, ...] = (
+    Gate(
+        name="ann_days_365",
+        metric_path="perp.time_grid.ann_days",
+        check=lambda v: v == 365,
+        threshold="perp の年率換算日数 == 365 (§4.2)",
+        description="時間軸の単一情報源 (grid.TimeGrid) が market_type を反映していること。",
+    ),
+    Gate(
+        name="seconds_per_day_86400",
+        metric_path="perp.time_grid.seconds_per_day",
+        check=lambda v: v is not None and float(v) == 86400.0,
+        threshold="perp の 1 日 == 86,400 秒 (24/7)",
+        description="",
+    ),
+    Gate(
+        name="scale_invariance",
+        metric_path="runtime.scale_invariance.passed",
+        check=lambda v: v is True,
+        threshold="解像度を変えて日次集計統計が一致 (§4.3 — 24/7 化で最も壊れやすい)",
+        description=(
+            "MSM/OU の物理時間定義 (per-step 切替確率にしない) が perp の"
+            " 1440/288 steps でも保たれることの直接検証。"
+        ),
+    ),
+    Gate(
+        name="time_grid_single_source",
+        metric_path="perp.single_source_scan.clean",
+        check=lambda v: v is True,
+        threshold="生成系 (layers/pipeline/chaos) に時間定数の直接参照が無い (§4.1)",
+        description=(
+            "TRADING_DAYS_PER_YEAR / SESSION_SECONDS / 23400 リテラルの"
+            "コード検査 (コメントと後方互換 re-export は許容)。違反は"
+            " perp.single_source_scan.offenders に列挙される。"
+        ),
+    ),
+    Gate(
+        name="phi_sigma_normalization",
+        metric_path="perp.phi_normalization_sigma.abs_error",
+        check=lambda v: v is not None and float(v) < 1e-3,
+        threshold="mean(φ_σ²) = 1 ± 0.001 (§3.1)",
+        description=(
+            "正規化機構 (normalize_phi_sigma) の検査 — equity 標準係数の参照"
+            "プロファイルに対して二乗平均 1 を返すこと。equity 側は S4 で分離"
+            "実装済み (§3.1 の不備は本リポジトリに存在しない — 恒久固定)。"
+        ),
+    ),
+    Gate(
+        name="phi_lambda_normalization",
+        metric_path="perp.phi_normalization_lambda.abs_error",
+        check=lambda v: v is not None and float(v) < 1e-3,
+        threshold="mean(φ_λ) = 1 ± 0.001 (§3.1)",
+        description="強度側は一乗平均 1 (φ_σ と規約が違うこと自体が §3.1 の要点)。",
+    ),
+    Gate(
+        name="chaos_tau_band",
+        metric_path="perp.chaos_tau_days",
+        check=lambda v: v is not None and 20.0 <= float(v) <= 60.0 and not (5.0 < float(v) < 10.0),
+        threshold="χ₂ の特徴時間 ∈ [20, 60] 日かつ週次帯 (5〜10 日) の外 (§3.2)",
+        description=(
+            "緩慢 OU 帯域への注入 + perp の週次周期との分離。本リポジトリの"
+            "設計値 30 日 (S5 裁定) を perp でも維持する。"
+        ),
+    ),
+    Gate(
+        name="config_validation",
+        metric_path="perp.config_validation.all_fired",
+        check=lambda v: v is True,
+        threshold="§5.3 の整合性検証 4 件が全て発火する",
+        description="24h 必須 / ON 併用禁止 / margin<1/leverage / funding 割切り。",
+    ),
+    Gate(
+        name="l4_stub_raises",
+        metric_path="perp.l4_stub_raises.all_raise_with_stage",
+        check=lambda v: v is True,
+        threshold="L4 系フラグ有効化で NotImplementedError (メッセージに担当段階名)",
+        description="暗黙 no-op の構造的防止 (§7)。",
+    ),
+    Gate(
+        name="validation_perp_callable",
+        metric_path="perp.placeholders",
+        check=_perp_placeholders_ok,
+        threshold="validation/perp.py の全関数が例外なく呼べる (§8)",
+        description="S10/S11-perp の計器は N/A を返す (省略しない — 形を先に固定)。",
+    ),
+    Gate(
+        name="weekly_profile_flat",
+        metric_path="perp.weekly_profile.max_over_min",
+        check=lambda v: v is not None and float(v) < 1.05,
+        threshold="週内プロファイルが平坦 (ビン平均の最大/最小 < 1.05)",
+        description=(
+            "S0-perp は週次季節性なし (S4-perp で導入) — 平坦が正解。"
+            "GBM 2M バーでの標本ゆらぎは ~1.005、季節性が入れば 2 倍超。"
+        ),
+    ),
+)
+
+PERP_S0_GATES: tuple[Gate, ...] = S0_GATES + _PERP_S0_NEW_GATES
+
 #: 段階ごとのゲート。S13 を実装するときはここに追加する。
 STAGE_GATES: dict[str, tuple[Gate, ...]] = {
     "S0": S0_GATES,
@@ -3185,6 +3301,8 @@ STAGE_GATES: dict[str, tuple[Gate, ...]] = {
     "S11": S11_GATES,
     "S12": S12_GATES,
     "S13": S13_GATES,
+    # perp フォーク: 実行ラベル "perp_<stage>" で選択 (株式定義とは別集合 §9)
+    "perp_S0": PERP_S0_GATES,
 }
 
 

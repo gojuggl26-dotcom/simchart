@@ -87,6 +87,13 @@ RESERVED_STREAM_NAMES: tuple[str, ...] = (
     "l3.uncertainty",  # S9: uncertainty zones
     "l3.latency",  # 予備: 遅延
     "cross.factor",  # S13: 多資産の共通因子
+    # --- perp フォーク (S0-perp §6.1)。既存の名前は一切変更しない (改名は
+    # 経路変更)。market_type は鍵に入れない (§6.2 — 株式と perp は別 run なので
+    # 経路が同じでも問題なく、鍵に入れると株式の全ストリームが変わる)。
+    "l3.arbitrageur",  # S10-perp: 現物-perp 裁定エージェント
+    "l4.leverage_choice",  # S11-perp: 建玉のレバレッジ抽選 (Pareto)
+    "l4.position_assign",  # S11-perp: 建玉の割当
+    "l4.liquidation_order",  # S11-perp: 清算の順序抽選
 )
 
 #: strict モードで取得を許すストリーム名の全体。

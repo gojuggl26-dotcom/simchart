@@ -27,7 +27,7 @@ import numpy as np
 
 from scipy import stats as _sp_stats
 
-from ..config import TRADING_DAYS_PER_YEAR, Config
+from ..config import Config
 from ..types import StageResult
 from . import chaos as chaos_val
 from . import cross, ensemble, memory, micro, scaling, seasonality, tails
@@ -79,7 +79,7 @@ def standardized_returns(result: StageResult, bar_seconds: float) -> np.ndarray:
     n_bars_per_day = int(obs.session_seconds // bar_seconds)
     n_days = int(round((obs.t[-1] - obs.t[0]) / obs.session_seconds))
 
-    dt_years = obs.step_seconds / (TRADING_DAYS_PER_YEAR * obs.session_seconds)
+    dt_years = obs.step_seconds / (result.config.ann_days * obs.session_seconds)
     sigma2_left = np.exp(2.0 * result.price.log_vol[:-1])
     steps_per_day = int(round(obs.session_seconds / obs.step_seconds))
     sigma2_days = sigma2_left.reshape(n_days, steps_per_day)
@@ -103,7 +103,7 @@ def run_all(result: StageResult, config: Config | None = None) -> dict[str, Any]
     obs = result.observation
 
     step_seconds = obs.step_seconds if obs.step_seconds is not None else float(np.median(np.diff(obs.t)))
-    seconds_per_year = TRADING_DAYS_PER_YEAR * obs.session_seconds
+    seconds_per_year = cfg.ann_days * obs.session_seconds
 
     base_bars = obs.to_bars(step_seconds)
     primary_bars = obs.to_bars(v.primary_bar_sec)
@@ -569,7 +569,185 @@ def run_all(result: StageResult, config: Config | None = None) -> dict[str, Any]
         ),
     }
 
+    # --- perp (S0-perp §8)。equity のメトリクス形は変えない (キーは perp 実行時のみ) ---
+    if cfg.market_type == "perp_clob":
+        metrics["perp"] = _perp_metrics(result, cfg, primary_bars, r_primary_2d)
+
     return metrics
+
+
+def _perp_metrics(
+    result: StageResult, cfg: Config, primary_bars, r_primary_2d: np.ndarray
+) -> dict[str, Any]:
+    """perp 固有の測定 (S0-perp)。
+
+    - 時間軸のエコー (ann_days_365 / time_grid ゲートが読む)
+    - 週内プロファイル (S0-perp では平坦が正解 — φ ≡ 1)
+    - φ 正規化機構の検査 (§3.1 — equity 標準係数の参照プロファイルに対して
+      normalize_phi_sigma / normalize_phi_lambda が正しい規約で正規化するか。
+      S0-perp の実行時 φ は恒等 1 なので、機構そのものを検査する)
+    - config 検証 (§5.3) と L4 スタブ (§7) の発火確認
+    - S10/S11-perp の関数群が N/A を例外なく返すこと
+    """
+    from ..grid import TimeGrid
+    from ..layers.l0_calendar import (
+        fourier_profile,
+        normalize_phi_lambda,
+        normalize_phi_sigma,
+    )
+    from . import perp as perp_v
+
+    tg = TimeGrid.from_config(cfg)
+    out: dict[str, Any] = {
+        "time_grid": {
+            "status": "ok",
+            "value": tg.ann_days,
+            "market_type": cfg.market_type,
+            "ann_days": tg.ann_days,
+            "seconds_per_day": tg.seconds_per_day,
+            "steps_per_day": tg.steps_per_day,
+            "dt_seconds": tg.dt_seconds,
+            "steps_per_year": tg.steps_per_year,
+        }
+    }
+
+    # 週内プロファイル: 基準バーの |r| をバー終端時刻で割り当てる
+    tmat = primary_bars.t
+    bar_end_times = tmat[:, 1:].ravel()
+    out["weekly_profile"] = safe_call(
+        perp_v.weekly_profile,
+        np.abs(r_primary_2d).ravel(),
+        bar_end_times,
+        7,
+        cfg.weekly_period_hours,
+    )
+
+    # φ 正規化機構の検査 (equity S4 の標準係数 = s12.yaml と同一の参照形)
+    ref_sigma = ((0.3439, 0.0777, 0.0), (0.0, 0.0, 0.0), -0.2219)
+    ref_lambda = ((0.7499, 0.1250, 0.0), (0.0, 0.0, 0.0), 0.9374)
+    u = np.linspace(0.0, 1.0, 20001)
+
+    def _check_sigma() -> dict[str, Any]:
+        c = normalize_phi_sigma(*ref_sigma)
+        return perp_v.phi_normalization_check(
+            c * fourier_profile(u, *ref_sigma), "sigma"
+        )
+
+    def _check_lambda() -> dict[str, Any]:
+        c = normalize_phi_lambda(*ref_lambda)
+        return perp_v.phi_normalization_check(
+            c * fourier_profile(u, *ref_lambda), "lambda"
+        )
+
+    out["phi_normalization_sigma"] = safe_call(_check_sigma)
+    out["phi_normalization_lambda"] = safe_call(_check_lambda)
+
+    # χ₂ の特徴時間 (§3.2): MG(τ=17) のスペクトルピーク 49.65 単位 × 日/単位。
+    # 本リポジトリの設計値 30 日 (S5 裁定 — 週次帯 5〜10 日の外)。
+    out["chaos_tau_days"] = float(49.65 * cfg.chaos_days_per_unit)
+
+    # 時間定数の単一情報源スキャン (§4.1 のコード検査)。生成系モジュールに
+    # TRADING_DAYS_PER_YEAR / SESSION_SECONDS / 23400 リテラルの**コード参照**が
+    # 無いこと。コメント (# 以降) と後方互換 re-export (l0_calendar の
+    # import/__all__ — tests_s1 が使う) は許容する。
+    def _single_source_scan() -> dict[str, Any]:
+        # ★tokenize ベース: docstring / コメント / 文字列は散文なので対象外。
+        # 検査対象は **NAME トークン** (定数の import・使用) と **NUMBER トークン**
+        # (23400 リテラル) のみ — 行スプリット方式は docstring の説明文を誤検出する
+        # (実測: grid.py 自身の解説表が引っかかった)。
+        import io as _io
+        import tokenize as _tokenize
+        from pathlib import Path as _Path
+
+        root = _Path(__file__).resolve().parents[1]
+        targets = sorted((root / "layers").glob("*.py")) + [
+            root / "pipeline.py", root / "chaos.py", root / "grid.py",
+        ]
+        forbidden_names = {"TRADING_DAYS_PER_YEAR", "SESSION_SECONDS"}
+        forbidden_numbers = {"23400", "23400.0"}
+        offenders: list[str] = []
+        for f in targets:
+            src_text = f.read_text(encoding="utf-8")
+            lines = src_text.splitlines()
+            for tok in _tokenize.generate_tokens(_io.StringIO(src_text).readline):
+                if tok.type == _tokenize.NAME and tok.string in forbidden_names:
+                    line = lines[tok.start[0] - 1]
+                    # 後方互換 re-export (l0_calendar — tests_s1 が import する)
+                    # の import 行だけ許容する。使用行は違反。
+                    if "import" in line:
+                        continue
+                    offenders.append(f"{f.name}:{tok.start[0]}:{tok.string}")
+                elif tok.type == _tokenize.NUMBER and tok.string in forbidden_numbers:
+                    offenders.append(f"{f.name}:{tok.start[0]}:{tok.string}")
+        return {
+            "status": "ok",
+            "value": not offenders,
+            "clean": not offenders,
+            "offenders": offenders,
+            "n_files_scanned": len(targets),
+        }
+
+    out["single_source_scan"] = safe_call(_single_source_scan)
+
+    # config 検証の発火 (§5.3) — 代表 4 件が正しく弾かれること
+    def _config_validation() -> dict[str, Any]:
+        cases = {
+            "session_not_24h": (dict(session_type="continuous"), ValueError),
+            "overnight_forbidden": (
+                dict(enable_overnight=True, enable_jump=True), ValueError),
+            "margin_vs_leverage": (
+                dict(maintenance_margin=0.05, max_leverage=50.0), ValueError),
+            "funding_not_dividing": (dict(funding_interval_hours=7.0), ValueError),
+        }
+        fired: dict[str, bool] = {}
+        for name_, (over, exc_type) in cases.items():
+            try:
+                cfg.replace(**over)
+            except exc_type:
+                fired[name_] = True
+            except Exception:  # noqa: BLE001 - 期待と違う型は不合格として記録
+                fired[name_] = False
+            else:
+                fired[name_] = False
+        return {"status": "ok", "value": bool(all(fired.values())),
+                "all_fired": bool(all(fired.values())), "cases": fired}
+
+    out["config_validation"] = safe_call(_config_validation)
+
+    # L4 スタブの発火 (§7): 有効化で NotImplementedError + 段階名
+    def _l4_stub() -> dict[str, Any]:
+        fired: dict[str, bool] = {}
+        for flag, stage_name in (
+            ("enable_positions", "S11-perp"),
+            ("enable_liquidation", "S11-perp"),
+            ("enable_funding", "S10-perp"),
+        ):
+            try:
+                cfg.replace(**{flag: True})
+            except NotImplementedError as exc:
+                fired[flag] = stage_name in str(exc)
+            except Exception:  # noqa: BLE001
+                fired[flag] = False
+            else:
+                fired[flag] = False
+        return {"status": "ok", "value": bool(all(fired.values())),
+                "all_raise_with_stage": bool(all(fired.values())), "cases": fired}
+
+    out["l4_stub_raises"] = safe_call(_l4_stub)
+
+    # S10/S11-perp の関数群: N/A を例外なく返すこと (§8 の規約)
+    out["placeholders"] = {
+        "basis_stats": safe_call(perp_v.basis_stats),
+        "funding_stats": safe_call(perp_v.funding_stats),
+        "funding_sawtooth": safe_call(perp_v.funding_sawtooth),
+        "arb_band_analysis": safe_call(perp_v.arb_band_analysis),
+        "oi_dynamics": safe_call(perp_v.oi_dynamics),
+        "liquidation_cascade_sizes": safe_call(perp_v.liquidation_cascade_sizes),
+        "liq_density_profile": safe_call(perp_v.liq_density_profile),
+        "g_liquidation_derived": safe_call(perp_v.g_liquidation_derived),
+        "block_discretization_effect": safe_call(perp_v.block_discretization_effect),
+    }
+    return out
 
 
 def _true_phi_bars_for(

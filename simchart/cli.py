@@ -1486,7 +1486,13 @@ def cmd_run(args: argparse.Namespace) -> int:
     config = _build_config(args)
     if config.n_assets > 1:
         return _run_s13(args, config)
-    stage = config.stage
+    # ★実行ラベル: perp は "perp_<stage>" — 結果ディレクトリ (results/perp_S0)
+    # とゲート集合を株式と衝突させない (S0-perp §9。株式の results/S0 は
+    # ベースラインなので上書き厳禁)。config.stage 自体は S0 のまま。
+    stage = (
+        config.stage if config.market_type == "equity"
+        else f"perp_{config.stage}"
+    )
     # ★コード版数は**実行開始時点**で確定する。書き出し時に取ると自分の出力
     # (metrics.json) が status に映って dirty が常に True になる (report.py 参照)。
     from .report import git_info
@@ -1511,7 +1517,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(f"      l2.diffusion 消費列の一致: {rng_diffusion['match']}")
 
     scale_invariance = None
-    if stage != "S0":
+    if stage != "S0" or config.market_type == "perp_clob":
         low_steps = config.validation.scale_invariance_steps_per_day
         print(f"[3b/6] 時間スケール不変性 (steps_per_day={low_steps} で対照実行)")
         # ★S10 (κ>0): 対照解像度は独立な板実現なので、本走が完走しても

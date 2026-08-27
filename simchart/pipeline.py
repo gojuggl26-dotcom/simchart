@@ -63,6 +63,12 @@ class _Layers:
     activity: Any
     price: Any
     book: Any
+    #: L4 (perp の建玉・清算)。S0-perp では常に None (スタブ §7.3)。
+    #: ★配線の位置だけ先に確保する — S6 で κ=0 でも p* を毎イベント参照した
+    #: のと同じ理由 (S11-perp の結合が 1 行の変更で済み、差分が追える)。
+    #: 実装時は book.observe の中で fill ごとに positions.on_fill /
+    #: scan_liquidations を呼び、清算成行を板へ戻す。
+    positions: Any = None
 
 
 class GridDriver:
@@ -99,11 +105,17 @@ def select_driver(config: Config) -> GridDriver:
 
 
 def _build_layers(config: Config, rng: RNGRegistry, factor=None) -> _Layers:
+    from .layers.l4_positions import build_position_layer
+
     calendar = build_calendar(config, rng)
     activity = build_activity(config, rng, calendar)
     price = build_price_layer(config, rng, calendar, activity, factor=factor)
     book = build_book_layer(config, rng, calendar, activity)
-    return _Layers(calendar=calendar, activity=activity, price=price, book=book)
+    positions = build_position_layer(config)  # S0-perp では常に None (§7.3)
+    return _Layers(
+        calendar=calendar, activity=activity, price=price, book=book,
+        positions=positions,
+    )
 
 
 def run(config: Config, *, rng: RNGRegistry | None = None, _factor=None) -> StageResult:

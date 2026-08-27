@@ -46,7 +46,7 @@ import numpy as np
 from scipy import fft as sp_fft
 from scipy import signal
 
-from ..config import TRADING_DAYS_PER_YEAR, Config
+from ..config import Config
 from ..rng import RNGRegistry
 from ..types import PriceProcess
 from .l0_calendar import ConstantCalendar
