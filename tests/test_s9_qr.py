@@ -1,12 +1,12 @@
 """S9: queue-reactive (状態依存の意思決定層) のテスト。
 
 中心は 4 つ:
-1. **S6/S7/S8 経路のビット単位不変** (QR off の乱数消費列は完全一致)。
-2. **状態依存の実在** — スプレッドが広いほど板内配置率が上がり、近い注文ほど
+1. S6/S7/S8 経路のビット単位不変 (QR off の乱数消費列は完全一致)。
+2. 状態依存の実在 — スプレッドが広いほど板内配置率が上がり、近い注文ほど
    取り消されやすい (実測分布で確認)。
-3. **板の健全性** — 重み付き取消の下でも定常 (前面殲滅の正帰還が起きない —
+3. 板の健全性 — 重み付き取消の下でも定常 (前面殲滅の正帰還が起きない —
    w_floor の存在理由)。
-4. **不変量** — γ/C(1) が動かない (状態依存は符号に触れない)。
+4. 不変量 — γ/C(1) が動かない (状態依存は符号に触れない)。
 """
 
 from __future__ import annotations
@@ -59,7 +59,7 @@ def test_engine_invariants_and_replay(s9_result):
 
 
 def test_book_stays_healthy(s9_result):
-    """★w_floor の回帰: 遠方重みゼロは前面殲滅でスプレッド 3,700 tick を実測。"""
+    """w_floor の回帰: 遠方重みゼロは前面殲滅でスプレッド 3,700 tick を実測。"""
     r, cfg = s9_result
     ev = r.events
     burn = cfg.book_burn_in_days * S
@@ -107,7 +107,7 @@ def test_inspread_rate_rises_with_spread(s9_result):
 def test_cancel_distance_tilt():
     """§6 の実在確認: 傾斜を入れると取消が best 寄りに偏る。
 
-    ★本番 (small tick) の既定は**中立** — 前方傾斜は前面を薄くして赤字指標を
+    本番 (small tick) の既定は中立 — 前方傾斜は前面を薄くして赤字指標を
     悪化させることが実測で判ったため (config の注記)。ここでは傾斜を明示的に
     有効化して機構そのものの動作を確認する (large tick レジームで使う側)。
     """
@@ -156,7 +156,7 @@ def test_sign_structure_untouched(s9_result):
 
 
 def test_obi_emerges_mechanically(s9_result):
-    """⑩: バイアスなし (qr_obi_bias=0) でも I と次のミッド変化に正相関。"""
+    """(10): バイアスなし (qr_obi_bias=0) でも I と次のミッド変化に正相関。"""
     r, cfg = s9_result
     assert cfg.qr_obi_bias == 0.0
     ev = r.events

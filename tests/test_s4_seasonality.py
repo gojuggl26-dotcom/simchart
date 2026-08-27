@@ -1,8 +1,8 @@
 """S4: 日内季節性とオーバーナイトのテスト。
 
-このファイルの中心は **`test_deseasonalization_recovers_s3_exactly`** である。
-S4 の設計 (季節性を「確率ボラへの決定論的な乗法変調」に限定したこと) が正しければ、
-φ で割ると S3 の系列が**厳密に**戻るはずで、それが S4 の主張の全根拠になる。
+このファイルの中心は `test_deseasonalization_recovers_s3_exactly` である。
+S4 の設計 (季節性を確率ボラへの決定論的な乗法変調に限定したこと) が正しければ、
+φ で割ると S3 の系列が厳密に戻るはずで、それが S4 の主張の全根拠になる。
 ジャンプを切って検定するのは、λ(t) がボラ変調されているため S4 では S3 と別の
 ジャンプ抽選になり、その差 (実測で差分分散の 100%) が復元誤差を覆い隠すからである。
 """
@@ -41,7 +41,7 @@ def _cal(cfg: Config):
 # φ の表現と正規化
 # ---------------------------------------------------------------------------
 def test_phi_sigma_normalizes_the_square_not_the_level():
-    """φ_σ は二乗平均が 1。一乗平均は Jensen により 1 より**小さい**。"""
+    """φ_σ は二乗平均が 1。一乗平均は Jensen により 1 より小さい。"""
     cfg = Config(stage="S4", enable_seasonality=True, **CORE, **SMALL)
     cal = _cal(cfg)
     u = np.linspace(0.0, 1.0, 20001)
@@ -99,7 +99,7 @@ def test_extreme_coefficients_stay_positive_and_normalizable():
 
     負の φ ができると ``log`` や ``sqrt`` が静かに NaN を返し、ボラ経路が壊れた
     ことに気づけない。境界は例外ではなくクリップで守る設計なので、ここでは
-    「クリップが機能していること」を固定する。
+    クリップが機能していることを固定する。
     """
     # 正規化定数は 20001 点の台形則で作られる。クリップで折れ点ができるため
     # 粗い格子で測ると台形則の誤差が残る (1e-6 では落ちる)。同じ密度で測る。
@@ -116,12 +116,12 @@ def test_extreme_coefficients_stay_positive_and_normalizable():
 
 
 # ---------------------------------------------------------------------------
-# ★中心: 脱季節化の厳密性
+# 中心: 脱季節化の厳密性
 # ---------------------------------------------------------------------------
 def test_deseasonalization_recovers_s3_exactly():
     """φ で割ると S3 の系列がバー単位で厳密に戻る (ジャンプ・ON 無効)。
 
-    残差は Itô のドリフト項 ``-0.5 sigma^2 dt`` だけである。これは φ の**二乗**で
+    残差は Itô のドリフト項 ``-0.5 sigma^2 dt`` だけである。これは φ の二乗で
     入るので φ の一乗で割っても戻らない (構造的で、除去の欠陥ではない)。その大きさは
     リターンの標準偏差比で ~1e-4 なので、閾値 1e-3 は「ドリフト以外の何かが
     混ざっていれば落ちる」水準になっている。
@@ -151,7 +151,7 @@ def test_deseasonalization_recovers_s3_exactly():
 def test_continuous_quadrature_phi_is_worse_than_generator_discrete():
     """生成側の離散化に合わせた φ のほうが厳密 (合わせない実装への回帰防止)。
 
-    Euler-Maruyama は各ステップの**左端**の σ を使うので、連続時間の積分で φ を
+    Euler-Maruyama は各ステップの左端の σ を使うので、連続時間の積分で φ を
     作ると O(φ'/steps_per_day) の系統差が残る。実測で 18 倍の差がつく。
     """
     c4 = Config(stage="S4", enable_seasonality=True, **CORE, **SMALL)
@@ -375,7 +375,7 @@ def test_s4_does_not_touch_s1_s3_streams():
 
 
 def test_jump_qv_share_is_preserved_by_the_intensity_correction():
-    """★S4 の強度補正が無いと JV シェアが跳ねる (12.7% → 14.9% を実測)。"""
+    """S4 の強度補正が無いと JV シェアが跳ねる (12.7% → 14.9% を実測)。"""
     kw = dict(**CORE, **JUMP, **SMALL)
     r4 = run(Config(stage="S4", enable_seasonality=True, enable_overnight=True, **kw))
     r3 = run(Config(stage="S3", **kw))
@@ -409,10 +409,10 @@ def test_sigma_bar_diffusion_carves_out_overnight():
 def test_daily_integrated_variance_is_unchanged_by_seasonality():
     """φ_σ の二乗正規化により日次積分分散が不変 (日次ゲートが動かない根拠)。
 
-    ★日次リターンの**標本分散**で比べてはならない。200 日の標本分散はボラの
+    日次リターンの標本分散で比べてはならない。200 日の標本分散はボラの
     長期記憶のせいで少数の高ボラ日に支配され、有効標本数が 20〜30 しかない
     (実際にそれで比べたら 5.8% ずれて落ちた)。σ の経路は S3 と共通なので、
-    **日ごとに対応づけた実現分散の比**を見るのが正しい設計で、共通のゆらぎが
+    日ごとに対応づけた実現分散の比を見るのが正しい設計で、共通のゆらぎが
     完全に相殺されて主張そのものを検定できる。
     """
     kw = dict(**CORE, **SMALL)
@@ -432,9 +432,9 @@ def test_daily_integrated_variance_is_unchanged_by_seasonality():
 
 
 # ---------------------------------------------------------------------------
-# ★季節性が汚す 3 つの推定器 (S4 を作る動機の本体)
+# 季節性が汚す 3 つの推定器 (S4 を作る動機の本体)
 #
-# 日内季節性は「決定論的な時間構造」だが、それを除かずに測ると 3 つの推定器が
+# 日内季節性は決定論的な時間構造だが、それを除かずに測ると 3 つの推定器が
 # 3 つとも別の方向に壊れる。除去でどれも戻ることを固定する。
 # ---------------------------------------------------------------------------
 def _s4_s3_pair(**extra):
@@ -467,7 +467,7 @@ def test_seasonality_biases_the_variance_ratio_and_removal_fixes_it():
     """VR は重複窓の端の重みで系統的に下がる。マルチンゲール性の破れではない。
 
     セッションの端 (= φ² が最大の寄付・引け) は窓に入る回数が少ないので、
-    q 期分散だけが過小評価される。φ **だけ**から予測できることを併せて確認する
+    q 期分散だけが過小評価される。φ だけから予測できることを併せて確認する
     (乱数も価格も使わない予測が実測に一致するなら、原因は推定量の重み付け)。
     """
     from simchart.validation import run_all
@@ -478,7 +478,7 @@ def test_seasonality_biases_the_variance_ratio_and_removal_fixes_it():
     clean = m["scaling"]["variance_ratio"]["max_abs_dev"]
     raw = m["scaling"]["variance_ratio_raw"]["max_abs_dev"]
 
-    # ★絶対閾値ではなく**同じ標本量・同じシードの S3** を対照に使う。200 日では
+    # 絶対閾値ではなく同じ標本量・同じシードの S3 を対照に使う。200 日では
     # VR 自体の推定誤差が大きく (本番 5000 日の 0.02 に対しここでは 0.09 前後)、
     # 絶対値で書くと標本量を変えたときに意味が変わってしまう。
     m3 = run_all(run(Config(stage="S3", **CORE, **SMALL)))["scaling"]["variance_ratio"]
@@ -486,7 +486,7 @@ def test_seasonality_biases_the_variance_ratio_and_removal_fixes_it():
     assert raw > base * 2, f"季節性による VR の低下が見えません (raw {raw} vs S3 {base})"
     assert clean <= base * 1.3, f"脱季節化後が S3 水準に戻っていません ({clean} vs {base})"
 
-    # φ だけからの予測が「S4/S3 の比」に一致するか (q = 最大)。
+    # φ だけからの予測がS4/S3 の比に一致するか (q = 最大)。
     # 生の VR をそのまま予測と比べてはならない — S3 自体も 1 ではないので、
     # 季節性以外の要因 (ボラ変動下での推定バイアス) が混ざる。比を取れば消える。
     phi = np.asarray(
@@ -508,7 +508,7 @@ def test_seasonality_biases_the_variance_ratio_and_removal_fixes_it():
 
 
 def test_seasonality_biases_the_intraday_gph_in_either_direction():
-    """GPH の汚染は**符号が固定されない** (高調波が推定バンドのどこに落ちるか次第)。
+    """GPH の汚染は符号が固定されない (高調波が推定バンドのどこに落ちるか次第)。
 
     符号つきのゲートを書くと、設定を変えたときに正しい実装が落ちる。
     ここでは大きさだけを固定し、方向は主張しない。
@@ -526,7 +526,7 @@ def test_seasonality_biases_the_intraday_gph_in_either_direction():
 def test_daily_gph_is_immune_to_seasonality():
     """日次リターンの GPH は汚染されない — φ_σ の二乗正規化で日次分散が不変だから。
 
-    潜在 log σ の日次平均は「日内平均 log φ」という**全日共通の定数**しか受け取らず、
+    潜在 log σ の日次平均は日内平均 log φという全日共通の定数しか受け取らず、
     GPH は定数シフトに不変なので厳密に一致する。
     """
     from simchart.validation import run_all

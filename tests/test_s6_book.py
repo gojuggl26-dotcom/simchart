@@ -2,7 +2,7 @@
 
 中心は §9 の不変条件 (非クロス・保存則・FIFO・単調時刻) と、エンジンを**意図的に
 壊しにいく**ケース (複数レベルを掃く aggressive limit・枯渇時の棄却・部分約定後の
-取消)。「あとで入れる」と必ず入らない類のテストなので S6 で入れる。
+取消)。あとで入れると必ず入らない類のテストなので S6 で入れる。
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ def book_result():
 
 
 # ---------------------------------------------------------------------------
-# 不変条件 (指示書 §9)
+# 不変条件 
 # ---------------------------------------------------------------------------
 def test_engine_invariants_all_pass(book_result):
     r, _ = book_result
@@ -74,7 +74,7 @@ def test_best_quotes_never_cross(book_result):
 
 
 def test_determinism_bitwise(book_result):
-    """同一シード 2 回でイベントログがビット単位一致 (指示書 §13)。"""
+    """同一シード 2 回でイベントログがビット単位一致 。"""
     r1, cfg = book_result
     r2 = run(cfg)
     assert r1.digest() == r2.digest()
@@ -112,10 +112,10 @@ def test_depletion_rejection_keeps_ledgers():
     """板を薄くして枯渇棄却の経路を踏み、それでも保存則が守られることを確認する。
 
     崩壊レジーム (μ/α や δ の上げすぎ) は窓逸脱で明示的に失敗するため、
-    5 日の短期 + 薄い初期化で「時々枯渇する」程度に留める。枯渇時の配置基準
+    5 日の短期 + 薄い初期化で時々枯渇する程度に留める。枯渇時の配置基準
     (記憶した best) から aggressive limit の経路も踏まれ得る (踏まれた数は記録)。
     """
-    # 健全な定常レートのまま**初期板だけ極薄**にする: 序盤 (板が立ち上がる前) に
+    # 健全な定常レートのまま初期板だけ極薄にする: 序盤 (板が立ち上がる前) に
     # 枯渇棄却が発生し、その後は定常へ回復する。持続的に μ >= α にすると板が
     # 崩壊して窓逸脱で止まる (それはそれで正しい失敗動作 — 別のテストではない)。
     cfg = Config(
@@ -138,7 +138,7 @@ def test_depletion_rejection_keeps_ledgers():
 
 
 def test_full_replay_verifies_fifo_and_matching(book_result):
-    """★イベントログを**独立に完全リプレイ**して照合する最強の検定。
+    """イベントログを独立に完全リプレイして照合する最強の検定。
 
     実装は tests/_book_replay.py (S7 の Hawkes モードのテストと共用)。
     """
@@ -158,7 +158,7 @@ def test_trade_rows_aggregate_to_aggressor_orders(book_result):
 
 
 def test_sign_acf_artifact_removed(book_result):
-    """★約定行のままだと機械的な正の符号相関 (+0.4 級) が出る。集約後は消える。"""
+    """約定行のままだと機械的な正の符号相関 (+0.4 級) が出る。集約後は消える。"""
     r, _ = book_result
     ev = r.events
     tr_side = ev.side[ev.event_type == int(EventType.TRADE)].astype(float)

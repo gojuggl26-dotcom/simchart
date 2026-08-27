@@ -1,12 +1,12 @@
 """S7: 符号対称 Hawkes 注文流のテスト。
 
 中心は 4 つ:
-1. **S6 経路のビット単位不変** — 本番設定を新カーネルで再実行し、保存済み
+1. S6 経路のビット単位不変 — 本番設定を新カーネルで再実行し、保存済み
    ダイジェストと照合する (カーネル改修の主リスクは S6 の乱数消費列のずれ)。
-2. **ゼロ励起の帰無対照** — a=0 なら (季節性 off で) 純 Poisson に退化する。
+2. ゼロ励起の帰無対照 — a=0 なら (季節性 off で) 純 Poisson に退化する。
    thinning 実装の単位系 (β の 1/日換算・dt 変換) をレート復元で定量検証する。
-3. **クラスタリングの存在** — 既定の較正で Fano・CV² が Poisson から明確に離れる。
-4. **板の健全性** — バーストの下でも FIFO/保存則 (完全リプレイ) と流動性が保たれる。
+3. クラスタリングの存在 — 既定の較正で Fano・CV² が Poisson から明確に離れる。
+4. 板の健全性 — バーストの下でも FIFO/保存則 (完全リプレイ) と流動性が保たれる。
 """
 
 from __future__ import annotations
@@ -124,8 +124,8 @@ def test_zero_excitation_recovers_baseline_rates(null_result):
 def test_zero_excitation_is_poisson(null_result):
     """MO+LO の分ごとの件数は Fano ≈ 1、イベント間隔は CV² ≈ 1。
 
-    ★t=0 の板初期化 (init_levels×2 = 60 本の LIMIT_ADD 行) を必ず除外する。
-    最初の実装はこれを含めて Fano=1.95 を出し「thinning のバグ」を疑ったが、
+    t=0 の板初期化 (init_levels×2 = 60 本の LIMIT_ADD 行) を必ず除外する。
+    最初の実装はこれを含めて Fano=1.95 を出しthinning のバグを疑ったが、
     実際は 1 ビンに 60 行の初期化スパイクが乗っただけだった (除外後 0.99)。
     """
     r, cfg = null_result
@@ -252,7 +252,7 @@ def test_deterministic(hawkes_result):
 # 設定の検証 (誤較正・爆発・板なしを入口で止める)
 # ---------------------------------------------------------------------------
 def test_config_rejects_infeasible_cancel_rate():
-    """★回帰: 初版 v2 の較正 (r_CX=4500 > r_LO=3000) は入口で止まること。"""
+    """回帰: 初版 v2 の較正 (r_CX=4500 > r_LO=3000) は入口で止まること。"""
     with pytest.raises(ValueError, match="r_CX"):
         _hawkes_cfg(**INFEASIBLE_V2)
 

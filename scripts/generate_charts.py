@@ -2,7 +2,7 @@
 
     uv run python scripts/generate_charts.py --n-charts 1000
 
-各チャートは**独立した 1 本の価格経路**であり、`Config.seed` を 1 ずつずらして
+各チャートは独立した 1 本の価格経路であり、`Config.seed` を 1 ずつずらして
 生成する。RNG は名前ハッシュ方式なので、シードが違えば全ストリームが独立になる
 (`sha256(f"{seed}:{stream}")` の出力が別物になるため)。逆に言えば **seed さえ
 記録しておけば、どのチャートでも 1 秒刻みの完全な経路をビット単位で再生成できる**
@@ -25,10 +25,10 @@
 
 出来高について
 --------------
-**出来高の列は作らない。** S0 には注文流が無い (L1 は定数強度のスタブ、L3 は
+出来高の列は作らない。 S0 には注文流が無い (L1 は定数強度のスタブ、L3 は
 恒等写像) ので、出来高を付けるとしたらそれは捏造になる。S6 で板層、S7 で
 Hawkes 注文流を入れた段階で初めて出来高が内生的に決まる。代わりに、日中の
-1 秒リターンから計算した**実現ボラティリティ**を列に持たせてある。これは
+1 秒リターンから計算した実現ボラティリティを列に持たせてある。これは
 経路から実際に測れる量である。
 """
 
@@ -61,7 +61,7 @@ def ohlc_from_log_price(
     """等間隔格子の対数価格から OHLC を作る。
 
     ``log_price`` は ``n_bars * steps_per_bar + 1`` 点。バー b は
-    ``[b*steps_per_bar, (b+1)*steps_per_bar]`` の**両端を含む**区間に対応する。
+    ``[b*steps_per_bar, (b+1)*steps_per_bar]`` の両端を含む区間に対応する。
     終値は次のバーの始値と同一点であり、S0 にはオーバーナイトが無いのでこれで正しい。
     S4 でギャップを入れたら、ここは日ごとに別の点になる。
     """
@@ -98,7 +98,7 @@ def max_drawdown(close: np.ndarray) -> float:
 def build_base_config(args: argparse.Namespace) -> Config:
     """生成に使う基準 Config を組み立てる。
 
-    **段階の設定ファイルを読むこと。** ``Config(stage="S1")`` を素で組むと
+    段階の設定ファイルを読むこと。 ``Config(stage="S1")`` を素で組むと
     ``enable_msm`` / ``enable_slow_ou`` が False のままになり、**S0 と同一の経路を
     S1 と称して出力する**という最悪の事故になる (フラグの暗黙 no-op と同じ構造)。
     そのため段階が S0 でないのに実装済みフラグが 1 つも立っていない場合は停止する。
@@ -138,7 +138,7 @@ def generate(args: argparse.Namespace) -> int:
         return recompute(out_dir, args)
 
     base = build_base_config(args)
-    # ★時間軸は config の単一情報源から取る (S0-perp §4)。定数直書きだと
+    # 時間軸は config の単一情報源から取る (S0-perp §4)。定数直書きだと
     # perp (365 日 / 86,400 秒) で年率換算が √(365/252) = 1.20 倍ずれる。
     # 結果ラベルも market_type で分ける — perp を stage 名のまま書くと
     # 株式のベースライン (results/S0/charts) を上書きしてしまう。
@@ -170,7 +170,7 @@ def generate(args: argparse.Namespace) -> int:
           f"有効フラグ={', '.join(flags_on) if flags_on else 'なし (S0)'}, "
           f"{chunk} 本ごとに {n_chunks} チャンクへ逐次書き出し)")
 
-    # ★チャンク単位で逐次書き出す。3 時間の生成が中断されても完了分は残り、
+    # チャンク単位で逐次書き出す。3 時間の生成が中断されても完了分は残り、
     # 同じコマンドで再開すれば未完了のチャンクだけを作る (実際に 2 度中断された)。
     n_done_before = 0
     n_made = 0
@@ -181,7 +181,7 @@ def generate(args: argparse.Namespace) -> int:
         if _chunk_is_complete(parts_dir, c_idx, lo, hi):
             n_done_before += hi - lo
             continue
-        # 予算判定は**チャンクを始める前**に予測で行う。終わってから判定すると
+        # 予算判定はチャンクを始める前に予測で行う。終わってから判定すると
         # 最後の 1 チャンク分 (本番で ~260 秒) だけ必ず超過し、呼び出し側の
         # タイムアウトを踏む。平均チャンク時間が分かるまで (最初の 1 本) は実行する。
         if args.time_budget_sec and n_made:
@@ -240,9 +240,9 @@ def generate(args: argparse.Namespace) -> int:
 def _chunk_is_complete(parts_dir: Path, c_idx: int, lo: int, hi: int) -> bool:
     """チャンク ``c_idx`` が期待どおりの範囲 ``[lo, hi)`` で完了しているか。
 
-    ★ファイルの存在だけで判定してはならない。``--n-charts`` を変えて再実行すると
+    ファイルの存在だけで判定してはならない。``--n-charts`` を変えて再実行すると
     最終チャンクの範囲が変わる (例: n=45 の chunk1 は [25,45)、n=1000 なら [25,50))
-    ので、存在だけを見ると**短いチャンクを完了扱いにしてチャートを取りこぼす**。
+    ので、存在だけを見ると短いチャンクを完了扱いにしてチャートを取りこぼす。
     index に記録された chart_id が期待範囲と一致することまで確認する。
     """
     daily_part = parts_dir / f"daily_{c_idx:04d}.parquet"
@@ -347,7 +347,7 @@ def _generate_chunk(
             )
             del bo, bh, bl, bc
 
-        # ★ここで明示的に解放する。del を書かないと、次の反復の run() が走っている
+        # ここで明示的に解放する。del を書かないと、次の反復の run() が走っている
         # あいだ前のチャートの経路 (t / log_p / log_vol = 本番設定で 2.8GB) が
         # まだ束縛されたままになり、常に 2 本分が同時に生きてピークが 2.8GB 増える。
         # 実測でピーク 9.4GB・空き 1.8GB まで落ちた (15.3GB 機で危険水準)。
@@ -356,9 +356,9 @@ def _generate_chunk(
         if (i + 1) % args.progress_every == 0:
             print(f"    {i + 1}/{args.n_charts} 本目まで完了", flush=True)
 
-    # チャンクの成果物を書き出す。**先に daily を書き、最後に index を書く** —
-    # index の存在が「このチャンクは完了」の印なので、途中で落ちても不完全な
-    # チャンクが「完了済み」と誤認されない (再開時に作り直される)。
+    # チャンクの成果物を書き出す。先に daily を書き、最後に index を書く —
+    # index の存在がこのチャンクは完了の印なので、途中で落ちても不完全な
+    # チャンクが完了済みと誤認されない (再開時に作り直される)。
     pd.DataFrame(
         {
             "chart_id": chart_id,
@@ -501,13 +501,13 @@ def ensemble_metrics(
 ) -> dict[str, Any]:
     """まとめての検証。
 
-    個々のチャートが「それらしく」見えても、集団として意図した過程になっていな
+    個々のチャートがそれらしく見えても、集団として意図した過程になっていな
     ければ意味がない。**検査は段階に依らない不変量と、段階ごとに変わる記述統計に
     分けてある。** 混ぜると S1 で「尖度が 3 でないから不合格」のような誤った判定に
     なる (S1 は尖度が 3 でないことこそが目的)。
 
     段階に依らない不変量 (``universal``)
-        1. ``E[Σr²]/T = sigma_bar²`` — 実現**分散**の平均。S1 でボラが変動しても
+        1. ``E[Σr²]/T = sigma_bar²`` — 実現分散の平均。S1 でボラが変動しても
            E[σ²] = σ̄² の正規化は保たれる (凸性補正の経路レベルでの検証)
         2. ``E[exp(終端対数リターン)] = 1`` — マルチンゲール性 (伊藤補正 −σ²/2)
         3. ``Var(終端対数リターン) = sigma_bar² T`` — 積分分散の期待値
@@ -546,7 +546,7 @@ def ensemble_metrics(
     z_pairs = off_diag / corr_se
     max_abs_z = float(np.max(np.abs(z_pairs)))
     # 独立なら |z| の最大値はおよそ Phi^-1(1 - 1/(2*ペア数))。ただし最大値の分布は
-    # 右に裾を引くので、目安の値を超えたこと自体は異常を意味しない。**超過確率**で
+    # 右に裾を引くので、目安の値を超えたこと自体は異常を意味しない。超過確率で
     # 判断すること: P(max|z| > 観測値) = 1 - (1 - 2*Phi(-観測値))^ペア数。
     expected_max_z = float(stats.norm.ppf(1.0 - 1.0 / (2.0 * n_pairs)))
     tail_prob = 2.0 * stats.norm.sf(max_abs_z)
@@ -591,7 +591,7 @@ def ensemble_metrics(
     # --- 5. OHLC の高値・安値が本当に日中経路から来ているか ---
     # ブラウン運動の 1 期間の値幅は E[max - min] = sigma * sqrt(8/pi)、
     # 始値終値の差は E|close - open| = sigma * sqrt(2/pi)。高値・安値は終値だけからは
-    # 復元できない量なので、ここが合うことが「日中を本当に見ている」証拠になる。
+    # 復元できない量なので、ここが合うことが日中を本当に見ている証拠になる。
     # 1 秒刻みの離散標本なので値幅はわずかに過小になる (刻み間の極値を見逃すため)。
     # Broadie-Glasserman-Kou の補正で相対 -2*0.5826*sqrt(dt/T) 程度。
     sigma_day = sigma / math.sqrt(config.ann_days)
@@ -636,7 +636,7 @@ def ensemble_metrics(
         },
         "realized_vol": {
             # S1 以降はチャートごとに大きく散らばるのが正しい (それがボラ変動の
-            # 実体)。「sigma_bar からの最大乖離」は定数ボラ段階でしか意味を持たない。
+            # 実体)。sigma_bar からの最大乖離は定数ボラ段階でしか意味を持たない。
             "mean": num(vols.mean()),
             "std": num(vols.std(ddof=1)),
             "min": num(vols.min()),
@@ -692,7 +692,7 @@ def ensemble_metrics(
             "max_abs_z": num(max_abs_z),
             "expected_max_abs_z": num(expected_max_z),
             "max_abs_z_pvalue": num(max_abs_z_pvalue),
-            # 最大値だけ見ると「たまたま大きかった 1 組」に判断を引きずられる。
+            # 最大値だけ見るとたまたま大きかった 1 組に判断を引きずられる。
             # 分布そのものが N(0,1) になっているかを併せて見る。
             "mean_corr": num(off_diag.mean()),
             "z_mean": num(z_pairs.mean()),
@@ -762,9 +762,9 @@ def make_plots(
         )
     ax.plot(days, np.median(close, axis=0), color="C0", lw=1.2, label="empirical median")
     is_s0 = not any(getattr(config, f) for f in IMPLEMENTED_FLAGS)
-    # 定数ボラの GBM 分位点。S1 以降でも E[∫σ²] = σ̄²T なので**総分散は同じ**だが、
-    # 分布は分散混合になりテールが厚くなる。したがってこの線は「理論」ではなく
-    # 「同じ総分散をもつ定数ボラの参照線」であり、経験帯が外側にはみ出すのが正しい。
+    # 定数ボラの GBM 分位点。S1 以降でも E[∫σ²] = σ̄²T なので総分散は同じだが、
+    # 分布は分散混合になりテールが厚くなる。したがってこの線は理論ではなく
+    # 同じ総分散をもつ定数ボラの参照線であり、経験帯が外側にはみ出すのが正しい。
     ref_label = "theoretical GBM" if is_s0 else "constant-vol reference (same total variance)"
     for q, style in ((0.05, "--"), (0.5, "-"), (0.95, "--")):
         z = stats.norm.ppf(q)
@@ -816,7 +816,7 @@ def make_plots(
     ax.set_ylabel("charts")
     ax.set_title(
         f"{config.stage}: dispersion of realized volatility across {n_charts} charts"
-        + ("" if is_s0 else "  (wide spread is the point of S1)")
+        + ("" if is_s0 else " (wide spread is the point of S1)")
     )
     ax.legend(fontsize=8)
     save(fig, "realized_vol_distribution.png")

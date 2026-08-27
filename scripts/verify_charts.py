@@ -5,16 +5,16 @@
 生成器が自分で吐いた数字を自分で確かめても意味が薄いので、**別経路で再計算して
 突き合わせる**ことを主眼にしている。
 
-1. OHLC の内部整合  … low <= open, close <= high、価格が正、log_return が
+1. OHLC の内部整合 … low <= open, close <= high、価格が正、log_return が
    log(close/open) と一致
 2. セッションの連続性 … S0 にはオーバーナイトが無いので、d 日の終値は d+1 日の
    始値と厳密に一致していなければならない
-3. **日足の独立な再計算** … 標本チャートについて、1 秒経路から
+3. 日足の独立な再計算 … 標本チャートについて、1 秒経路から
    ``np.maximum.reduceat`` などの別手段で OHLC を組み直して一致を確認する
    (生成器と同じ関数を使うと、その関数のバグは絶対に見つからないため)
-4. **分足 → 日足の集約一致** … 分足標本を日足に畳んだものが、保存された日足と
+4. 分足 → 日足の集約一致 … 分足標本を日足に畳んだものが、保存された日足と
    一致すること。別のバー幅で作った結果どうしの突き合わせになる
-5. **seed からの再生成** … 記録された seed で作り直したチャートの終値
+5. seed からの再生成 … 記録された seed で作り直したチャートの終値
    ダイジェストが一致すること
 """
 
@@ -42,7 +42,7 @@ class CheckFailed(AssertionError):
 
 
 def check(name: str, condition: bool, detail: str = "") -> bool:
-    mark = "OK  " if condition else "NG  "
+    mark = "OK " if condition else "NG "
     print(f"  [{mark}] {name}" + (f"   {detail}" if detail else ""))
     return condition
 
@@ -113,7 +113,7 @@ def main() -> int:
     rng = np.random.default_rng(0)
     sample_ids = sorted(rng.choice(n_charts, size=min(args.n_regenerate, n_charts),
                                    replace=False).tolist())
-    # ★生成時の設定を復元する。素の Config(...) を組むと S1 のフラグが落ちて
+    # 生成時の設定を復元する。素の Config(...) を組むと S1 のフラグが落ちて
     # S0 相当の経路と照合してしまい、ダイジェストが必ず不一致になる。
     base = _saved_config(charts_dir).replace(n_days=n_days)
     steps_per_day = base.steps_per_day
@@ -145,7 +145,7 @@ def main() -> int:
     print()
     print("5. 分足 -> 日足の集約一致")
     if not intraday_path.exists():
-        print("  (分足標本が無いので省略)")
+        print(" (分足標本が無いので省略)")
     else:
         intraday = pd.read_parquet(intraday_path)
         agg = intraday.groupby(["chart_id", "day"], sort=True).agg(

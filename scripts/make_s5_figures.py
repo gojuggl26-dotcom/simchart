@@ -2,13 +2,13 @@
 
 README に載せる 4 枚:
 
-1. ``s5_regimes.png``      — 同じ chi・違うシードで同じレジーム構造が現れる (S5 の目的)
-2. ``s5_attractor.png``    — MG アトラクタと Rosenstein 発散曲線 (カオスの証拠)
-3. ``s5_band_design.png``  — 30 日線と GPH 測定帯の位置関係 (2026-08-21 裁定の根拠)
-4. ``s5_cross_seed.png``   — シード横断相関 = 分散シェアの実証 (§8)
+1. ``s5_regimes.png`` — 同じ chi・違うシードで同じレジーム構造が現れる (S5 の目的)
+2. ``s5_attractor.png`` — MG アトラクタと Rosenstein 発散曲線 (カオスの証拠)
+3. ``s5_band_design.png`` — 30 日線と GPH 測定帯の位置関係 (2026-08-21 裁定の根拠)
+4. ``s5_cross_seed.png`` — シード横断相関 = 分散シェアの実証 (§8)
 
 ラベルは英語 (既存の図と同じ慣習 — matplotlib の既定フォントに日本語グリフが無い)。
-数値の正は metrics.json (本番設定)。図は「見え方」を伝えるためのもの。
+数値の正は metrics.json (本番設定)。図は見え方を伝えるためのもの。
 """
 
 from __future__ import annotations

@@ -3,17 +3,17 @@
 なぜ断面か
 ----------
 S1 ゲートの ``e_sigma2`` (|E[sigma^2]/sigma_bar^2 - 1| < 0.02) と ``var_total`` /
-``var_budget`` は**期待値・分散に対する条件**である。ところが log sigma には
+``var_budget`` は期待値・分散に対する条件である。ところが log sigma には
 時定数 500 日の成分が入っているため、1 経路の時間平均は 5000 日でも実効独立標本が
 ~30 しかなく、E[sigma^2] の推定値は ±17% ゆらぐ。閾値 2% は 1 経路では原理的に
 判定できない。
 
-そこで E[·] を文字どおりに実装する: **定常初期化した独立標本の断面**を大量に引き、
+そこで E[·] を文字どおりに実装する: 定常初期化した独立標本の断面を大量に引き、
 その標本平均で判定する。20 万本で E[sigma^2] の標準誤差は ~0.22% になり、
 閾値 2% が 9 標準誤差に相当する本物の検定になる。
 
 MSM の断面分布は各成分 {m0, 2-m0} 等確率 (Poisson 切替の定常分布は t に依らず
-これ)、OU の断面分布は N(0, Var(X))。したがって断面は**切替動学を経由せずに**
+これ)、OU の断面分布は N(0, Var(X))。したがって断面は切替動学を経由せずに
 サンプリングできる。この断面が検証するのは:
 
 - :func:`~simchart.layers.l2_price.solve_m0` の逆算 (m0 の値)
@@ -21,7 +21,7 @@ MSM の断面分布は各成分 {m0, 2-m0} 等確率 (Poisson 切替の定常分
   (0.5 係数・凸性補正 -Var(X) の配線)
 - 分散配分がターゲットどおりか
 
-**切替動学そのものは検証しない** — それは :func:`~simchart.validation.scaling.msm_diagnostics`
+切替動学そのものは検証しない — それは :func:`~simchart.validation.scaling.msm_diagnostics`
 (実測切替率 vs 指定 gamma_i) の担当。合成式は生成側と同じ
 :func:`~simchart.layers.l2_price.compose_log_sigma` を使うので、式が 2 か所で
 乖離する事故は起きない。
@@ -55,7 +55,7 @@ def vol_cross_section(config: Config, n_paths: int | None = None) -> dict:
     を使うので決定論的で、生成系のストリームには一切触れない。
 
     S2 のラフ成分は定常ガウス (fOU) なので、断面は N(0, Var_disc) から引く。
-    Var_disc は**実際に生成される離散過程の分散**
+    Var_disc は実際に生成される離散過程の分散
     (:func:`~simchart.layers.l2_price.rough_discrete_stationary_variance`) を使う —
     連続式の目標値を使うと、凸性補正との整合検査 (e_sigma2) が離散化誤差の分だけ
     甘くなる。乱数の消費順は (MSM, OU, rough) で固定 — 末尾に足したので、
@@ -120,7 +120,7 @@ def vol_cross_section(config: Config, n_paths: int | None = None) -> dict:
     if log_sigma.ndim == 0:
         log_sigma = np.full(n, float(log_sigma), dtype=np.float64)
 
-    # S5: chi_2 は決定論なので「断面」は**時間周辺分布**からの再標本になる。
+    # S5: chi_2 は決定論なので断面は時間周辺分布からの再標本になる。
     # 生成側と同じ prepare_chaos_component (窓正規化 + 数値 c_chi) を使い、
     # 窓の実サンプルをアンサンブル乱数で引く。乱数消費は末尾に足したので、
     # S0〜S4 設定での断面はビット単位で以前と同一のまま。
@@ -162,11 +162,11 @@ def vol_cross_section(config: Config, n_paths: int | None = None) -> dict:
         var_log_sigma=num(var_log_sigma),
         var_log_sigma_theory=num(var_total_theory),
         component_vars={k_: num(v) for k_, v in var_components.items()},
-        # ★シェアには分母の違う 2 種類がある。取り違えると §6 の予算表と 1.4 倍
+        # シェアには分母の違う 2 種類がある。取り違えると §6 の予算表と 1.4 倍
         # ずれる (実際に一度やった)。
-        #   shares_of_current   … 分母 = 現在の Var(log sigma) 合計 (S1 で ~0.175)
-        #   shares_of_budget    … 分母 = 最終予算 vol_var_budget_total (0.25)。
-        #                         指示書 §6/§10 の「MSM 50% / OU 20%」はこちら
+        #   shares_of_current … 分母 = 現在の Var(log sigma) 合計 (S1 で ~0.175)
+        #   shares_of_budget … 分母 = 最終予算 vol_var_budget_total (0.25)。
+        #                         設計要件/§10 のMSM 50% / OU 20%はこちら
         shares_of_current={k_: num(v) for k_, v in shares.items()},
         shares_of_budget={k_: num(v / budget) for k_, v in var_components.items()},
         budget_total=num(budget),

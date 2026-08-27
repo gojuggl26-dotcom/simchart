@@ -1,12 +1,12 @@
 """perp 固有の検証 (S0-perp §8)。
 
-**全関数を S0-perp で宣言し、該当層が無効なら not_applicable を返す** —
+全関数を S0-perp で宣言し、該当層が無効なら not_applicable を返す —
 S0 の validation スイートと同じ規約 (例外を投げない。「まだ使えないから」と
 省略すると、後段で関数名・シグネチャ・返り値の形が場当たりに決まる)。
 
 S0-perp 時点で実測が動くのは 2 つ:
 
-- :func:`weekly_profile` — 週内プロファイル。S0-perp では**平坦が正解**
+- :func:`weekly_profile` — 週内プロファイル。S0-perp では平坦が正解
   (週次季節性は S4-perp)。ゲート weekly_profile_flat が使う。
 - :func:`phi_normalization_check` — φ の正規化検査 (§3.1)。equity 側の
   正規化分離 (φ_σ: mean(φ²)=1 / φ_λ: mean(φ)=1) を検証する汎用計器。
@@ -121,8 +121,8 @@ def weekly_profile(x: np.ndarray, times_sec: np.ndarray, n_bins: int = 7,
                    period_hours: float = 168.0) -> dict:
     """週内プロファイル: 週期間 (既定 168h) を n_bins に割った |x| の平均。
 
-    S4-perp の週次季節性の計器。**S0-perp では平坦が正解** (φ ≡ 1) で、
-    ゲート weekly_profile_flat が「ビン平均の最大/最小比が 1 に近い」ことを
+    S4-perp の週次季節性の計器。S0-perp では平坦が正解 (φ ≡ 1) で、
+    ゲート weekly_profile_flat がビン平均の最大/最小比が 1 に近いことを
     確認する。ビン数 7 = 曜日粒度。
 
     Parameters
@@ -164,11 +164,11 @@ def phi_normalization_check(
 ) -> dict:
     """φ の正規化検査 (S0-perp §3.1 の検証計器)。
 
-    - ``kind="sigma"``: **mean(φ²) = 1** — 加算されるのが分散なので二乗の平均。
+    - ``kind="sigma"``: mean(φ²) = 1 — 加算されるのが分散なので二乗の平均。
       mean(φ)=1 にすると Jensen の不等式で日次積分分散が目標を超える。
     - ``kind="lambda"``: mean(φ) = 1 — 強度なので一乗。
 
-    ★equity 側は S4 でこの分離を実装済み (normalize_phi_sigma /
+    equity 側は S4 でこの分離を実装済み (normalize_phi_sigma /
     normalize_phi_lambda)。この関数はそれを外部から検査する汎用形で、
     perp の週次 φ (S4-perp) にも同じ規約を適用する。
     """

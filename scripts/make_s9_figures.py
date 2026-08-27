@@ -2,11 +2,11 @@
 
 README に載せる 3 枚:
 
-1. ``s9_state.png``   — 状態依存の実在: スプレッド別の板内配置率・ノイズ条件付き
-                        戻り曲線 (S8 対照)・OBI ビン別の次ミッド変化 (⑩)
-2. ``s9_deficit.png`` — 赤字の「片側」縮小: 約定時間 VR 曲線 (S8 vs S9)・
+1. ``s9_state.png`` — 状態依存の実在: スプレッド別の板内配置率・ノイズ条件付き
+                        戻り曲線 (S8 対照)・OBI ビン別の次ミッド変化 ((10))
+2. ``s9_deficit.png`` — 赤字の片側縮小: 約定時間 VR 曲線 (S8 vs S9)・
                         G(ℓ) の比較・赤字台帳 (S8 → S9 → S10 目標)
-3. ``s9_micro.png``   — η の 3 系列と帯・signature (ミッド vs 約定 — 構造分離)・
+3. ``s9_micro.png`` — η の 3 系列と帯・signature (ミッド vs 約定 — 構造分離)・
                         tick 距離デプス (S8 対照)
 
 ラベルは英語 (既存の慣習)。数値の正は results/S9/metrics.json。
@@ -235,7 +235,7 @@ def fig_micro(r9, cfg9, r8, cfg8, m9) -> None:
     ax.loglog(secs, np.array(rv_tr) * 1e9, "s-", color=ORANGE, label="trade VWAP")
     ax.set_xlabel("sampling interval (s, log)")
     ax.set_ylabel("RV per second ×1e9 (log)")
-    ax.set_title("signature plots split: trades fall (bounce ✓ empirical shape),\n"
+    ax.set_title("signature plots split: trades fall (bounce 合格 empirical shape),\n"
                  "the mid RISES at 300–900s — the residual superdiffusion that\n"
                  "§9.2 forbids us to fill; decreasing-mid is an S10 target",
                  fontsize=9.5)

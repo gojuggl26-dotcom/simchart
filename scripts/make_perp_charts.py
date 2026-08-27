@@ -2,9 +2,9 @@
 
     uv run python scripts/make_perp_charts.py --n-charts 10
 
-★このチャートは「それらしく」見えない。それが正解である。
+このチャートはそれらしく見えない。それが正解である。
 --------------------------------------------------------
-S0-perp の価格過程は**幾何ブラウン運動だけ**で、ボラは定数・リターンは正規・
+S0-perp の価格過程は幾何ブラウン運動だけで、ボラは定数・リターンは正規・
 記憶はゼロである (README「S0 で意図的にやっていないこと」の perp 版)。
 したがって:
 
@@ -12,24 +12,24 @@ S0-perp の価格過程は**幾何ブラウン運動だけ**で、ボラは定�
 - 急落・急騰が無い (テールは S1-perp 以降でボラ過程とジャンプから内生的に出す)
 - 出来高の欄が無い
 
-ここに t 分布革新や外生的なテールを足して「それらしく」するのは**禁止事項**で、
+ここに t 分布革新や外生的なテールを足してそれらしくするのは禁止事項で、
 時間集計で尖度が下がる性質 (集計正規性) が永久に再現できなくなる。
 
 株式 S0 のチャートとの構造的な違い (perp 固有)
 ---------------------------------------------
-1. **窓が空かない**: 24/7 なのでオーバーナイト・ギャップが存在しない
-   (日 d の始値 = 日 d−1 の終値、厳密に一致)。株式チャートの「窓」は
+1. 窓が空かない: 24/7 なのでオーバーナイト・ギャップが存在しない
+   (日 d の始値 = 日 d−1 の終値、厳密に一致)。株式チャートの窓は
    S4 のギャップ機構によるもので、perp にはその機構自体が無い。
-2. **年率換算が 365 日・1 日 86,400 秒** (config の単一情報源 §4)。
-3. **板ウォームアップの除外が不要**: S0-perp に板は無い (観測 = p*)。
+2. 年率換算が 365 日・1 日 86,400 秒 (config の単一情報源 §4)。
+3. 板ウォームアップの除外が不要: S0-perp に板は無い (観測 = p*)。
    S13 のチャートで先頭 5 日を捨てたのは板が定常に達するまでの区間だった。
 
 出来高について
 --------------
-**出来高の列は作らない。** S0-perp には注文流が無い (L1 はスタブ、L3 板は無効)
+出来高の列は作らない。 S0-perp には注文流が無い (L1 はスタブ、L3 板は無効)
 ので、出来高を付ければそれは捏造になる (株式 S0 と同じ規約)。代わりに経路から
-実際に測れる量として、5 分リターンの**日次実現ボラ**を下段に描く — S0 では
-これが平坦になること自体が「ボラが定数である」ことの可視化になる。
+実際に測れる量として、5 分リターンの日次実現ボラを下段に描く — S0 では
+これが平坦になること自体がボラが定数であることの可視化になる。
 
 出力 (``results/perp_S0/charts/``)
 """
@@ -52,7 +52,7 @@ from scipy import stats
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 
-from generate_charts import ohlc_from_log_price  # noqa: E402  (OHLC 定義の単一情報源)
+from generate_charts import ohlc_from_log_price  # noqa: E402 (OHLC 定義の単一情報源)
 
 from simchart.config import Config  # noqa: E402
 from simchart.pipeline import run  # noqa: E402
@@ -91,7 +91,7 @@ def generate(cfg: Config, seeds: list[int]) -> tuple[pd.DataFrame, pd.DataFrame]
         o, h, l, c = ohlc_from_log_price(lp, n_days, spd)
         rv = realized_vol_daily(lp, n_days, spd, cfg.ann_days, bar_steps)
 
-        # ★24/7 の構造検査: 窓が空かないこと (日 d の始値 == 日 d−1 の終値)。
+        # 24/7 の構造検査: 窓が空かないこと (日 d の始値 == 日 d−1 の終値)。
         gap = float(np.max(np.abs(o[1:] - c[:-1]))) if n_days > 1 else 0.0
 
         po, ph, pl_, pc = (np.exp(v) for v in (o, h, l, c))
@@ -131,18 +131,18 @@ def generate(cfg: Config, seeds: list[int]) -> tuple[pd.DataFrame, pd.DataFrame]
 # ---------------------------------------------------------------------------
 def verify(daily: pd.DataFrame, index_df: pd.DataFrame, cfg: Config,
            n_null: int = 40, null_meta_seed: int = 999) -> dict[str, Any]:
-    """「正しく S0 に見えるか」の検証。
+    """正しく S0 に見えるかの検証。
 
-    S0 の合格基準は「それらしいこと」ではなく**幾何ブラウン運動であること**:
+    S0 の合格基準はそれらしいことではなく幾何ブラウン運動であること:
     尖度 3 / |r| 自己相関ゼロ / 実現ボラが定数 / 年率換算が σ̄ を再現。
 
-    ★日次 ACF には**帰無対照を常時つける** (n_null シードの独立実行)。
+    日次 ACF には帰無対照を常時つける (n_null シードの独立実行)。
     10 本 x 365 日 = 3,650 の日次標本では ACF の抽選ゆらぎが大きく、素の
-    |z| > 2 を「実装の欠陥」と読み違える。経緯: 初回実行で z = −3.20 が出て、
+    |z| > 2 を実装の欠陥と読み違える。経緯: 初回実行で z = −3.20 が出て、
     40 シードの帰無分布 (平均 −0.0058、理論バイアス −1/365 に対し z = −0.33)
-    と比べて**抽選のゆらぎ**と判明した。事後に検定を足したままにすると
-    「結果を見てから検定を変えた」ことになるので、規約として常時実行に固定する。
-    ★引いたシードを結果を見てから引き直さないこと (生存バイアス)。
+    と比べて抽選のゆらぎと判明した。事後に検定を足したままにすると
+    結果を見てから検定を変えたことになるので、規約として常時実行に固定する。
+    引いたシードを結果を見てから引き直さないこと (生存バイアス)。
     """
     n = len(index_df)
     n_days = int(daily["day"].max()) + 1
@@ -235,7 +235,7 @@ def verify(daily: pd.DataFrame, index_df: pd.DataFrame, cfg: Config,
                 "10 本 x 365 日では ACF の抽選ゆらぎが大きい。判定は"
                 "systematic_bias_z (帰無平均 vs 既知バイアス −1/n) で行う — "
                 "素の pooled z は小標本では容易に |2| を超える。"
-                "★結果を見てからシードを引き直さないこと (生存バイアス)"
+                "結果を見てからシードを引き直さないこと (生存バイアス)"
             ),
         },
         "vol_is_constant": {
@@ -346,7 +346,7 @@ def main() -> int:
     ap.add_argument("--n-days", type=int, default=365,
                     help="1 チャートの日数 (既定 365 = perp の 1 年)")
     ap.add_argument("--meta-seed", type=int, default=20260827,
-                    help="シードを引くメタシード。★引いたシードは index に記録され、"
+                    help="シードを引くメタシード。引いたシードは index に記録され、"
                          "seed さえあれば 1 分刻みの全経路を再生成できる")
     ap.add_argument("--results-dir", type=str, default=None)
     ap.add_argument("--no-plots", action="store_true")

@@ -23,3 +23,6 @@ cache/
 
 # S5: ゴールデン参照のフルパス本体 (1.4GB)。sidecar JSON (SHA256) は追跡し、本体は --verify で再生成照合する。
 results/**/golden/*.npz
+
+# 非公開の作業メモ (公開リポジトリには含めない)
+NOTES.private.md

@@ -81,7 +81,7 @@ def test_impact_deficit_directions(meta_metrics_small):
     """壊れ方の方向 (§8.1): β は目標より小さく、サイズ応答はほぼ線形。
 
     線形性はビン平均の傾き (impact_vs_size) で見る — frozen の
-    sqrt_law_check は「正のみ」選別が小 N を上方バイアスして傾きが潰れる
+    sqrt_law_check は正のみ選別が小 N を上方バイアスして傾きが潰れる
     (実測: 生 Q でも 0.37。ビン平均だと 0.89)。
     """
     m, _ = meta_metrics_small

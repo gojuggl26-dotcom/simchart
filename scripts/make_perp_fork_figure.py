@@ -4,15 +4,15 @@
 
 図は 4 つのことを 1 枚で示す:
 
-1. **時計の違い** — equity は 6.5 時間セッション × 年 252 日 (日境界に窓)、
+1. 時計の違い — equity は 6.5 時間セッション × 年 252 日 (日境界に窓)、
    perp は 24 時間連続 × 年 365 日 (窓は構造的に存在しない)
-2. **同じ乱数・違う時計** — 同一シード・同一 σ̄ で時計だけを変えると、価格経路は
+2. 同じ乱数・違う時計 — 同一シード・同一 σ̄ で時計だけを変えると、価格経路は
    形が同一のまま振幅が √(252/365) = 0.831 倍になる。**ann_days を切り替え
    忘れると σ が 20% 静かにずれる** — 時間軸の単一情報源 (§4) が防ぐ事故そのもの
-3. **S0-perp のチャート** — GBM のみ。それらしく見えないのが正解
-4. **その根拠** — 実現ボラが平坦 / 日次リターンが正規 (テールは S1-perp 以降)
+3. S0-perp のチャート — GBM のみ。それらしく見えないのが正解
+4. その根拠 — 実現ボラが平坦 / 日次リターンが正規 (テールは S1-perp 以降)
 
-★図中のラベルは英語にしてある (matplotlib の既定フォントは日本語を描けず
+図中のラベルは英語にしてある (matplotlib の既定フォントは日本語を描けず
 豆腐になる)。解説は README 側の日本語で行う — 既存の stage_comparison.png と
 同じ規約。
 """
@@ -91,7 +91,7 @@ def panel_calendar(ax) -> None:
     ax.text(
         36, -0.5,
         "perp has no session boundary -> no overnight gap by construction"
-        "  (measured max |open[d] - close[d-1]| = 0 exactly)",
+        " (measured max |open[d] - close[d-1]| = 0 exactly)",
         ha="center", va="center", fontsize=8, color="0.3",
     )
     ax.grid(axis="x", alpha=0.15, lw=0.5)
@@ -175,7 +175,7 @@ def panel_chart(ax, ax_rv) -> dict:
     ax_rv.plot(x, rv * 100.0, lw=0.7, color="#1f4e79")
     ax_rv.axhline(SIGMA * 100.0, color="r", ls=":", lw=0.9)
     ax_rv.set_ylabel("real. vol %", fontsize=9)
-    ax_rv.set_xlabel("day  (24/7: no gaps - open[d] == close[d-1] exactly)", fontsize=9)
+    ax_rv.set_xlabel("day (24/7: no gaps - open[d] == close[d-1] exactly)", fontsize=9)
     ax_rv.tick_params(labelsize=8)
     ax_rv.grid(alpha=0.15, lw=0.5)
     sd_log_rv = float(np.log(rv).std(ddof=1))
@@ -183,7 +183,7 @@ def panel_chart(ax, ax_rv) -> dict:
     ax_rv.text(
         0.005, 0.06,
         f"sd(log RV) = {sd_log_rv:.4f} vs estimator noise alone {noise:.4f}"
-        f"  ->  volatility really is constant (S1-perp will make it stochastic)",
+        f"  -> volatility really is constant (S1-perp will make it stochastic)",
         transform=ax_rv.transAxes, fontsize=8, color="0.25",
     )
     del r
@@ -193,8 +193,8 @@ def panel_chart(ax, ax_rv) -> dict:
 def panel_qq(ax) -> dict:
     """10 本プールした日次リターンの正規 QQ (テールが無いことの可視化)。
 
-    ★ここで回す 10 本は ``make_perp_charts.py`` と同じメタシードから引くので、
-    results/perp_S0/charts の 10 本と**同一のチャート**になる (数字が食い違わない)。
+    ここで回す 10 本は ``make_perp_charts.py`` と同じメタシードから引くので、
+    results/perp_S0/charts の 10 本と同一のチャートになる (数字が食い違わない)。
     日次終値も返して README 用のギャラリー図に使い回す (追加実行なし)。
     """
     rng = np.random.default_rng(META_SEED)
@@ -268,8 +268,8 @@ def main() -> int:
     ax_seed = fig.add_subplot(gs[1, 0])
     ax_qq = fig.add_subplot(gs[1, 1])
     ax_chart = fig.add_subplot(gs[2, :])
-    # ★実現ボラはチャートの**真下に全幅・同一 x 軸**で置く (半幅だと日付が
-    # 揃わず「別の期間の図」に見える)
+    # 実現ボラはチャートの真下に全幅・同一 x 軸で置く (半幅だと日付が
+    # 揃わず別の期間の図に見える)
     ax_rv = fig.add_subplot(gs[3, :], sharex=ax_chart)
 
     panel_calendar(ax_cal)

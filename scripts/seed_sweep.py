@@ -1,13 +1,13 @@
 """ゲートの誤検出率 (帰無仮説下で落ちる確率) をシードを変えて実測する。
 
-S0 は「正しい実装」であることが判っているので、ここで落ちたゲートは全て偽陽性で
+S0 は正しい実装であることが判っているので、ここで落ちたゲートは全て偽陽性で
 ある。閾値が緩すぎて欠陥を見逃すのと同じくらい、閾値が厳しすぎて正しい実装を
 落とすのも困る (段階が 14 あるので、1 回 5% でも通しで 50% 以上どこかが赤くなる)。
 
     uv run python scripts/seed_sweep.py 40
-    uv run python scripts/seed_sweep.py 40 --n-days 100    # 速く回したいとき
+    uv run python scripts/seed_sweep.py 40 --n-days 100 # 速く回したいとき
 
-欠陥を仕込んだときに**落ちる**ことの確認は tests/test_gates_detect_defects.py 側。
+欠陥を仕込んだときに落ちることの確認は tests/test_gates_detect_defects.py 側。
 両方揃って初めてゲートに意味がある。
 """
 

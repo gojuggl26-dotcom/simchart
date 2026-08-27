@@ -1,24 +1,21 @@
-"""ゲートが**落ちる能力を持つ**ことの確認 (帰無対照)。
+"""ゲートが落ちる能力を持つことの確認 (帰無対照)。
 
 合格するだけのゲートは無価値である。既知の欠陥を仕込んだ系列を食わせて、
-**狙ったゲートだけが落ちる**ことを確かめる。ここが緑でなければ「S0 が全ゲート
+狙ったゲートだけが落ちることを確かめる。ここが緑でなければ「S0 が全ゲート
 合格した」という主張自体に意味が無い。
 
 仕込む欠陥と、落ちるべきゲート:
 
-===============================  ==========================================
-欠陥                             落ちるべきゲート
-===============================  ==========================================
-MA(1) の系列相関                 acf_r_lag1, ljung_box
-t 分布革新 (自由度 6)            kurtosis, kurtosis_flat
-ボラティリティ・クラスタリング   acf_abs_r_lag1, kurtosis (acf_r_lag1 は通る)
-定常 AR(1) の対数価格            adf, variance_ratio
-マイクロストラクチャー・ノイズ   signature_plot_flat, acf_r_lag1
-検証関数の例外                   validation_callable
-===============================  ==========================================
+- MA(1) の系列相関 -> acf_r_lag1, ljung_box
+- t 分布革新 (自由度 6) -> kurtosis, kurtosis_flat
+- ボラティリティ・クラスタリング -> acf_abs_r_lag1, kurtosis
+  (acf_r_lag1 は通る)
+- 定常 AR(1) の対数価格 -> adf, variance_ratio
+- マイクロストラクチャー・ノイズ -> signature_plot_flat, acf_r_lag1
+- 検証関数の例外 -> validation_callable
 
 速度のため検証設定は本番より小さい (基準粒度を刻みに一致させ、判定に使う
-スケールの標本数下限を下げてある)。確かめているのは推定量とゲートの**接続**で
+スケールの標本数下限を下げてある)。確かめているのは推定量とゲートの接続で
 あって、本番の標本数における検出力ではない。
 """
 
@@ -167,7 +164,7 @@ def test_fat_tailed_innovations_are_detected() -> None:
 def test_volatility_clustering_is_detected() -> None:
     """|r| の記憶だけが落ち、r の無相関は保たれること。
 
-    「リターンは無相関だがボラは持続する」という実データの性質を、検証スイートが
+    リターンは無相関だがボラは持続するという実データの性質を、検証スイートが
     2 つの別々のゲートとして切り分けられていることの確認。
     """
     rng = np.random.default_rng(3)
@@ -218,7 +215,7 @@ def test_microstructure_noise_is_detected() -> None:
 def test_broken_estimator_trips_validation_callable(monkeypatch) -> None:
     """検証関数が例外を投げたら validation_callable が落ちること。
 
-    例外が握り潰されて「測れなかったのに合格」になるのが最悪なので、
+    例外が握り潰されて測れなかったのに合格になるのが最悪なので、
     経路そのものを試す。
     """
     from simchart.validation import suite as suite_module

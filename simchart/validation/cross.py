@@ -1,20 +1,20 @@
 """資産間 (非同期観測) の検証。
 
 S0 は単一資産なので ``not_applicable`` になる。S13 で多資産を入れたときに、
-共通因子から出るはずの相関が**非同期観測でも正しく測れているか**を確認するために
+共通因子から出るはずの相関が非同期観測でも正しく測れているかを確認するために
 Hayashi-Yoshida 推定量を使う。等間隔に揃えてから相関を取ると Epps 効果
 (細かい粒度ほど相関が消える見かけの現象) を自分で作り込んでしまうため、
 最初から同期化しない推定量で測る。
 
-S13 で追加した測定器 (指示書 §9):
+S13 で追加した測定器 :
 
-- :func:`epps_curve`             サンプリング間隔別の相関 (前値サンプル約定値)
-- :func:`lead_lag_profile`       交差相関のピーク位置 (創発リードラグ §6)
+- :func:`epps_curve` サンプリング間隔別の相関 (前値サンプル約定値)
+- :func:`lead_lag_profile` 交差相関のピーク位置 (創発リードラグ §6)
 - :func:`conditional_correlation` 危機時 vs 平常時の日次相関 (§7.2)
 - :func:`vol_correlation_by_horizon` ボラ相関の水平依存性 (§4.5)
 - :func:`factor_decomposition_check` β の実測 (記録)
 - :func:`theoretical_daily_corr` 因子構造の理論相関 (ゲート daily_corr_matches の基準)
-- :func:`cross_asset_metrics`    上記を束ねて MultiAssetResult から計算する
+- :func:`cross_asset_metrics` 上記を束ねて MultiAssetResult から計算する
 """
 
 from __future__ import annotations
@@ -94,7 +94,7 @@ def hayashi_yoshida(asset1: Any, asset2: Any, lag: float = 0.0) -> dict:
         return na("いずれかの資産の実現分散が 0 です")
 
     # 区間 i (i=1..n1) に重なる区間 j の範囲を二分探索で求める。
-    # 条件 b[j] > a[i-1] かつ b[j-1] < a[i]  (a=t1, b=t2)
+    # 条件 b[j] > a[i-1] かつ b[j-1] < a[i] (a=t1, b=t2)
     j_lo = np.searchsorted(t2, t1[:-1], side="right")  # 最初の j で b[j] > a[i-1]
     j_lo = np.maximum(j_lo, 1)
     j_hi = np.searchsorted(t2, t1[1:], side="left")  # 最後の j で b[j-1] < a[i]
@@ -161,7 +161,7 @@ def _prev_tick_bars(
 ) -> np.ndarray:
     """約定系列を前値サンプルでバー化する (セッション内リターン、(n_days, n_bars))。
 
-    Epps 効果の古典的な測定対象 = **取引時刻でしか更新されない価格**の同期
+    Epps 効果の古典的な測定対象 = 取引時刻でしか更新されない価格の同期
     サンプリング。板ミッドのグリッド系列を使うと非同期性が減って Epps が
     小さく見えるため、約定 (VWAP) 系列で測る。
     """
@@ -185,10 +185,10 @@ def epps_curve(
     n_days: int,
     t0: float,
 ) -> dict:
-    """サンプリング間隔別の相関 (Epps 曲線、指示書 §9)。
+    """サンプリング間隔別の相関 (Epps 曲線、設計要件)。
 
-    検証は「出たか」ではなく比率で行う (§10): 1 分相関 / 日次相関 < 0.7。
-    日次相関も**同じ約定系列**の前値サンプルで測る (基準を揃える)。
+    検証は出たかではなく比率で行う (§10): 1 分相関 / 日次相関 < 0.7。
+    日次相関も同じ約定系列の前値サンプルで測る (基準を揃える)。
     """
     ti, pi = trades_i
     tj, pj = trades_j
@@ -335,7 +335,7 @@ def factor_decomposition_check(
 ) -> dict:
     """β の実測 (§9 — 記録のみ)。潜在日次リターンを既知の共通因子日次集計に回帰する。
 
-    シミュレータ内部では z_F が既知なので、β̂_i の**相対比**が設計比と整合するかを
+    シミュレータ内部では z_F が既知なので、β̂_i の相対比が設計比と整合するかを
     見る (絶対水準はボラ水準の重みで β_i·E[σ_i]·√dt 倍にスケールする)。
     """
     slopes = []
@@ -363,12 +363,12 @@ def theoretical_daily_corr(config) -> dict:
         corr_ij = β_i β_j · D · (1−j_s) + s_J · j_s
 
     - D = 固有ボラ成分の対数正規希釈 E[σ_iσ_j]/√(E σ_i² E σ_j²)
-        = (E[√M]²)^{k−k_c} · exp(−v_idio)  (共有成分は分子分母で相殺)
+        = (E[√M]²)^{k−k_c} · exp(−v_idio) (共有成分は分子分母で相殺)
         v_idio = (1−f_c)·var_slow + var_rough (離散実分散)
     - j_s = ジャンプの QV シェア、s_J = 共通強度シェア (共通ジャンプは全資産
       同一サイズ = 相関 1 の成分)
 
-    ★これは「拡散相関の希釈」と「コジャンプの寄与」だけの一次理論。
+    これは拡散相関の希釈とコジャンプの寄与だけの一次理論。
     日次集計のボラ加重の高次項は含まない (実測との差が ±0.05 に入るかが
     ゲートそのもの)。
     """
@@ -412,7 +412,7 @@ def theoretical_daily_corr(config) -> dict:
 
 
 def cross_asset_metrics(multi, config) -> dict:
-    """MultiAssetResult からクロス資産の全測定を計算する (指示書 §9/§10)。"""
+    """MultiAssetResult からクロス資産の全測定を計算する (設計要件/§10)。"""
     pl = multi.payloads
     n_assets = len(pl)
     if n_assets < 2:
@@ -433,7 +433,7 @@ def cross_asset_metrics(multi, config) -> dict:
 
     # 条件付けマスク (資産横断で 1 回だけ作る):
     #  - breadth: ≥2 資産が同時に危機 (検出器ベース = リターン選択バイアスなし。
-    #    実データの「市場全体の危機期間」の観測可能な対応物)
+    #    実データの市場全体の危機期間の観測可能な対応物)
     #  - big_f: |z_F| 日次集計の上位 10% (潜在 — §7.1 の機構実在の記録用。
     #    リターン自身での条件付けは楕円切断の機械的相関上昇を作るため使わない)
     n_dm = min(min(p.daily_ret_obs.size, p.n_days) for p in pl)
@@ -525,7 +525,7 @@ def cross_asset_metrics(multi, config) -> dict:
             if cc_bigf.get("status") == "ok":
                 cc_bigf_increases.append(cc_bigf["increase"])
             # --- リードラグ (観測ミッドの 300 秒バー、±2 時間) ---
-            # ★60 秒バーは板の内生ノイズ (アンカー付き ZI 歩行 + バウンス) が
+            # 60 秒バーは板の内生ノイズ (アンカー付き ZI 歩行 + バウンス) が
             # 短スケールの観測相関を ~0.003 まで沈め、CCF 全体が雑音になる
             # (事前測定 #2 実測)。κ 差の追跡ラグは数十分スケールなので、
             # 信号シェアが立つ 5 分バー × ±24 ラグ (±2h) で測る。

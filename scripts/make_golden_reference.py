@@ -1,12 +1,12 @@
 """S5 §13: L2 構造凍結のゴールデン参照データを作る。
 
-固定シード (seed=42、本番設定) の**完全パス**を保存する:
+固定シード (seed=42、本番設定) の完全パスを保存する:
   log_sigma (117M 点 float64) / log_p_star (同) / jump_times / overnight_gaps /
   chi_2 (系固有グリッド)
 
 用途: S6 以降で L2 に触れていないことの検証。`--verify` で再生成して SHA256 を
 照合する — 一致すれば L2 は (コード変更があっても) ビット単位で凍結時と同一。
-digest (metrics.json) だけでも**検出**はできるが、フルパスがあると**どこから**
+digest (metrics.json) だけでも検出はできるが、フルパスがあるとどこから
 ずれたかを診断できる。
 
 保存先: results/S5/golden/ (npz 圧縮 ~1.6GB + sidecar JSON)。
@@ -92,8 +92,8 @@ def main() -> int:
         for name, sha in built["sidecar"]["array_sha256"].items():
             match = sha == stored["array_sha256"].get(name)
             ok &= match
-            print(f"  {name:16s} {'一致' if match else '★不一致'}")
-        print(f"結果: {'L2 は凍結時とビット単位で同一' if ok else '★凍結時から変化あり'}")
+            print(f"  {name:16s} {'一致' if match else '不一致'}")
+        print(f"結果: {'L2 は凍結時とビット単位で同一' if ok else '凍結時から変化あり'}")
         return 0 if ok else 1
 
     print("ゴールデン参照を生成中...", flush=True)

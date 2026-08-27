@@ -1,6 +1,6 @@
 """S2 のラフボラティリティ成分 (Davies-Harte fGn + fOU) の単体検証。
 
-S2 の合否は「何が変わらなかったか」で決まるため、S1 経路のビット単位不変も
+S2 の合否は何が変わらなかったかで決まるため、S1 経路のビット単位不変も
 ここで固定する。
 """
 
@@ -128,7 +128,7 @@ def test_fou_stationarity() -> None:
 def test_nonstationary_path_is_detected() -> None:
     """帰無対照: 分散が t^{2H} で増大する非定常過程 (fBm) は stationarity が落ちる。
 
-    指示書 §10-1 の「最頻の事故」を検査が本当に捕まえられることの確認。
+    設計要件-1 の最頻の事故を検査が本当に捕まえられることの確認。
     """
     g = davies_harte_fgn(200_000, 0.1, np.random.default_rng(11))
     fbm = np.cumsum(g)  # 非定常 (Var ~ t^{2H})

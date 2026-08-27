@@ -8,9 +8,9 @@ tails / memory / scaling / micro / cross の 5 群を辞書で返す。個々の
 
 系列の作り方についての決定
 --------------------------
-- **リターンの自己相関はセッション構造を保ったまま測る** (日をまたぐ差分を
+- リターンの自己相関はセッション構造を保ったまま測る (日をまたぐ差分を
   作らない)。S0 にオーバーナイトは無いが、S4 で入れた瞬間に効いてくる。
-- **|リターン| の長期記憶は連結した 1 次元系列で測る**。ボラティリティ過程は
+- |リターン| の長期記憶は連結した 1 次元系列で測る。ボラティリティ過程は
   日をまたいで続くものなので、日をまたぐラグを見られないと「今日のボラが明日の
   ボラを予測するか」が測れない。連結によって偽の値が生じることはない
   (各 |r| はセッション内で完結した値であり、並べているだけ)。
@@ -37,7 +37,7 @@ __all__ = ["run_all", "collect_errors", "flatten", "standardized_returns"]
 
 
 def _latent_gph(result: StageResult, bandwidth_exponent: float) -> dict:
-    """潜在 log sigma の日次平均系列に対する GPH (③ の構造の直接測定)。"""
+    """潜在 log sigma の日次平均系列に対する GPH ((3) の構造の直接測定)。"""
     sub = result.meta.get("l2", {}).get("vol_subsample")
     if sub is None:
         return {"status": "not_applicable", "reason": "確率ボラが無効です", "value": None}
@@ -190,17 +190,17 @@ def run_all(result: StageResult, config: Config | None = None) -> dict[str, Any]
         scaling.adf_test, primary_bars.log_price_flat(), v.adf_maxlag, "c"
     )
     adf_returns = safe_call(scaling.adf_test, r_primary, v.adf_maxlag, "c")
-    # ★S4: 分散比は**脱季節化した**価格で測る。
+    # S4: 分散比は脱季節化した価格で測る。
     # Lo-MacKinlay の重複窓は、窓に含まれる回数がセッションの端で少なくなる
     # (バー j は内部なら q 個の窓に入るが、端では 1 個しか入らない)。日内の分散が
     # 一定ならこれは無害だが、φ² が最大なのは寄付と引け = まさにその端なので、
     # q 期分散だけが系統的に過小評価される。実測は q=64 で VR 0.847 まで落ち、
-    # **φ だけから (乱数も価格も使わず) 計算した予測 0.852 と一致した** ので、
+    # φ だけから (乱数も価格も使わず) 計算した予測 0.852 と一致した ので、
     # マルチンゲール性の破れではなく推定量の重み付けの問題と確定している。
     # 脱季節化して測り直すと max|VR-1| は 0.151 → 0.016 (S3 の 0.021 と同水準)。
-    # ★S6 (κ=0 の板): 観測は ZI ミッドで φ の季節性を**持たない**。φ で割ると
+    # S6 (κ=0 の板): 観測は ZI ミッドで φ の季節性を持たない。φ で割ると
     # 存在しないパターンの逆数が乗り、逆向きの歪みを作ってしまう。脱季節化は
-    # 「観測が L2 由来」のときだけ (板有効かつ κ=0 なら生のまま測る)。
+    # 観測が L2 由来のときだけ (板有効かつ κ=0 なら生のまま測る)。
     obs_carries_phi = phi_bars is not None and not (cfg.enable_book and cfg.kappa == 0.0)
     vr_series = (
         _deseasonalized_log_price(r_primary_2d, phi_bars)
@@ -272,7 +272,7 @@ def run_all(result: StageResult, config: Config | None = None) -> dict[str, Any]
             v.daily_min_obs_for_gate,
         ),
         "zeta_curvature": safe_call(scaling.zeta_curvature, r_daily),
-        # 潜在 log sigma (日次平均) の GPH d — ③ の**構造**の直接測定 (S3 で追加)。
+        # 潜在 log sigma (日次平均) の GPH d — (3) の構造の直接測定 (S3 で追加)。
         # 観測 |r| の GPH はジャンプ・レバレッジが加える白色成分でスペクトル勾配が
         # 平坦化し、真の記憶が不変でも d の測定値が下方にバイアスされる
         # (perturbed fractional process)。log sigma 自体の記憶は MSM/OU/rough の
@@ -308,9 +308,9 @@ def run_all(result: StageResult, config: Config | None = None) -> dict[str, Any]
     }
 
     # ------------------------------------------------------------------
-    # rough: 粗さの測定 (S2 で追加)。★H の測定窓 (5 分〜4 時間) と GPH の測定窓
+    # rough: 粗さの測定 (S2 で追加)。H の測定窓 (5 分〜4 時間) と GPH の測定窓
     # (1〜100 日) は重ねない — 前者はラフ成分、後者は MSM/OU が支配する帯域で、
-    # 重ねると互いに汚染してどちらの推定も信用できなくなる (S2 指示書 §7)。
+    # 重ねると互いに汚染してどちらの推定も信用できなくなる (S2 設計要件)。
     # H は潜在 log sigma (真値) で判定し、RV 側は記録のみ (推定誤差で下方に偏る
     # のが既知であり、実証と同じ見え方をするかの参考値)。
     sub = result.meta.get("l2", {}).get("vol_subsample")
@@ -322,7 +322,7 @@ def run_all(result: StageResult, config: Config | None = None) -> dict[str, Any]
         ]
         log_vol_raw = np.asarray(sub["log_vol"])
         y_rough_sub = np.asarray(sub.get("y_rough", np.zeros(0)))
-        # ★S4: 粗さ H は**脱季節化した** log sigma で測る。
+        # S4: 粗さ H は脱季節化した log sigma で測る。
         # phi(u) は日内で滑らかに変化する決定論的成分なので、そのまま H を測ると
         # 5 分〜4 時間の増分が滑らかになり H が跳ね上がる (本番実測 0.136 -> 0.310)。
         # これは長期記憶への汚染 (GPH d で +0.017) よりはるかに大きく、S4 を作る
@@ -405,7 +405,7 @@ def run_all(result: StageResult, config: Config | None = None) -> dict[str, Any]
 
     # ------------------------------------------------------------------
     # jumps / leverage: S3 の測定。
-    # ★Hill α は測定条件 (日次リターン・上位 5%) を固定して報告する (§3.2) —
+    # Hill α は測定条件 (日次リターン・上位 5%) を固定して報告する (§3.2) —
     # 条件を書かない α の議論は無意味。α ≈ 3〜5 は有限標本の性質として狙う。
     l2m = result.meta.get("l2", {})
     steps_per_day_obs = (
@@ -477,7 +477,7 @@ def run_all(result: StageResult, config: Config | None = None) -> dict[str, Any]
     metrics["qr"] = _qr_metrics(result, cfg)
 
     # ------------------------------------------------------------------
-    # coupling: κ 結合 + c_vol (S10)。乖離 d・伝達率・残差 γ・追随・⑦。
+    # coupling: κ 結合 + c_vol (S10)。乖離 d・伝達率・残差 γ・追随・(7)。
     metrics["coupling"] = _coupling_metrics(result, cfg)
 
     # ------------------------------------------------------------------
@@ -510,12 +510,12 @@ def run_all(result: StageResult, config: Config | None = None) -> dict[str, Any]
 
     # ------------------------------------------------------------------
     # seasonality: 日内季節性とオーバーナイト (S4)。
-    # ★S4 の成果物は「季節性を入れたこと」ではなく「除去すれば S1〜S3 の構造が
-    # そのまま出てくることを示せる道具」なので、測るのは主に**除去の効き目**。
+    # S4 の成果物は季節性を入れたことではなく「除去すれば S1〜S3 の構造が
+    # そのまま出てくることを示せる道具」なので、測るのは主に除去の効き目。
     metrics["seasonality"] = _seasonality_metrics(result, cfg, r_primary_2d, r_daily)
 
     # ------------------------------------------------------------------
-    # S6+: 符号 ACF と propagator は**攻撃注文単位**の系列で測る。TRADE 行のままだと
+    # S6+: 符号 ACF と propagator は攻撃注文単位の系列で測る。TRADE 行のままだと
     # 複数レベルを掃いた成行が同符号の行を連続させ、機械的な正の自己相関 (+0.38 を
     # 実測) が出る — 記録粒度の人工物であって注文流の性質ではない。
     ev_meta = result.events.meta
@@ -647,12 +647,12 @@ def _perp_metrics(
     out["chaos_tau_days"] = float(49.65 * cfg.chaos_days_per_unit)
 
     # 時間定数の単一情報源スキャン (§4.1 のコード検査)。生成系モジュールに
-    # TRADING_DAYS_PER_YEAR / SESSION_SECONDS / 23400 リテラルの**コード参照**が
+    # TRADING_DAYS_PER_YEAR / SESSION_SECONDS / 23400 リテラルのコード参照が
     # 無いこと。コメント (# 以降) と後方互換 re-export (l0_calendar の
     # import/__all__ — tests_s1 が使う) は許容する。
     def _single_source_scan() -> dict[str, Any]:
-        # ★tokenize ベース: docstring / コメント / 文字列は散文なので対象外。
-        # 検査対象は **NAME トークン** (定数の import・使用) と **NUMBER トークン**
+        # tokenize ベース: docstring / コメント / 文字列は散文なので対象外。
+        # 検査対象は NAME トークン (定数の import・使用) と NUMBER トークン
         # (23400 リテラル) のみ — 行スプリット方式は docstring の説明文を誤検出する
         # (実測: grid.py 自身の解説表が引っかかった)。
         import io as _io
@@ -787,9 +787,9 @@ def _deseasonalized_log_price(r_2d: np.ndarray, phi_bars: np.ndarray) -> np.ndar
 def _book_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
     """S6 の測定群。板が無効なら全枝 ``not_applicable``。
 
-    ★この段階の観測価格 (ZI ミッド) に L2 の性質は現れない (κ=0)。tails/memory 等の
-    既存の枝が測る値は「純マイクロ構造ベースライン」であり、S10 で結合したときに
-    L2 の水準まで戻るかの比較対象になる (指示書 §11)。
+    この段階の観測価格 (ZI ミッド) に L2 の性質は現れない (κ=0)。tails/memory 等の
+    既存の枝が測る値は純マイクロ構造ベースラインであり、S10 で結合したときに
+    L2 の水準まで戻るかの比較対象になる 。
     """
     from . import engine as engine_val
 
@@ -862,7 +862,7 @@ def _book_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
     )
 
     # 符号 ACF (S8 ベースライン): 攻撃注文単位の符号で全ラグを見る。
-    # ★閾値は 2/√N ではなく Bonferroni 補正の 3.7/√N (指示書の字義 2/√N は
+    # 閾値は 2/√N ではなく Bonferroni 補正の 3.7/√N (設計要件の字義 2/√N は
     # 200 ラグの最大値に対して iid でもほぼ確実に破れる — S0 の ±2σ、S3 の
     # z_no_autocorr と同型の問題で、同じ解決を適用する)。
     agg_side = meta.get("agg_trade_side")
@@ -893,8 +893,8 @@ def _book_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
     else:
         out["sign_acf_zero"] = na("約定が足りません")
 
-    # κ=0 の確認 (S10 ベースライン): **リターンの相関**で測る。
-    # ★水準 (ミッドと p* そのもの) の相関を使ってはならない — 独立なランダム
+    # κ=0 の確認 (S10 ベースライン): リターンの相関で測る。
+    # 水準 (ミッドと p* そのもの) の相関を使ってはならない — 独立なランダム
     # ウォーク同士の標本相関は 0 に集中しない (arcsine 分布) ため、コイン投げの
     # ゲートになる (S5 の価格シード横断相関と同じ教訓)。
     lp_star = meta.get("log_pstar")
@@ -920,11 +920,11 @@ def _book_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
     else:
         out["corr_mid_pstar"] = na("p* の配線記録がありません")
 
-    # ミッドの分散比 — **日次スケール**で測る (S10 ベースライン)。
-    # ★分単位スケール (60s バー、q<=64 分) の VR は ZI 板では**強い平均回帰**を
+    # ミッドの分散比 — 日次スケールで測る (S10 ベースライン)。
+    # 分単位スケール (60s バー、q<=64 分) の VR は ZI 板では強い平均回帰を
     # 示す (実測 VR(64min)=0.19)。これはバグではなく ZI の既知の物理: 板が
     # バネとして働き、注文の平均寿命 1/δ (=0.2 日 ≈ 94 分) より短い時間層では
-    # subdiffusive になる (Smith et al. 2003)。「長スケールで拡散的」の判定は
+    # subdiffusive になる (Smith et al. 2003)。長スケールで拡散的の判定は
     # クロスオーバーより上の日次バー (q=2..64 日) で行い、分単位は記録する。
     obs = result.observation
     daily_bars = obs.to_bars(obs.session_seconds)
@@ -1058,7 +1058,7 @@ def _hawkes_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
         rows.update({
             "interevent_cv2": num(cv2),
             "ks_stat_vs_exponential": num(ks_stat),
-            # p は指数分布の**棄却**を期待する側 (小さいほど良い)
+            # p は指数分布の棄却を期待する側 (小さいほど良い)
             "ks_pvalue_vs_exponential": num(ks_p),
             "n_events": int(t_b.size),
         })
@@ -1138,7 +1138,7 @@ def _hawkes_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
                 z_norm = float(zm)
         # S12: n_t が広く振れる (χ₃、n_max=0.95) と 1/(1−n) の凸性で平均レートが
         # 設計アンカーの ~2 倍になる — これは脆弱窓の設計帰結なので、閉ループ確認は
-        # **n_t 込みの予測** rate ∝ E[(1−n_design)/(1−n_t)]⁻¹ に対して行う。
+        # n_t 込みの予測 rate ∝ E[(1−n_design)/(1−n_t)]⁻¹ に対して行う。
         n_factor = 1.0
         if float(cfg.chi3_b) > 0.0 or float(cfg.fb_b_n) > 0.0:
             try:
@@ -1151,7 +1151,7 @@ def _hawkes_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
                             np.asarray(cfg.hawkes_a, dtype=np.float64))))
                     )
                     amp = 1.0 / (1.0 - nt)
-                    # ★z との結合平均 E[z/(1−n_t)] を使う — 積の平均 ≠ 平均の積:
+                    # z との結合平均 E[z/(1−n_t)] を使う — 積の平均 ≠ 平均の積:
                     # 高ボラ期 (z 高) ⟺ u 高 ⟺ n 高の正相関が +31% の共分散を
                     # 持つ (事前測定 #3 で全タイプ均一な残差として実測)。
                     ev_meta_r = result.events.meta if isinstance(
@@ -1194,7 +1194,7 @@ def _hawkes_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
     out["realized_rates"] = safe_call(_rates)
 
     # --- Fano 法の n̂ (カーネル形状フリーの相互参照 — 記録のみ) ---
-    # ★φ の U 字も Fano を膨らませる (raw 経路と同じ罠) ので、ゲートには使わず
+    # φ の U 字も Fano を膨らませる (raw 経路と同じ罠) ので、ゲートには使わず
     # S8〜S11 での経年比較の記録として残す。
     out["fano_reestimate"] = safe_call(
         micro.branching_ratio_reestimate, times[times >= burn_sec], target=n_design
@@ -1207,9 +1207,9 @@ def _meta_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
     """S8 の測定群。メタオーダーが無効なら全枝 ``not_applicable``。
 
     中心は 3 つ:
-    1. ⑪ 符号 ACF の γ (対数ビン回帰 — 生ラグ点は whale 支配で暴れる) と C(1)
-    2. propagator の**実測** (課さない、測る — §7.1)。イベント時間 (約定
-       インデックス)、系列は各攻撃注文**直前**のミッド (VWAP は bounce が乗る)
+    1. (11) 符号 ACF の γ (対数ビン回帰 — 生ラグ点は whale 支配で暴れる) と C(1)
+    2. propagator の実測 (課さない、測る — §7.1)。イベント時間 (約定
+       インデックス)、系列は各攻撃注文直前のミッド (VWAP は bounce が乗る)
     3. インパクト赤字の 4 値 (§8.3 — S9/S10 の到達目標として記録)
     """
     keys = (
@@ -1232,7 +1232,7 @@ def _meta_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
     keep = t_all >= burn_sec
     s = s_all[keep]
 
-    # --- ⑪ γ と C(1)。γ の量的判定はこの対数ビン推定を正とする ---
+    # --- (11) γ と C(1)。γ の量的判定はこの対数ビン推定を正とする ---
     gamma_theory = float(cfg.meta_alpha) - 1.0
 
     def _gamma() -> dict[str, Any]:
@@ -1292,7 +1292,7 @@ def _meta_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
             ),
             supply_ratio_config=num(cfg.meta_supply_ratio),
             note=(
-                "判定は実現子比率/ψ (Bernoulli 混合の恒等)。指示書 §3.2 の式は"
+                "判定は実現子比率/ψ (Bernoulli 混合の恒等)。式は"
                 " 文字どおりだと供給/需要 = 1/ψ² で発散する — README 参照"
             ),
         )
@@ -1389,12 +1389,12 @@ def _meta_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
     records = _sqrt_records()
     out["sqrt_law"] = safe_call(lambda: micro.sqrt_law_check(records))
 
-    # ★「サイズに線形か」のゲートは **N ビン別の符号つき平均インパクトの傾き**で
+    # サイズに線形かのゲートは N ビン別の符号つき平均インパクトの傾きで
     # 判定する。frozen の sqrt_law_check (log-log + impact>0 選別) は S8 の
     # 高ノイズ域で歪む: (a) Q/V 形式は V が Q と共変して混雑度の回帰になる
-    # (実測 δ=−0.47)、(b) 生 Q でも「正のみ」選別が小 N を上方バイアスして
+    # (実測 δ=−0.47)、(b) 生 Q でも正のみ選別が小 N を上方バイアスして
     # 傾きが 0.37 に潰れる。ビン平均は符号つきでノイズを殺し選別を使わない —
-    # 実測 0.888 (子 1 本あたり一定インパクトの加算にほぼ線形 ✓ §8.1)。
+    # 実測 0.888 (子 1 本あたり一定インパクトの加算にほぼ線形 合格 §8.1)。
     def _impact_vs_size() -> dict[str, Any]:
         n_tot = np.asarray(mo_rec.get("n_total", np.empty(0)))
         n_exec = np.asarray(mo_rec.get("n_exec", np.empty(0)))
@@ -1448,7 +1448,7 @@ def _meta_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
         vr = scaling.variance_ratio(
             daily[int(cfg.book_burn_in_days):], (2, 4, 8, 16, 32, 64)
         )
-        # ★超拡散の主計器は**約定時間**の VR (指示書 §8.1 の機構そのもの:
+        # 超拡散の主計器は約定時間の VR (機構そのもの:
         # Var[n 約定のミッド変化] ~ n^{2−γ})。日次 (壁時計) VR は whale の
         # 出方でシード間 {0.97, 1.9, 14.7} と乱れ、標本平均の除去が
         # 標本長スケールの成分を食う — 記録して S10 の目標値の座標系に使う。
@@ -1492,8 +1492,8 @@ def _coupling_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
     - gap / transmission / tracking: κ 結合の中核 (d の定常性・T(h)・日次相関)。
     - residual_sign_acf: 生成時バイアス E[ε|d] を引いた残差符号の γ — raw の
       C(ℓ) に重畳する情報チャネル (追跡ハーディング) は結合の物理なので、
-      ⑪ 保存の判定は残差側 (S10a の解剖 — results/S10a/DECISION.md)。
-    - vol_activity: ⑦ ボラ・出来高リンク (S10c、log-log 主計器) と §7.3/§7.4。
+      (11) 保存の判定は残差側 (S10a の解剖 — results/S10a/DECISION.md)。
+    - vol_activity: (7) ボラ・出来高リンク (S10c、log-log 主計器) と §7.3/§7.4。
     """
     from . import coupling
 
@@ -1512,7 +1512,7 @@ def _coupling_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
 def _chi_l1_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
     """S12 の測定群: χ₁/χ₃ のカオス性・スペクトル・独立性・予算・注入診断。
 
-    Lyapunov 等の力学系性質は S5 と同じく**固定長参照系列** (初期値ごとに
+    Lyapunov 等の力学系性質は S5 と同じく固定長参照系列 (初期値ごとに
     キャッシュ) で測る。独立性は 3 系列を共通日格子へ補間して相互相関。
     """
     keys = ("chi1", "chi3", "independence", "chi1_budget", "kernel_band")
@@ -1683,9 +1683,9 @@ def _feedback_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
 def _qr_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
     """S9 の測定群。queue-reactive が無効なら全枝 ``not_applicable``。
 
-    η は**取引価格**系列で判定する (Robert–Rosenbaum の枠組み自体が取引価格の
+    η は取引価格系列で判定する (Robert–Rosenbaum の枠組み自体が取引価格の
     離散化モデルで、経験値 0.1〜0.3 もそこの値)。ミッド版は別枝で記録。
-    ② (短期の負の自己相関) は**イベント時間**のミッド変化方向相関で判定 —
+    (2) (短期の負の自己相関) はイベント時間のミッド変化方向相関で判定 —
     壁時計 (1 分) の ACF(1) は whale トレンドの出方でシード間 ±0.13 揺れて
     符号すら安定しない (S8 の VR と同じ理由の計器選択。1 分版は記録)。
     """
@@ -1730,7 +1730,7 @@ def _qr_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
     eta_mid = safe_call(micro.estimate_eta, mid_ev)
     out["eta_mid"] = eta_mid
 
-    # --- ② ミッドリターンの 1 次自己相関 ---
+    # --- (2) ミッドリターンの 1 次自己相関 ---
     def _acf() -> dict[str, Any]:
         # 判定: イベント時間 (ゼロでないミッド変化の方向相関 = η_mid の恒等変換)
         cs = eta_mid.get("change_sign_corr")
@@ -1776,7 +1776,7 @@ def _qr_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
 
     out["signature_mid"] = safe_call(_signature)
 
-    # --- ⑩ OBI: 攻撃注文格子での予測相関 (機構創発 — バイアスなし) ---
+    # --- (10) OBI: 攻撃注文格子での予測相関 (機構創発 — バイアスなし) ---
     def _obi() -> dict[str, Any]:
         trade_idx = np.flatnonzero(tr_mask)
         starts = np.flatnonzero(np.concatenate([[True], np.diff(tr_t) > 0]))
@@ -1849,7 +1849,7 @@ def _qr_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
 
     out["reversion"] = safe_call(_reversion)
 
-    # --- ⑳ デプスのハンプ位置 (best からの tick 距離) ---
+    # --- (20) デプスのハンプ位置 (best からの tick 距離) ---
     def _depth_ticks() -> dict[str, Any]:
         b = result.book
         keep = b.t > burn_sec
@@ -1891,7 +1891,7 @@ def engine_liveness_from_meta(l3_meta: dict, horizon_sec: float) -> dict[str, An
 def _chaos_metrics(result: StageResult, cfg: Config, r_daily: np.ndarray) -> dict[str, Any]:
     """S5 の測定群。chi_2 が無効なら全枝が ``not_applicable``。
 
-    3 つの対象に**期待の違う**検定を掛ける (S5 指示書 §9):
+    3 つの対象に期待の違う検定を掛ける (S5 設計要件):
     chi_2 単体はカオスの証拠 (critical)、合成 log σ と価格は「検出困難/不能」の
     記録 — 実データから低次元カオスが検出されないという実証と整合するのが正しい。
     """
@@ -1915,7 +1915,7 @@ def _chaos_metrics(result: StageResult, cfg: Config, r_daily: np.ndarray) -> dic
     }
 
     # --- chi_2 単体のカオス性 ---
-    # ★注入窓ではなく**固定長 20,000 単位の参照系列**で測る。Lyapunov・相関次元は
+    # 注入窓ではなく固定長 20,000 単位の参照系列で測る。Lyapunov・相関次元は
     # 力学系そのもの (パラメータ) の性質で、注入に使う窓の長さに依存しない。
     # 窓で測ると n_days が短い設定で「点数不足」になり、系の性質という不変の事実が
     # 設定依存で NA になってしまう。参照系列はキャッシュされ再計算はほぼ無料。
@@ -1975,11 +1975,11 @@ def _chaos_metrics(result: StageResult, cfg: Config, r_daily: np.ndarray) -> dic
     lv_with = log_vol - log_phi  # 脱季節化した log σ (chi 込み)
     lv_without = lv_with - chi_term + c_chi  # ≡ S4 の log σ (機械精度で厳密)
 
-    # --- 潜在日次 GPH のアブレーション (S5 の ③ 判定 — 2026-08-21 裁定) ---
+    # --- 潜在日次 GPH のアブレーション (S5 の (3) 判定 — 2026-08-21 裁定) ---
     # 帯域 0.50 の測定帯は周期 >= 70 日で、設計した 30 日線 (と 62 日の副次調波) の
-    # **外側** — ここが動かないことが「長期記憶の構造は不変」の判定。実測の検出力:
+    # 外側 — ここが動かないことが「長期記憶の構造は不変」の判定。実測の検出力:
     # ピークを 36〜40 日に誤配置すると副次調波が帯に入り -0.03〜-0.05 で落ちる。
-    # 帯域 0.65 (周期 >= 20 日) は設計線を**含む**ので、そこの変化 (-0.11) は
+    # 帯域 0.65 (周期 >= 20 日) は設計線を含むので、そこの変化 (-0.11) は
     # 汚染ではなく設計の帰結 — 記録として残す。
     t_days = np.asarray(sub["t_days"])
     n_days = int(round(t_days[-1] - t_days[0])) or 1
@@ -2005,7 +2005,7 @@ def _chaos_metrics(result: StageResult, cfg: Config, r_daily: np.ndarray) -> dic
     out["latent_gph_ablation"] = abl
 
     # --- レバレッジ希釈の SD 比 (2026-08-21 裁定の計器) ---
-    # sqrt(Var_S4/Var_S5) — 希釈式が**厳密に**成り立つ量で、推定ノイズがない。
+    # sqrt(Var_S4/Var_S5) — 希釈式が厳密に成り立つ量で、推定ノイズがない。
     # 相関ベースの比は |L| ~ 0.02 (S3 裁定の水準) では SE が信号の 30-40% になり
     # 判定不能 — multiseed が 3 計器の実測スプレッドを記録する。
     v_with = float(lv_with.var())
@@ -2024,7 +2024,7 @@ def _chaos_metrics(result: StageResult, cfg: Config, r_daily: np.ndarray) -> dic
     out["marginal_log_vol"] = safe_call(scaling.marginal_normality, lv_with)
 
     # --- 合成 log σ / 価格でのカオス検出 (記録のみ — 検出困難/不能が期待) ---
-    # ★時間の単位に注意: 合成系列の dt は「日」なので、Theiler 窓や先読み時間も
+    # 時間の単位に注意: 合成系列の dt は日なので、Theiler 窓や先読み時間も
     # 日で渡す。chi 単体の既定値 (系固有単位で 100/400) を流用すると窓が系列長を
     # 超えて空集合になる (実際にそうなって IndexError を出した)。
     stride_days = float(t_days[1] - t_days[0])
@@ -2052,7 +2052,7 @@ def _chaos_metrics(result: StageResult, cfg: Config, r_daily: np.ndarray) -> dic
     }
 
     # --- 帰無対照: chi は方向を持たない (§15 の第一禁止事項の検証) ---
-    # chi_2 は σ にのみ入るので、リターンの**方向**とは無相関のはず。
+    # chi_2 は σ にのみ入るので、リターンの方向とは無相関のはず。
     chi_daily = chi_term[: n_days * per_day].reshape(n_days, per_day).mean(axis=1)
     nd = min(r_daily.shape[0], chi_daily.shape[0])
     if nd > 30 and np.std(chi_daily[:nd]) > 0:
@@ -2109,7 +2109,7 @@ def _seasonality_metrics(
             "median_abs",
             steps_per_day,
         )
-        # ★README が要求する数値: 季節性が長期記憶の推定を汚す量と、除去で戻る量。
+        # README が要求する数値: 季節性が長期記憶の推定を汚す量と、除去で戻る量。
         out["gph_abs_r"] = safe_call(
             _gph_deseasonalized, r_primary_2d, calendar, cfg, steps_per_day
         )
@@ -2159,7 +2159,7 @@ def _gph_deseasonalized(
     """|r| の GPH d を raw / 真値 φ 除去 / 推定 φ̂ 除去の 3 通りで測る。
 
     季節性は ``|r|`` のスペクトルの高調波に力を足すので、GPH の回帰に低周波側から
-    漏れて ``d`` を**上方に**偏らせる。除去でどれだけ戻るかがここの主題。
+    漏れて ``d`` を上方に偏らせる。除去でどれだけ戻るかがここの主題。
     差は GPH の漸近標準誤差 ``pi/sqrt(24m)`` と比べて読むこと — 単独の経路では
     1 標準誤差前後の差は判定できない (複数シードで見る)。
     """

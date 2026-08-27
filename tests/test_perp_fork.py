@@ -122,7 +122,7 @@ def test_phi_normalizations_are_separate_and_correct() -> None:
 
 
 def test_chi2_characteristic_time_is_30_days() -> None:
-    """χ₂ の特徴時間 30 日 (§3.2 の「1 日」不備は存在しない — S5 で解決済み)。"""
+    """χ₂ の特徴時間 30 日 (§3.2 の1 日不備は存在しない — S5 で解決済み)。"""
     cfg = Config.load("configs/s12.yaml")
     # MG(τ=17) のスペクトルピーク 49.65 単位 × days_per_unit = 30 日 (S5 裁定)
     peak_days = 49.65 * cfg.chaos_days_per_unit
@@ -132,7 +132,7 @@ def test_chi2_characteristic_time_is_30_days() -> None:
 
 
 def test_overnight_is_variance_share() -> None:
-    """ON は cc 分散シェアで管理 (§3.3 の「ratio=2.0」不備は存在しない — S4)。"""
+    """ON は cc 分散シェアで管理 (§3.3 のratio=2.0不備は存在しない — S4)。"""
     cfg = Config()
     assert hasattr(cfg, "overnight_variance_share")
     assert not hasattr(cfg, "overnight_var_ratio")

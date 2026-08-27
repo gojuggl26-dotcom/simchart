@@ -3,25 +3,25 @@
 
 設計方針
 --------
-S6 の**実測**定常フローを保存したまま自己励起を加える。つまり
+S6 の実測定常フローを保存したまま自己励起を加える。つまり
 ``r = (I - aᵀ)⁻¹ μ`` が S6 の実測イベントレートに一致するよう μ を決める
 (μ = (I - aᵀ) r)。これで板の物理 (スプレッド・デプスのレジーム) は S6 と同じ
 土俵に載り、加わるのはクラスタリングだけになる。
 
-★過去の誤り (2026-08-21 に実測で発覚): 初版の較正は S6 の取消レートを
+過去の誤り (2026-08-21 に実測で発覚): 初版の較正は S6 の取消レートを
 δ·N̄ = 5·900 = 4500/日 と仮定した。しかし取消数は指値流入 3000/日 を超え得ない。
-S6 本番 (500 日) の台帳の実測は cancelled 597,386 → **1,195/日**、したがって
-N̄ = 1195/5 = **239** である。誤った r で解いた μ は CX 列が負になり、走らせると
+S6 本番 (500 日) の台帳の実測は cancelled 597,386 → 1,195/日、したがって
+N̄ = 1195/5 = 239 である。誤った r で解いた μ は CX 列が負になり、走らせると
 励起駆動の取消が板を食い尽くして 42% の時間で片側が空になり、ミッドが
 ティック窓から逸脱した。r は必ず実測から取ること。
 
 出所 (S6 本番 500 日 results/S6/metrics.json の order_ledger):
-  submitted_mo = 899,954   → r_MO = 1,800/日
+  submitted_mo = 899,954 → r_MO = 1,800/日
   submitted_lo = 1,500,119 → r_LO = 3,000/日
-  cancelled    =   597,386 → r_CX = 1,195/日
+  cancelled = 597,386 → r_CX = 1,195/日
   (departure の残り 902,552 は完全約定 — 取消ではないので r_CX に入れない)
 
-構造 (指示書 §3.2 の経験的パターン):
+構造 (経験的パターン):
   - 対角優位: MO→MO (注文分割・モメンタム)、LO→LO (気配の競り合い)、
     CX→CX (取消カスケード)
   - MO→LO (約定後の流動性補充)、CX→LO (取消→再掲示) は正で大きめ
@@ -41,13 +41,13 @@ import numpy as np
 # ---------------------------------------------------------------------------
 R_TARGET = np.array([1800.0, 3000.0, 1195.0])  # [MO, LO, CX] 件/日
 NBAR_REF = 597386.0 / 500.0 / 5.0  # = 238.95 (取消数 / 日 / δ、δ=5 は S6 の設定値)
-N_TARGET = 0.83  # 分岐比 (スペクトル半径)。指示書 §3.4: 0.80–0.85
+N_TARGET = 0.83  # 分岐比 (スペクトル半径)。設計要件: 0.80–0.85
 F_MIN = 0.15  # 各型のベースライン最小シェア μ_m / r_m (負・極小 μ の回避)
 
 # 構造行列 (相対パターン)。スケールは ρ = N_TARGET になるよう数値で決める。
 STRUCTURE = np.array(
     [
-        # → MO     → LO    → CX
+        # → MO → LO → CX
         [0.500, 0.370, 0.080],  # MO が源
         [0.055, 0.380, 0.075],  # LO が源
         [0.060, 0.200, 0.150],  # CX が源
@@ -98,7 +98,7 @@ def main() -> int:
     print(f"rho(a) = {rho:.6f}  (rounded: {rho_r:.6f}, target {N_TARGET})")
     print("a (rounded, rows=source, cols=target [MO, LO, CX]):")
     for row in a_r:
-        print("  (" + ", ".join(f"{v:.4f}" for v in row) + "),")
+        print(" (" + ", ".join(f"{v:.4f}" for v in row) + "),")
     print(f"mu (per day, both sides) = {np.round(mu_r, 1)}")
     print(f"baseline shares f = mu/r = {np.round(mu_r / R_TARGET, 3)}")
     print(f"hawkes_mu_mo (per side) = {mu_mo}")
@@ -110,7 +110,7 @@ def main() -> int:
     print(f"r reconstructed from rounded params = {np.round(r_check, 1)}"
           f"  (target {R_TARGET})")
     err = np.abs(r_check - R_TARGET) / R_TARGET
-    print(f"relative error = {np.round(err * 100, 3)} %  (max {err.max()*100:.3f}%)")
+    print(f"relative error = {np.round(err * 100, 3)} % (max {err.max()*100:.3f}%)")
     assert rho_r < 1.0 and (mu_r > 0).all() and err.max() < 0.02
     # バースト診断: 1 イベントが直後に加える総強度 (w·β の和 × 行和)
     session = 23400.0

@@ -1,9 +1,9 @@
 """S5: 決定論的カオス成分 chi_2 のテスト。
 
 中心は 2 つ:
-- **test_chi_removal_recovers_s4_exactly** — chi は決定論の加算なので、引けば S4 の
+- test_chi_removal_recovers_s4_exactly — chi は決定論の加算なので、引けば S4 の
   log σ が機械精度で戻る。「既存成分を触っていない」ことの最強の検定
-- **test_rng_fingerprint_is_identical_to_s4** — chi は乱数を 1 draw も消費しない
+- test_rng_fingerprint_is_identical_to_s4 — chi は乱数を 1 draw も消費しない
 """
 
 from __future__ import annotations
@@ -94,12 +94,12 @@ def test_chaos_validators_separate_chaos_from_null():
 
 
 # ---------------------------------------------------------------------------
-# ★中心: 厳密復元と RNG 不変
+# 中心: 厳密復元と RNG 不変
 # ---------------------------------------------------------------------------
 def test_chi_removal_recovers_s4_exactly():
     """S5 の log σ から chi 項を引くと S4 の log σ が機械精度で戻る。
 
-    chi は決定論の**加算**なので (置換ではない §15)、これが成り立たなければ
+    chi は決定論の加算なので (置換ではない §15)、これが成り立たなければ
     既存成分のどこかを触っている。許容 1e-12 は float64 の加減算誤差の水準。
     """
     r5, r4 = _pair()
@@ -109,7 +109,7 @@ def test_chi_removal_recovers_s4_exactly():
 
 
 def test_rng_fingerprint_is_identical_to_s4():
-    """chi_2 は乱数を 1 draw も消費しない (指示書 §1)。"""
+    """chi_2 は乱数を 1 draw も消費しない 。"""
     r5, r4 = _pair()
     assert r5.rng_fingerprint == r4.rng_fingerprint
     assert sorted(r5.meta["rng_streams_used"]) == sorted(r4.meta["rng_streams_used"])
@@ -142,7 +142,7 @@ def test_chi_is_identical_across_seeds():
 # ---------------------------------------------------------------------------
 def test_numerical_convexity_differs_from_gaussian_and_is_exact():
     """MG はガウスでないので c_chi ≠ a² (ガウス公式)。数値補正なら
-    time-mean(e^{2(aχ−c_χ)}) = 1 が**厳密に**成り立つ (これが E[σ²]=σ̄² の根拠)。"""
+    time-mean(e^{2(aχ−c_χ)}) = 1 が厳密に成り立つ (これが E[σ²]=σ̄² の根拠)。"""
     cfg = Config(stage="S5", enable_chaos_vol=True, **S4KW, **SMALL)
     r = run(cfg)
     ch = r.meta["l2"]["chaos"]
@@ -150,7 +150,7 @@ def test_numerical_convexity_differs_from_gaussian_and_is_exact():
 
     _, chi, a, c_chi, _ = prepare_chaos_component(cfg, float(cfg.n_days))
     assert float(np.mean(np.exp(2.0 * (a * chi - c_chi)))) == pytest.approx(1.0, abs=1e-12)
-    # ガウス公式を流用した場合のずれ (これが「なんとなくボラが高い」の正体)
+    # ガウス公式を流用した場合のずれ (これがなんとなくボラが高いの正体)
     wrong = float(np.mean(np.exp(2.0 * (a * chi - a * a))))
     assert abs(wrong - 1.0) > 1e-3
 
@@ -175,7 +175,7 @@ def test_chi_path_variance_is_exactly_a_squared():
 
 
 def test_budget_guard_rejects_overallocation():
-    """chi のシェア 25% 超は ③⑱ を薄めるため config が弾く (§15)。"""
+    """chi のシェア 25% 超は (3)(18) を薄めるため config が弾く (§15)。"""
     with pytest.raises(ValueError):
         Config(
             stage="S5", enable_chaos_vol=True, vol_var_target_chaos=0.10,
@@ -255,7 +255,7 @@ def test_cross_seed_correlation_reflects_chi_share():
 
 
 def test_chi_has_no_directional_leak():
-    """★§15 の第一禁止事項: chi はリターンの方向と無相関 (σ にのみ入る)。"""
+    """§15 の第一禁止事項: chi はリターンの方向と無相関 (σ にのみ入る)。"""
     r = run(Config(stage="S5", enable_chaos_vol=True, **S4KW, **SMALL))
     obs = r.observation
     rd = obs.to_bars(obs.session_seconds).returns()

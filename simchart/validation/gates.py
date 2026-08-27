@@ -1,8 +1,8 @@
 """ゲート定義と判定。
 
-ゲートは「その段階として正しい状態」を機械的に検査するもので、**通ることを目的に
+ゲートはその段階として正しい状態を機械的に検査するもので、**通ることを目的に
 閾値をいじってはならない。** 落ちたら原因を調べる。閾値が偶然でも落ちるほど厳しい
-場合に正しい対処は「閾値を緩める」ではなく「推定量の精度を上げる (標本数の多い
+場合に正しい対処は閾値を緩めるではなく「推定量の精度を上げる (標本数の多い
 スケールで測る、バンド幅を広げる)」であり、この方針は
 :mod:`simchart.validation.scaling` と :mod:`simchart.validation.memory` の
 docstring に書いてある。
@@ -217,14 +217,14 @@ S0_GATES: tuple[Gate, ...] = (
         name="acf_r_lag1",
         metric_path="memory.acf_r.lag1_z",
         check=_abs_lt(2.0),
-        threshold="|rho(1)| < 2/sqrt(N)  (|z| < 2)",
+        threshold="|rho(1)| < 2/sqrt(N) (|z| < 2)",
         description="リターンに線形の自己相関が無いこと。S0 で出たら実装事故。",
     ),
     Gate(
         name="acf_abs_r_lag1",
         metric_path="memory.acf_abs_r.lag1_z",
         check=_abs_lt(2.0),
-        threshold="|rho(1)| < 2/sqrt(N)  (|z| < 2)",
+        threshold="|rho(1)| < 2/sqrt(N) (|z| < 2)",
         description=(
             "|リターン| にも記憶が無いこと。ボラティリティ・クラスタリングは S1 から。"
         ),
@@ -313,7 +313,7 @@ def _budget_check(value: Any) -> bool:
     """分散予算: MSM シェア 45〜55%、緩慢 OU シェア 15〜25%。
 
     **分母は最終予算 vol_var_budget_total (0.25) であって、現在の Var(log sigma)
-    合計 (S1 で 0.175) ではない** (指示書 §6 の配分表の定義)。現在合計を分母に
+    合計 (S1 で 0.175) ではない** (配分表の定義)。現在合計を分母に
     すると 0.716 / 0.287 になり 1.43 倍ずれる。
     """
     if not isinstance(value, Mapping):
@@ -325,7 +325,7 @@ def _budget_check(value: Any) -> bool:
     return 0.45 <= float(msm) <= 0.55 and 0.15 <= float(slow) <= 0.25
 
 
-#: S1 で S0 から**不変**であるべきゲート (確率ボラは方向情報を与えない)。
+#: S1 で S0 から不変であるべきゲート (確率ボラは方向情報を与えない)。
 #: acf / ljung_box は真の sigma で標準化した系列で測る。確率ボラの下では
 #: 非標準化系列の検定はサイズが歪み (Q(20) の期待値だけで p < 0.01)、
 #: 「実装バグでないのに落ちる」ため。S0 では標準化は定数スケールに退化し
@@ -335,7 +335,7 @@ _S1_INVARIANT_GATES: tuple[Gate, ...] = (
         name="acf_r_lag1",
         metric_path="memory.acf_r_std.lag1_z",
         check=_abs_lt(2.0),
-        threshold="|rho(1)| < 2/sqrt(N)  (|z| < 2, 標準化リターン)",
+        threshold="|rho(1)| < 2/sqrt(N) (|z| < 2, 標準化リターン)",
         description="ボラ変動がリターンの自己相関を作っていないこと。S0 から不変。",
     ),
     Gate(
@@ -385,7 +385,7 @@ _S1_NEW_GATES: tuple[Gate, ...] = (
         metric_path="daily.acf_abs_r_powerlaw.r2",
         check=_gt(0.95),
         critical=False,
-        threshold="log-log R^2 > 0.95 (ラグ 1〜100 日) — 記録のみ (2026-08-19 オペレータ承認)",
+        threshold="log-log R^2 > 0.95 (ラグ 1〜100 日) — 記録のみ (2026-08-19 設計判断)",
         description=(
             "MSM の ACF は有限個の指数の重ね合わせで厳密なべき則ではなく、"
             "理論上限が R^2=0.913 (ノイズゼロでも)。指数減衰との識別も 5000 日では"
@@ -400,8 +400,8 @@ _S1_NEW_GATES: tuple[Gate, ...] = (
         threshold="rho(1) > 0.13 (日次 |r|)",
         description=(
             "ボラティリティ・クラスタリングの水準。閾値は実測分布 (16 シードで"
-            " 0.138〜0.226、母平均 0.18) の外側に設定 (2026-08-19 オペレータ承認。"
-            "指示書の 0.15 は偽陽性 19%)。S0 では ~0。"
+            " 0.138〜0.226、母平均 0.18) の外側に設定 (2026-08-19 設計判断。"
+            "設計要件の 0.15 は偽陽性 19%)。S0 では ~0。"
         ),
     ),
     Gate(
@@ -412,7 +412,7 @@ _S1_NEW_GATES: tuple[Gate, ...] = (
         description=(
             "ボラ混合によるファットテール (部分的 — alpha~3 は S3 の仕事)。"
             "閾値は実測分布 (16 シードで 4.54〜7.14、母平均 5.3) の外側に設定"
-            " (2026-08-19 オペレータ承認。指示書の 5.0 は偽陽性 50%)。S0 では 3.0。"
+            " (2026-08-19 設計判断。設計要件の 5.0 は偽陽性 50%)。S0 では 3.0。"
         ),
     ),
     Gate(
@@ -427,9 +427,9 @@ _S1_NEW_GATES: tuple[Gate, ...] = (
         metric_path="daily.zeta_curvature.c2",
         check=_lt(0.0),
         critical=False,
-        threshold="zeta_q の 2 次係数 c2 < 0 — 記録のみ (2026-08-19 オペレータ承認)",
+        threshold="zeta_q の 2 次係数 c2 < 0 — 記録のみ (2026-08-19 設計判断)",
         description=(
-            "マルチフラクタル性の出現。指示書の R^2 < 0.99 は S0/S1 の実測分布が"
+            "マルチフラクタル性の出現。設計要件の R^2 < 0.99 は S0/S1 の実測分布が"
             "重なり分離不能 (分散予算 0.175 では曲率が小さい)。感度の高い曲率 c2"
             " (q<=4, 1..100 日, 重なり窓) でも 16 シード中 6 本が S0 域と重なる"
             "ため判定はできず、記録して S2 (ラフ成分で曲率が増える) で判定する。"
@@ -554,8 +554,8 @@ _S2_NEW_GATES: tuple[Gate, ...] = (
         check=_is_true,
         threshold="|d(S2) - d(S1)| <= 0.03 (日次 |r|)",
         description=(
-            "★S2 で最重要。長スケールの記憶が動いたらスケール分離の失敗であり、"
-            "ラフ成分が MSM/OU の帯域に漏れている。診断手順は指示書 §10 "
+            "S2 で最重要。長スケールの記憶が動いたらスケール分離の失敗であり、"
+            "ラフ成分が MSM/OU の帯域に漏れている。診断手順は設計要件 "
             "(非定常 fBm → HL_r 過大 → シェア過大 → 測定窓重複 → パラメータ改変 → "
             "チャンク接合、の順に確認)。"
         ),
@@ -565,14 +565,14 @@ _S2_NEW_GATES: tuple[Gate, ...] = (
         metric_path="runtime.baseline_invariance.checks.absr_powerlaw_gamma.passed",
         check=_is_true,
         threshold="|r| ACF べき則指数が S1 から ±10% 以内 (binned R^2 も非劣化)",
-        description="長スケールのべき則減衰の形状が保たれていること (③)。",
+        description="長スケールのべき則減衰の形状が保たれていること ((3))。",
     ),
     Gate(
         name="inv_absr_acf_profile",
         metric_path="runtime.baseline_invariance.checks.absr_acf_profile.passed",
         check=_is_true,
         threshold="日次 |r| ACF (ラグ 10〜100) の平均 |Δrho| <= 0.02",
-        description="長スケールの ACF プロファイルが S1 と一致していること (③)。",
+        description="長スケールの ACF プロファイルが S1 と一致していること ((3))。",
     ),
     Gate(
         name="inv_kurtosis_daily",
@@ -587,7 +587,7 @@ _S2_NEW_GATES: tuple[Gate, ...] = (
         check=_is_true,
         critical=False,
         threshold="zeta 曲率 c2 が S1 から悪化していない (記録系)",
-        description="マルチフラクタル性の萌芽が保たれていること (⑱)。判定は S1 と同じく警告扱い。",
+        description="マルチフラクタル性の萌芽が保たれていること ((18))。判定は S1 と同じく警告扱い。",
     ),
     Gate(
         name="inv_rng_s1_streams",
@@ -610,7 +610,7 @@ S2_GATES: tuple[Gate, ...] = _S2_INHERITED_GATES + _S2_NEW_GATES
 def _z_acf_check(value: Any) -> bool:
     """z の全ラグ ACF が 3.7/sqrt(N) 以内 (§6.2 の直接テスト)。
 
-    指示書の閾値 2/sqrt(N) は 60 ラグの最大値に対しては多重比較で iid でも
+    設計要件の閾値 2/sqrt(N) は 60 ラグの最大値に対しては多重比較で iid でも
     E[max] ~ 2.9/sqrt(N) となり純乱数で落ちる (S0 の ±2σ ゲートと同型の問題)。
     Bonferroni 60 本・両側 5% の 3.66 を丸めた 3.7 を使う。実装欠陥 (共通ショック
     の単純加算) は +rho^2/n ~ 8e-3 >> 3.7/sqrt(117M) = 3.4e-4 なので検出力は保たれる。
@@ -660,11 +660,11 @@ def _corr_within_or_disabled(target_key: str, tol: float) -> Callable[[Any], boo
     return check
 
 
-#: S2 の不変チェックのうち S3 では**性質が変わる**もの:
+#: S2 の不変チェックのうち S3 では性質が変わるもの:
 #: - inv_kurtosis_daily (Δk <= +0.5): ジャンプで尖度が +2〜+13 上がるのが S3 の目的
-#:   (①)。絶対ゲート kurtosis_daily と multiseed の hill/skew が管理する
+#: ((1))。絶対ゲート kurtosis_daily と multiseed の hill/skew が管理する
 #: - inv_absr_powerlaw_gamma (±10%): ジャンプが |r| ACF の推定にノイズを加え
-#:   Δγ/γ が実測 0.02〜0.36 動く。S3 指示書 §10 の要求は R^2 非劣化のみ
+#: Δγ/γ が実測 0.02〜0.36 動く。S3 要求は R^2 非劣化のみ
 #: 観測 |r| の gph_d 絶対ゲートも S3 では差し替える: ジャンプ・レバレッジが
 #: スペクトルに加える白色成分が d の測定値を系統的に -0.05 下げる (真の記憶構造
 #: は不変 — inv_gph_d が潜在 log sigma で検証する)。帯を下方拡張し、多シード
@@ -684,7 +684,7 @@ _S3_NEW_GATES: tuple[Gate, ...] = (
         description=(
             "ジャンプとレバレッジは |r| のスペクトルに白色成分を加え、真の記憶が"
             "不変でも測定 d を平坦化させる (実測: jump -0.03、leverage -0.02〜-0.03)。"
-            "③ の構造の不変性は inv_gph_d が潜在 log sigma で検証する。"
+            "(3) の構造の不変性は inv_gph_d が潜在 log sigma で検証する。"
         ),
     ),
     Gate(
@@ -702,7 +702,7 @@ _S3_NEW_GATES: tuple[Gate, ...] = (
         metric_path="multiseed.hill_scale_slope.median",
         check=_gt(0.0),
         threshold="Hill α が集計スケールで上昇 (log スケール回帰傾き > 0、中央値)",
-        description="集計正規性 (⑱)。べき則ジャンプだと α 不変になるので識別でもある。",
+        description="集計正規性 ((18))。べき則ジャンプだと α 不変になるので識別でもある。",
     ),
     Gate(
         name="skewness_daily",
@@ -722,11 +722,11 @@ _S3_NEW_GATES: tuple[Gate, ...] = (
         name="leverage_corr",
         metric_path="multiseed.leverage_corr.median",
         check=_neg_between(-0.10),
-        threshold="corr(r_t, RV_{t+1}) ∈ [-0.10, 0) (10 シード中央値。指示書の"
-        " [-0.28, -0.16] から変更 — 2026-08-20 オペレータ裁定)",
+        threshold="corr(r_t, RV_{t+1}) ∈ [-0.10, 0) (10 シード中央値。設計要件の"
+        " [-0.28, -0.16] から変更 — 2026-08-20 設計判断)",
         description=(
-            "指示書の帯は per-step 相関構成の理論上限 (~-0.06) を超えており達成不能。"
-            "中速成分 (実測上限 -0.14) は gph_d を最大 -0.15 動かし ③ を壊すため"
+            "設計要件の帯は per-step 相関構成の理論上限 (~-0.06) を超えており達成不能。"
+            "中速成分 (実測上限 -0.14) は gph_d を最大 -0.15 動かし (3) を壊すため"
             "無効化 (同じ予算の取り合いと実測確定)。真値 ~-0.017 に対しシード"
             "ゆらぎ ±0.02 なので、方向性の検定 (負であること、median の偽陽性 ~2%)"
             " として判定する。水準は S10 の板側チャンネルが担う。"
@@ -736,10 +736,10 @@ _S3_NEW_GATES: tuple[Gate, ...] = (
         name="leverage_shape",
         metric_path="leverage.function.shape_ok",
         check=_is_true,
-        threshold="L(1) < 0 かつ mean L(1..20) < 0 (指示書の「全て負」から変更)",
+        threshold="L(1) < 0 かつ mean L(1..20) < 0 (設計要件の全て負から変更)",
         description=(
             "弱いレバレッジ水準 (裁定後) では個々の L(h) が SE ~0.014 のゼロ近傍に"
-            "あり「20 本全て負」は点推定ノイズで確率的に落ちる。方向と形状の検定と"
+            "あり20 本全て負は点推定ノイズで確率的に落ちる。方向と形状の検定と"
             "して L(1) と平均で判定する (2026-08-20 裁定の帰結)。"
         ),
     ),
@@ -800,7 +800,7 @@ _S3_NEW_GATES: tuple[Gate, ...] = (
         check=_is_true,
         threshold="|r| ACF べき則の binned R^2 が S2 から悪化していない (-0.05 まで)",
         description=(
-            "S3 指示書 §10 の趣旨 (③ の形状維持)。γ の ±10% はジャンプノイズで"
+            "S3 趣旨 ((3) の形状維持)。γ の ±10% はジャンプノイズで"
             "測れないため R^2 非劣化に置き換え (経緯は _S3_DROPPED_INVARIANCE)。"
         ),
     ),
@@ -853,7 +853,7 @@ def _abs_median_gt(limit: float) -> Callable[[Any], bool]:
     """多シード指標の |中央値| が下限を超えること。
 
     符号が構成によって反転しうる量 (季節性の GPH 汚染など) は、符号つきで判定すると
-    「向きが違うだけで実装は正しい」ケースを落とす。大きさで判定し、符号は
+    向きが違うだけで実装は正しいケースを落とす。大きさで判定し、符号は
     記録として残す。
     """
 
@@ -900,7 +900,7 @@ def _phi_recovery_check(value: Any) -> bool:
 def _gap_null_control(value: Any) -> bool:
     """ギャップが翌日の日中リターンの向きを予測しないこと (帰無対照)。
 
-    ★これは「効果があること」ではなく「無いこと」を要求するゲートなので、
+    これは効果があることではなく無いことを要求するゲートなので、
     検出力不足で自動的に通ってしまう。標本数の下限を課して、少なくとも
     ``|corr| > 0.15`` 程度の漏れは捕らえられる状態でのみ合格にする。
     """
@@ -924,14 +924,14 @@ def _on_kurtosis_higher(value: Any) -> bool:
 
 #: S4 では S3 の絶対ゲートを 1 つも差し替えない。
 #:
-#: 当初は「観測 |r| の GPH d が季節性で上振れするから脱季節化系列に差し替える」
-#: つもりだったが、``multiseed.gph_d`` が測っているのは**日次**リターンの |r| で
+#: 当初は観測 |r| の GPH d が季節性で上振れするから脱季節化系列に差し替える
+#: つもりだったが、``multiseed.gph_d`` が測っているのは日次リターンの |r| で
 #: あり、季節性は日内現象なので原理的に効かない: 日次分散は
 #: ``sum_k phi_k^2 sigma^2 dt = sigma^2 (1 日分)`` で、φ_σ の二乗正規化により
-#: **厳密に**不変だからである (潜在側の ``daily.latent_gph_d`` も、日内平均
+#: 厳密に不変だからである (潜在側の ``daily.latent_gph_d`` も、日内平均
 #: log φ が全日で同一定数なので GPH が厳密に不変)。
 #: 汚染が出るのは日内バーの |r| のほうで、そちらは S3 でゲートされていない量なので
-#: 「差し替え」ではなく新規ゲート (seasonality_bias_gph) として追加する。
+#: 差し替えではなく新規ゲート (seasonality_bias_gph) として追加する。
 #: 実測で日次 GPH が動かないことは inv_gph_d と gph_d が継承のまま通ることで確認する。
 _S4_REPLACED: set[str] = set()
 
@@ -947,8 +947,8 @@ _S4_NEW_GATES: tuple[Gate, ...] = (
         check=_phi_norm_check,
         threshold="(1/T)∫φ_σ²du = 1 かつ (1/T)∫φ_λdu = 1 (どちらも誤差 < 1e-3)",
         description=(
-            "★正規化の規約が σ と λ で違う (§4.1)。分散は加算されるので φ_σ は"
-            "**二乗**の平均を 1 に、強度は一乗の平均を 1 にする。片方の規約を"
+            "正規化の規約が σ と λ で違う (§4.1)。分散は加算されるので φ_σ は"
+            "二乗の平均を 1 に、強度は一乗の平均を 1 にする。片方の規約を"
             "もう片方へ流用すると Jensen の不等式の分だけ日次積分分散が目標を外れる。"
         ),
     ),
@@ -966,9 +966,9 @@ _S4_NEW_GATES: tuple[Gate, ...] = (
         check=_gt(20.0),
         threshold="生の |r| のスペクトル高調波比 > 20 (帰無水準は 1)",
         description=(
-            "★enable_seasonality が黙って空振りしていないことの検出。実測 241 "
+            "enable_seasonality が黙って空振りしていないことの検出。実測 241 "
             "(1 分足) / 46 (30 分足) に対し S3 の帰無は 1.1〜2.3。"
-            "除去側のゲートだけだと「最初から季節性が無い」場合に全部通ってしまう。"
+            "除去側のゲートだけだと最初から季節性が無い場合に全部通ってしまう。"
         ),
     ),
     # --- 除去の効き目 (真値経路) ---
@@ -1021,18 +1021,18 @@ _S4_NEW_GATES: tuple[Gate, ...] = (
         check=_abs_median_gt(0.005),
         threshold="日内バー |r| の GPH d の汚染量 |生 − 脱季節化後| > 0.005 (10 シード中央値)",
         description=(
-            "★S4 を作る動機そのものの定量化。季節性は |r| のスペクトルの日内高調波に"
+            "S4 を作る動機そのものの定量化。季節性は |r| のスペクトルの日内高調波に"
             "力を足し、GPH の対数ペリオドグラム回帰を歪める。"
-            "★符号は固定されない — **高調波が推定バンドのどこに落ちるかで決まる**。"
+            "符号は固定されない — 高調波が推定バンドのどこに落ちるかで決まる。"
             "回帰の説明変数 -log(4sin²(λ/2)) は低周波ほど大きいので、高調波が"
             "バンドの低周波側に来れば傾きは上がり、高周波側なら下がる。実測でも"
             "n_days=400 (高調波 5 本、低周波寄り) では +0.017、本番 n_days=5000 "
-            "(高調波 2 本、バンドの 41%/82% 位置) では **-0.022** と反転した。"
+            "(高調波 2 本、バンドの 41%/82% 位置) では -0.022 と反転した。"
             "したがって判定は絶対値で行う。本番 10 シードでは -0.0145〜-0.0242 と"
             "符号も大きさも安定 (|中央値| = 0.022 = 3.8 SE)。"
             "S7 の Hawkes 分岐比の過大推定 (Filimonov-Sornette) と同じ機構であり、"
             "そこでは φ_λ の時間変更で対処する (time_change_by_phi_lambda)。"
-            "★日次リターンの GPH (gph_d ゲート) はこの汚染を受けない — φ_σ の"
+            "日次リターンの GPH (gph_d ゲート) はこの汚染を受けない — φ_σ の"
             "二乗正規化により日次分散が厳密に不変だから。汚染は日内でのみ起きる。"
         ),
     ),
@@ -1056,7 +1056,7 @@ _S4_NEW_GATES: tuple[Gate, ...] = (
         threshold="ON の分散シェア ∈ [0.15, 0.27] (目標 0.20)",
         description=(
             "帯が目標の ±35% と広い理由は 2 つ。(1) 尖度 12〜20 のギャップ 5000 本の"
-            "標本分散は標準誤差が大きい。(2) ★この比の**分母**である日中日次分散は"
+            "標本分散は標準誤差が大きい。(2) この比の分母である日中日次分散は"
             "右に歪んだ推定量で、中央値が期待値より下に来るため、比の実測は系統的に"
             "目標より上に出る (6 シードで 0.211〜0.236、平均 0.224 — 6/6 が上振れ)。"
             "分子そのものは設計値どおりで、生成側診断の sample_var / var_on_target が"
@@ -1070,7 +1070,7 @@ _S4_NEW_GATES: tuple[Gate, ...] = (
         threshold="ギャップの尖度 > 日中日次リターンの尖度",
         description=(
             "ON は情報が溜まって一度に出るのでテールが厚い (実測 13.8 vs 6.0)。"
-            "絶対値でなく日中との**大小**で判定するのは、水準がボラ予算に依存する一方"
+            "絶対値でなく日中との大小で判定するのは、水準がボラ予算に依存する一方"
             "大小関係は ON をジャンプ主体に設計したことの直接の帰結だから。"
         ),
     ),
@@ -1080,7 +1080,7 @@ _S4_NEW_GATES: tuple[Gate, ...] = (
         check=_gt(0.20),
         threshold="corr(|gap|, σ_close) > 0.20 (SE ≈ 0.05、実測 0.38)",
         description=(
-            "★『σ_ON = c_ON σ_close だから相関 1』は構成上自明で検定になっていない"
+            "『σ_ON = c_ON σ_close だから相関 1』は構成上自明で検定になっていない"
             "(自動成立するゲートは置かない)。観測できるのは |gap| = |σ_ON z + J| で、"
             "|z| の揺らぎと ON ジャンプで必ず希薄化する。判定は 0 との差 (4 SE) で行う。"
         ),
@@ -1117,7 +1117,7 @@ S4_GATES: tuple[Gate, ...] = _S4_INHERITED_GATES + _S4_NEW_GATES
 def _marginal_unimodal_check(value: Any) -> bool:
     """合成 log σ の周辺分布: |超過尖度| < 1 かつ単峰 (§3.2)。
 
-    ゲート対象は**合成後** — chi_2 単体 (MG の周辺は 4 峰) ではない。分散比 1:4 の
+    ゲート対象は合成後 — chi_2 単体 (MG の周辺は 4 峰) ではない。分散比 1:4 の
     ガウス的成分との合成で滑らかになることを要求している。双峰化すると log RV の
     分布が双峰になり、実証 (log RV はおおむね正規) と乖離する。
     """
@@ -1154,8 +1154,8 @@ def _hash_recorded_check(value: Any) -> bool:
     return isinstance(h, str) and len(h) == 64
 
 
-#: S4 の絶対ゲートのうち S5 で**範囲だけ変わる**もの。
-#: - var_total: chi_2 の 0.050 が加わり 0.200 → 0.250 (予約枠の消化 — 指示書 §5.2)
+#: S4 の絶対ゲートのうち S5 で範囲だけ変わるもの。
+#: - var_total: chi_2 の 0.050 が加わり 0.200 → 0.250 (予約枠の消化 — 設計要件)
 _S5_INHERITED_GATES: tuple[Gate, ...] = tuple(
     g for g in S4_GATES if g.name != "var_total"
 )
@@ -1223,7 +1223,7 @@ _S5_NEW_GATES: tuple[Gate, ...] = (
         check=_between(0.17, 0.23),
         threshold="シード間の corr(log σ_i, log σ_j) ∈ [0.17, 0.23] (φ 除去後、45 対の平均)",
         description=(
-            "★S5 の中核ゲート (§8)。chi は全シード共通なので、シード横断相関 = "
+            "S5 の中核ゲート (§8)。chi は全シード共通なので、シード横断相関 = "
             "Var(chi)/Var(log σ) の直接推定になる — 内部状態に触れない実証。"
             "対の値は遅い成分の偶然相関で ±0.09 ばらつく (実測 [0.02, 0.33]) が、"
             "45 対の平均は SE ~0.02 (5 シード予備測定で 0.188)。"
@@ -1266,8 +1266,8 @@ _S5_NEW_GATES: tuple[Gate, ...] = (
         threshold="sd(log σ_S4)/sd(log σ_S5) ∈ [0.85, 0.95] (10 シード中央値、理論 0.894)",
         description=(
             "chi は r と無相関なのでレバレッジ相関は sqrt(Var_S4/Var_S5) 倍に薄まる"
-            " (§6)。判定は希釈式が**厳密に**成り立つ log σ の経路 SD 比で行う"
-            " (2026-08-21 裁定)。指示書の字義 (相関の比) は |L| ~ 0.02 の水準"
+            " (§6)。判定は希釈式が厳密に成り立つ log σ の経路 SD 比で行う"
+            " (2026-08-21 裁定)。設計要件の字義 (相関の比) は |L| ~ 0.02 の水準"
             " (S3 裁定) では SE が信号の 30〜40% あり判定不能 — 3 計器の実測は"
             " multiseed.dilution_corr_* に記録される。シェア過大は検出できる"
             " (25% → 0.87、30% → 0.82)。"
@@ -1279,8 +1279,8 @@ _S5_NEW_GATES: tuple[Gate, ...] = (
         check=_lt(4.0),
         threshold="|corr(r_daily, chi_daily)| < 4 SE (帰無対照)",
         description=(
-            "★§15 の第一禁止事項の検証: chi を価格・リターンの**方向**に入れると"
-            "予測可能性 = 裁定機会になり ②⑦⑮ が同時に壊れる。chi は σ にのみ"
+            "§15 の第一禁止事項の検証: chi を価格・リターンの方向に入れると"
+            "予測可能性 = 裁定機会になり (2)(7)(15) が同時に壊れる。chi は σ にのみ"
             "入るので方向とは無相関のはず。有意なら実装が方向へ漏らしている。"
         ),
     ),
@@ -1302,7 +1302,7 @@ def _book_bool(key: str) -> Callable[[Any], bool]:
 def _sign_acf_zero_check(value: Any) -> bool:
     """符号 ACF が全ラグ (1..200) で Bonferroni 閾値 3.7/√N 以内。
 
-    指示書の字義「2/√N」は 200 ラグの最大値に対しては iid でもほぼ確実に破れる
+    設計要件の字義2/√Nは 200 ラグの最大値に対しては iid でもほぼ確実に破れる
     (P ≈ 1 − 0.9545^200)。S0 の ±2σ ゲート・S3 の z_no_autocorr と同型の問題で、
     同じ解決 (Bonferroni 200 本・両側 5% → 3.66 ≈ 3.7) を適用する。
     """
@@ -1347,10 +1347,10 @@ def _corr_zero_check(value: Any) -> bool:
     return z is not None and float(z) < 4.0
 
 
-#: ★S6 で **L2 の観測性質のゲートを全て落とす** (指示書 §11)。κ=0 なので観測価格は
-#: ZI 板のミッドであり、①③④⑧⑯⑱ は存在しない — **それが正しい状態**。落とした
-#: 量は「純マイクロ構造ベースライン」として記録され、S10 の結合で L2 の水準まで
-#: 戻るかの比較対象になる。**潜在側 (L2 内部) のゲートは全て残す** — L2 は凍結
+#: S6 で L2 の観測性質のゲートを全て落とす 。κ=0 なので観測価格は
+#: ZI 板のミッドであり、(1)(3)(4)(8)(16)(18) は存在しない — それが正しい状態。落とした
+#: 量は純マイクロ構造ベースラインとして記録され、S10 の結合で L2 の水準まで
+#: 戻るかの比較対象になる。潜在側 (L2 内部) のゲートは全て残す — L2 は凍結
 #: されており、板の追加で 1 bit も動いてはならない (それ自体が回帰検定)。
 _S6_DROPPED_OBSERVATION_GATES = {
     # S0/S1 の観測ゲート
@@ -1358,7 +1358,7 @@ _S6_DROPPED_OBSERVATION_GATES = {
     "kurtosis_daily", "kurtosis_decreasing", "zeta_q_nonlinear",
     "absr_acf_powerlaw", "absr_acf_lag1", "gph_d_observed", "gph_d",
     # 分単位 VR: ZI 板は 1/δ (94 分) 以下で subdiffusive (実測 VR(64min)=0.19、
-    # Smith et al. の既知の物理)。「長スケールで拡散的」は日次 VR ゲートが判定。
+    # Smith et al. の既知の物理)。長スケールで拡散的は日次 VR ゲートが判定。
     "variance_ratio",
     # S3 の観測・多シード観測ゲート
     "hill_alpha", "hill_increasing", "skewness_daily", "jv_share",
@@ -1369,11 +1369,11 @@ _S6_DROPPED_OBSERVATION_GATES = {
     "phi_estimation_accuracy", "deseason_flatness_est", "seasonality_bias_gph",
     "gph_d_intraday_deseason", "overnight_share", "overnight_kurtosis",
     "overnight_vol_link", "overnight_no_lookahead",
-    # ★視野の違いによる降格 (観測ではなく規模の問題): S6 の検証規模は 500 日
-    # (指示書 §4 — 板統計は速く収束する)。5000 日で較正された帯はそのままでは
+    # 視野の違いによる降格 (観測ではなく規模の問題): S6 の検証規模は 500 日
+    # (設計要件 — 板統計は速く収束する)。5000 日で較正された帯はそのままでは
     # 使えない: cross_seed_corr は確率成分の経路分散が未発達で系統的に上振れし
     # (500 日実測 ~0.25-0.34)、logvol_marginal は chi が 8 周期しか入らず周辺が
-    # 小刻みになる。どちらも **L2 は凍結済みで S5 の 5000 日本番が判定済み** —
+    # 小刻みになる。どちらも L2 は凍結済みで S5 の 5000 日本番が判定済み —
     # S6 での保証は inv_l2_frozen (ビット単位直接照合) が担う。
     "cross_seed_corr", "logvol_marginal",
 }
@@ -1404,7 +1404,7 @@ _S6_NEW_GATES: tuple[Gate, ...] = (
         check=_book_bool("volume_conservation"),
         threshold="攻撃側の約定量合計 = 受動側の約定量合計 (別経路で集計)",
         description=(
-            "数量保存。★「攻撃側の買い量 = 売り量」と読むのは誤り (どちらが攻撃"
+            "数量保存。攻撃側の買い量 = 売り量と読むのは誤り (どちらが攻撃"
             "するかは確率的) — 初版で実際に間違え、正しい形に直した。"
         ),
     ),
@@ -1425,7 +1425,7 @@ _S6_NEW_GATES: tuple[Gate, ...] = (
         name="throughput",
         metric_path="book.throughput.events_per_sec",
         check=_gt(50_000.0),
-        threshold=">= 50,000 events/sec (JIT ウォーム後、指示書 §4)",
+        threshold=">= 50,000 events/sec (JIT ウォーム後、設計要件)",
         description=(
             "S10 (5000 日 × 10 シード ≈ 5,000 万イベント/シード) の性能予算。"
             "実測 ~10M ev/s (numba)。ウォームアップ無しの初回はコンパイル込みで"
@@ -1437,7 +1437,7 @@ _S6_NEW_GATES: tuple[Gate, ...] = (
         name="book_liveness",
         metric_path="book.liveness.empty_side_time_fraction",
         check=_lt(0.001),
-        threshold="片側枯渇の時間比率 < 0.1% (指示書 §8.2)",
+        threshold="片側枯渇の時間比率 < 0.1% ",
         description="頻発するなら α_LO/δ 比の不足 (デプス不足)。実測 0。",
     ),
     Gate(
@@ -1473,7 +1473,7 @@ _S6_NEW_GATES: tuple[Gate, ...] = (
         check=_lt(4.0),
         threshold="各ロット点の観測質量が仕様の期待値 ±4σ (二項 z)",
         description=(
-            "指示書の字義は KS だが、離散原子 (ロット) があると KS の帰無分布が"
+            "設計要件の字義は KS だが、離散原子 (ロット) があると KS の帰無分布が"
             "成り立たない。各原子の二項 z + 裾の Hill α で置き換えた (README 記録)。"
         ),
     ),
@@ -1501,7 +1501,7 @@ _S6_NEW_GATES: tuple[Gate, ...] = (
         check=_sign_acf_zero_check,
         threshold="攻撃注文符号の ACF が全ラグ (1..200) で 3.7/√N 以内 (S8 の比較基準)",
         description=(
-            "ZI は iid 符号。★約定**行**のまま測ると複数レベルを掃いた成行が同符号の"
+            "ZI は iid 符号。約定行のまま測ると複数レベルを掃いた成行が同符号の"
             "行を連続させ +0.38 の偽相関が出る (実測) — 攻撃注文単位に集約して測る。"
             "S8 のメタオーダー分割がここをべき則減衰に変える。"
         ),
@@ -1512,7 +1512,7 @@ _S6_NEW_GATES: tuple[Gate, ...] = (
         check=_corr_zero_check,
         threshold="|corr(Δmid, Δp*)| < 4 SE (κ=0 の確認、S10 の比較基準)",
         description=(
-            "★リターンで測る。水準同士 (mid と p*) の標本相関は独立ランダムウォーク"
+            "リターンで測る。水準同士 (mid と p*) の標本相関は独立ランダムウォーク"
             "でも 0 に集中しない (arcsine 分布) — S5 の教訓と同じ。p* は κ=0 でも"
             "毎イベント参照して記録している (§10 の配線)。"
         ),
@@ -1521,12 +1521,12 @@ _S6_NEW_GATES: tuple[Gate, ...] = (
         name="mid_vr",
         metric_path="book.mid_vr_daily.max_abs_z",
         check=_lt(3.5),
-        threshold="ミッドの**日次** VR が全 q (2..64 日) で |z| < 3.5 (Lo-MacKinlay 漸近分散)",
+        threshold="ミッドの日次 VR が全 q (2..64 日) で |z| < 3.5 (Lo-MacKinlay 漸近分散)",
         description=(
-            "「長スケールで拡散的」の判定。分単位 (q<=64 分) は注文の平均寿命 1/δ"
+            "長スケールで拡散的の判定。分単位 (q<=64 分) は注文の平均寿命 1/δ"
             " (94 分) より下で ZI 板が subdiffusive になる既知の物理 (実測 VR(64min)"
             "=0.19) — そちらは記録で、クロスオーバーの上の日次で判定する。"
-            "★指示書の帯 0.9〜1.1 は日次 495 点では検定にならない (VR(64日) の SE が"
+            "設計要件の帯 0.9〜1.1 は日次 495 点では検定にならない (VR(64日) の SE が"
             " ±0.64) — 標本誤差を織り込んだ z 判定に置き換えた (中間スケールの残存"
             "回帰 VR(8日)=0.44 級なら z≈-4.3 で検出できる)。"
         ),
@@ -1537,7 +1537,7 @@ _S6_NEW_GATES: tuple[Gate, ...] = (
         check=_is_true,
         threshold="L2 の全ダイジェスト (拡散/MSM/ラフ/chi/log σ) が板 off 基準ランとビット単位一致",
         description=(
-            "★L2 凍結の直接検証。同一シード・同一視野で板だけを外したランと比べる"
+            "L2 凍結の直接検証。同一シード・同一視野で板だけを外したランと比べる"
             " — 板は l3.* ストリームしか消費しないので、1 bit の差も凍結違反。"
             "5000 日基準との証人照合は視野が違うため置き換えた (500 日 vs 5000 日)。"
         ),
@@ -1587,7 +1587,7 @@ def _block_sd_check(value: Any) -> bool:
     return sd is not None and float(sd) < 0.02
 
 
-#: S7 で落とす S6 ゲート: 「到着は Poisson」— S7 の本体がこれを**意図して**壊す。
+#: S7 で落とす S6 ゲート: 到着は Poisson— S7 の本体がこれを意図して壊す。
 #: 置き換え先は hawkes_interevent_clustered / hawkes_overdispersion (反転側の検定)。
 _S7_DROPPED_GATES = {"interevent_exponential"}
 
@@ -1596,7 +1596,7 @@ _S7_INHERITED_GATES: tuple[Gate, ...] = tuple(
 )
 
 _S7_NEW_GATES: tuple[Gate, ...] = (
-    # --- 分岐比の 3 経路再推定 (指示書の中心ゲート) ---
+    # --- 分岐比の 3 経路再推定 (設計要件の中心ゲート) ---
     Gate(
         name="hawkes_n_true_phi",
         metric_path="hawkes.three_way",
@@ -1628,7 +1628,7 @@ _S7_NEW_GATES: tuple[Gate, ...] = (
         ),
         threshold="脱季節化なしの n̂ が真値経路より +0.03 以上大きい",
         description=(
-            "★Filimonov–Sornette の罠の実証ゲート (落ちたら困る側が逆): 日内 U 字を"
+            "Filimonov–Sornette の罠の実証ゲート (落ちたら困る側が逆): 日内 U 字を"
             "除去しないと活発時間帯への集中を自己励起と誤認して n̂ が過大になる。"
             "500 日実測 +0.066 (0.830 → 0.897)。これが S4 の脱季節化機構の存在理由。"
         ),
@@ -1656,7 +1656,7 @@ _S7_NEW_GATES: tuple[Gate, ...] = (
         name="hawkes_overdispersion",
         metric_path="hawkes.overdispersion.fano_60s",
         check=_gt(1.3),
-        threshold="1 分窓の Fano > 1.3 (指示書 §9)",
+        threshold="1 分窓の Fano > 1.3 ",
         description=(
             "自己励起の直接証拠。500 日実測 14.4 (Poisson なら 1)。長窓は"
             " (1-n)^-2 = 34.6 に加えて φ の日内変動が乗る (1800s 窓で 191)。"
@@ -1688,9 +1688,9 @@ _S7_NEW_GATES: tuple[Gate, ...] = (
             and v.get("lag1") is not None and float(v["lag1"]) > 0.0
             and v.get("z_lag1") is not None and float(v["z_lag1"]) > 4.0
         ),
-        threshold="分単位出来高の ACF(1) が正で z > 4 (指示書 §9: 分スケールの正相関)",
+        threshold="分単位出来高の ACF(1) が正で z > 4 (設計要件: 分スケールの正相関)",
         description=(
-            "活動度クラスタリング → 出来高クラスタリング (⑦ の前駆)。"
+            "活動度クラスタリング → 出来高クラスタリング ((7) の前駆)。"
             "実測 lag1=+0.34 (z=151)、lag30 でも +0.1 台。S6 では ≈0。"
         ),
     ),
@@ -1721,7 +1721,7 @@ S7_GATES: tuple[Gate, ...] = _S7_INHERITED_GATES + _S7_NEW_GATES
 
 
 # ---------------------------------------------------------------------------
-# S8: メタオーダー分割 (⑪ 符号長期記憶) — 「壊れることを測る」段階
+# S8: メタオーダー分割 ((11) 符号長期記憶) — 壊れることを測る段階
 # ---------------------------------------------------------------------------
 def _meta_within(key: str, tol: float) -> Callable[[Any], bool]:
     def check(value: Any) -> bool:
@@ -1737,7 +1737,7 @@ def _iceberg_ablation_check(value: Any) -> bool:
     """アイスバーグ on/off で符号相関が動かないこと (§6.3)。
 
     主計器 = C(1) の中央値差 ≤ 0.02 (シード間 SD ~0.002 — 20 倍の検出力)。
-    副計器 = γ の中央値差 ≤ 0.10。★指示書の字義は γ ±0.05 だが、γ̂ 中央値の
+    副計器 = γ の中央値差 ≤ 0.10。設計要件の字義は γ ±0.05 だが、γ̂ 中央値の
     差は whale 支配のノイズだけで SD ~0.035 あり (実測: 攻撃符号は板より上流の
     プールで決まるため構造的にゼロ効果、それでも 8 シードで差 0.046)、±0.05 は
     偽陽性 4 割のコイン投げになる — S0 の ±2σ・S6 の 2/√N と同型の較正
@@ -1758,10 +1758,10 @@ def _iceberg_ablation_check(value: Any) -> bool:
 
 
 #: S8 で落とす S7 ゲート:
-#: - sign_acf_zero: ⑪ を**発生させる**のが S8 の本体 (ゼロでないのが正解)
+#: - sign_acf_zero: (11) を発生させるのが S8 の本体 (ゼロでないのが正解)
 #: - mid_vr: 超拡散が予測される (vr_superdiffusive が反転側で判定)
 #: - book_liveness: 同方向の連続約定で片減りする (帯を 0.1% → 0.5% に緩めた
-#:   置き換え gate を新設 — 指示書 §10 soft 表)
+#: 置き換え gate を新設 — 設計要件 soft 表)
 _S8_DROPPED_GATES = {"sign_acf_zero", "mid_vr", "book_liveness"}
 
 _S8_INHERITED_GATES: tuple[Gate, ...] = tuple(
@@ -1784,7 +1784,7 @@ _S8_NEW_GATES: tuple[Gate, ...] = (
         name="alpha_meta_valid",
         metric_path="meta.length_fit.alpha_spec",
         check=lambda v: v is not None and 1.0 < float(v) < 2.0,
-        threshold="1 < α_meta < 2 (指示書 §4.3)",
+        threshold="1 < α_meta < 2 ",
         description=(
             "本来の防壁は config 検証 (区間外は構築時に ValueError)。ここは"
             "実行に使われた値の記録的確認。α≤1 は E[N] 発散、α≥2 は長期記憶消失。"
@@ -1803,7 +1803,7 @@ _S8_NEW_GATES: tuple[Gate, ...] = (
         check=lambda v: v is not None and abs(float(v) - 0.6) <= 0.05,
         threshold="符号 ACF の減衰指数 γ (10 シード中央値) が α_meta − 1 = 0.6 ± 0.05",
         description=(
-            "⑪ の中心ゲート (指示書 §4.2)。★単一シードの γ̂ は whale (α<2 の裾) "
+            "(11) の中心ゲート 。単一シードの γ̂ は whale (α<2 の裾) "
             "支配で遅収束 (30 日で 0.30〜0.96 散布) — 250 日 × 多シード中央値で判定"
             " (事前測定 0.626、範囲 [0.52, 0.66])。帯は config の α=1.6 に結合。"
         ),
@@ -1841,7 +1841,7 @@ _S8_NEW_GATES: tuple[Gate, ...] = (
         check=_between(0.95, 1.05),
         threshold="実現子比率 / ψ ∈ [0.95, 1.05]",
         description=(
-            "★指示書 §3.2 の式 (λ_meta·E[N]·ψ = λ_MO) は文字どおりだと供給/需要 "
+            "式 (λ_meta·E[N]·ψ = λ_MO) は文字どおりだと供給/需要 "
             "= 1/ψ² > 1 でプールが線形発散し、pool_stationary と両立しない。"
             "整合形 λ_meta·E[N] = ψ·λ_MO を採り、判定は実現子比率の恒等で行う"
             " (README に経緯)。実測 0.9997。"
@@ -1854,7 +1854,7 @@ _S8_NEW_GATES: tuple[Gate, ...] = (
         threshold="iceberg on/off で C(1) 中央値差 ≤ 0.02 かつ γ 中央値差 ≤ 0.10 (§6.3)",
         description=(
             "アイスバーグを符号相関の主要因にしない (二重計上防止 §6.2)。同一"
-            "シード集合で off 側を並走。★この設計では攻撃符号は板より上流"
+            "シード集合で off 側を並走。この設計では攻撃符号は板より上流"
             " (プール + ψ) で決まり、受動側のアイスバーグは ε 系列に構造的に"
             "触れない — ゲートはその確認。主計器は C(1) (SD ~0.002)、γ̂ の"
             "中央値差はノイズ SD ~0.035 のため帯を ±0.10 に較正 (実測 0.046)。"
@@ -1867,7 +1867,7 @@ _S8_NEW_GATES: tuple[Gate, ...] = (
         check=_gt(1.3),
         threshold="約定時間 VR(1000 trades) > 1.3 (中央値) — 超拡散が出ること",
         description=(
-            "★「壊れていることを確認する」ゲート (§8.1)。Σ C(ℓ) 発散 (γ<1) で"
+            "壊れていることを確認するゲート (§8.1)。Σ C(ℓ) 発散 (γ<1) で"
             "価格分散が n^{2−γ} 成長。VR ≈ 1 なら符号相関が効いていない (異常)。"
             "計器は約定時間 — 日次 (壁時計) VR は whale の出方でシード間 "
             "{0.97, 1.9, 14.7} と乱れる (記録には残す)。"
@@ -1880,7 +1880,7 @@ _S8_NEW_GATES: tuple[Gate, ...] = (
         threshold="β̂ − (1−γ̂)/2 < −0.10 (中央値) — 減衰の赤字が存在すること",
         description=(
             "板の補充が方向に無関心なため G(ℓ) はほぼ減衰しない (実測 β̂ ≈ −0.08、"
-            "G は微増すらする)。⑮ β=(1−γ)/2 の成立は S10 の到達目標。"
+            "G は微増すらする)。(15) β=(1−γ)/2 の成立は S10 の到達目標。"
         ),
     ),
     Gate(
@@ -1889,8 +1889,8 @@ _S8_NEW_GATES: tuple[Gate, ...] = (
         check=_gt(0.75),
         threshold="サイズ応答の傾き > 0.75 (N ビン別の符号つき平均、中央値) — ほぼ線形",
         description=(
-            "1 約定あたり一定インパクトの単純加算 (実測 0.89)。⑯ 平方根則は"
-            " S10 の到達目標。★frozen の sqrt_law_check (impact>0 選別) は"
+            "1 約定あたり一定インパクトの単純加算 (実測 0.89)。(16) 平方根則は"
+            " S10 の到達目標。frozen の sqrt_law_check (impact>0 選別) は"
             "この高ノイズ域で傾きが 0.37 に潰れる — ビン平均で測る (README)。"
         ),
     ),
@@ -1906,7 +1906,7 @@ _S8_NEW_GATES: tuple[Gate, ...] = (
         name="book_liveness_s8",
         metric_path="book.liveness.empty_side_time_fraction",
         check=_lt(0.005),
-        threshold="片側枯渇の時間比率 < 0.5% (S7 の 0.1% から緩和 — 指示書 §10 soft 表)",
+        threshold="片側枯渇の時間比率 < 0.5% (S7 の 0.1% から緩和 — 設計要件 soft 表)",
         description="同方向の連続約定で板が片減りする分の許容。実測 ~7e-5。",
     ),
     Gate(
@@ -1927,7 +1927,7 @@ _S8_NEW_GATES: tuple[Gate, ...] = (
         metric_path="meta.propagator_stability.spread",
         check=_lt(0.10),
         critical=False,
-        threshold="β̂ のサブサンプル 3 分割の振れ < 0.10 (指示書 §12)",
+        threshold="β̂ のサブサンプル 3 分割の振れ < 0.10 ",
         description=(
             "propagator 数値解の安定性 (soft)。実測 spread 0.017 (120 日)〜"
             "0.049 (250 日 — 各 1/3 は 3.7 万約定で β̂ 自体が散らばる)。"
@@ -1939,7 +1939,7 @@ S8_GATES: tuple[Gate, ...] = _S8_INHERITED_GATES + _S8_NEW_GATES
 
 
 # ---------------------------------------------------------------------------
-# S9: queue-reactive — 状態依存の意思決定層。赤字は「片側だけ」縮む
+# S9: queue-reactive — 状態依存の意思決定層。赤字は片側だけ縮む
 # ---------------------------------------------------------------------------
 def _uz_off_check(value: Any) -> bool:
     """UZ 層を使わずに η が範囲内 (§8.2 — fallback の常用禁止)。"""
@@ -1957,7 +1957,7 @@ def _reversion_check(value: Any) -> bool:
     return value.get("monotone_nondecreasing") is False
 
 
-#: S9 の soft 予測 (指示書 §11): スプレッドは板内流入で**縮小方向**。
+#: S9 の soft 予測 : スプレッドは板内流入で縮小方向。
 #: S8 の帯 [2,5] を [1,5] に下方拡張して soft のまま維持する。
 _S9_INHERITED_GATES: tuple[Gate, ...] = tuple(
     (
@@ -1981,7 +1981,7 @@ _S9_NEW_GATES: tuple[Gate, ...] = (
         check=_between(0.05, 0.35),
         threshold="実効 η ∈ [0.05, 0.35] (取引価格系列、10 シード中央値)",
         description=(
-            "Robert–Rosenbaum の η (継続/交替比)。★経験値 0.1〜0.3 は取引価格の"
+            "Robert–Rosenbaum の η (継続/交替比)。経験値 0.1〜0.3 は取引価格の"
             "値なので判定もそちら (実測 0.137)。ミッド版 (~0.43) は別枝記録 — "
             "系列を混ぜない。UZ 層は不使用 (uz_layer_off が保証)。"
         ),
@@ -1992,7 +1992,7 @@ _S9_NEW_GATES: tuple[Gate, ...] = (
         check=_lt(-0.02),
         threshold="ミッド変化方向の 1 次相関 < −0.02 (イベント時間、中央値)",
         description=(
-            "② 短期の負の自己相関。★イベント時間で判定 (実測 −0.13) — 1 分バーの"
+            "(2) 短期の負の自己相関。イベント時間で判定 (実測 −0.13) — 1 分バーの"
             " ACF(1) は whale トレンドの出方でシード間 ±0.13 揺れ符号すら不安定"
             " (S8 の VR と同じ計器選択。1 分版は記録)。"
         ),
@@ -2003,8 +2003,8 @@ _S9_NEW_GATES: tuple[Gate, ...] = (
         check=_gt(1.0),
         threshold="約定価格の signature が減少形 (短/長 > 1)",
         description=(
-            "bounce による短スケール RV の上振れ (S6 実測 14)。★ミッド側の減少形は"
-            " S9 では**構造的に出ない**: 300〜900s 側が残存超拡散 (§9.2 が埋め残しを"
+            "bounce による短スケール RV の上振れ (S6 実測 14)。ミッド側の減少形は"
+            " S9 では構造的に出ない: 300〜900s 側が残存超拡散 (§9.2 が埋め残しを"
             "命じる赤字) で膨らみ、比が 0.4〜0.6 になる — S10 の到達目標として"
             " qr.signature_mid に記録 (README)。"
         ),
@@ -2015,7 +2015,7 @@ _S9_NEW_GATES: tuple[Gate, ...] = (
         check=_gt(0.10),
         threshold="corr(I_t, Δm_{t+1}) > 0.10 (中央値)",
         description=(
-            "⑩。★符号バイアスなしの機構的創発のみで達成 (qr_obi_bias=0、"
+            "(10)。符号バイアスなしの機構的創発のみで達成 (qr_obi_bias=0、"
             "実測 0.111 — 薄い側が同じ成行で消尽されやすい機構)。バイアス経路は"
             "実装済み・未使用なのでアブレーションは非該当 (§7.2)。"
         ),
@@ -2026,7 +2026,7 @@ _S9_NEW_GATES: tuple[Gate, ...] = (
         check=_between(2.0, 10.0),
         threshold="デプスのハンプが best から 2〜10 tick (中央値。S6 soft → critical 昇格)",
         description=(
-            "⑳。実測 4。small tick では前方消耗 + 板内配置だけで立つ (取消傾斜は"
+            "(20)。実測 4。small tick では前方消耗 + 板内配置だけで立つ (取消傾斜は"
             "不要 — むしろ有害。config の注記)。"
         ),
     ),
@@ -2036,7 +2036,7 @@ _S9_NEW_GATES: tuple[Gate, ...] = (
         check=_reversion_check,
         threshold="ノイズ約定後のミッド戻り曲線が単調非減少でない (戻りが観測される)",
         description=(
-            "★無条件の R(h) は符号長期記憶で増加するため、ノイズトレード"
+            "無条件の R(h) は符号長期記憶で増加するため、ノイズトレード"
             " (符号 iid — 将来フローと独立) に条件付けて板の復元力だけを見る。"
             "実測: h=1 の 0.29 tick から h=50 で 0.21 へ (戻り率 ~0.3)。"
         ),
@@ -2065,7 +2065,7 @@ _S9_NEW_GATES: tuple[Gate, ...] = (
         check=_gt(-0.2317),
         threshold="propagator β̂ 中央値 > S8 実測 −0.2517 + 0.02",
         description=(
-            "★指示書の +0.05 から +0.02 に再較正: 相対配置の板は変位のアンカーを"
+            "設計要件の +0.05 から +0.02 に再較正: 相対配置の板は変位のアンカーを"
             "持たず (置き場所は常に現在の best 基準)、累積変位を戻せない — §5 を"
             "飽和させても効果は +0.04〜0.05 が構造上限で、中央値ノイズ ±0.02 では"
             " +0.05 がコイン投げになる (250 日 × 6-8 シードで実測)。アンカーは"
@@ -2079,10 +2079,10 @@ _S9_NEW_GATES: tuple[Gate, ...] = (
         critical=False,
         threshold="サイズ応答の傾きが S8 実測 0.907 ± 0.08 (記録 — S9 では動かない)",
         description=(
-            "★指示書 §9.1 は低下 (0.7〜0.85) を予測したが、実測は全レバーで"
+            "設計要件 は低下 (0.7〜0.85) を予測したが、実測は全レバーで"
             " 0.92〜0.98 — スプレッド緩和の時定数 (数十約定) は whale の実行スパン"
-            " (数千約定) より遥かに短く、大口も小口も同じ率で「バネを外す」ため"
-            "相対的な凹性が生じない。⑯ への道は S10 の κ (README に経緯)。"
+            " (数千約定) より遥かに短く、大口も小口も同じ率でバネを外すため"
+            "相対的な凹性が生じない。(16) への道は S10 の κ (README に経緯)。"
         ),
     ),
     # --- 不変 (S8 から) ---
@@ -2090,7 +2090,7 @@ _S9_NEW_GATES: tuple[Gate, ...] = (
         name="qr_c1_invariant",
         metric_path="multiseed.meta_c1.median",
         check=_between(0.1022, 0.1622),
-        threshold="C(1) が S8 実測 0.1322 ± 0.03 (指示書 §11 の不変表)",
+        threshold="C(1) が S8 実測 0.1322 ± 0.03 (不変表)",
         description="queue-reactive は符号に触れない (実測 0.1321 — 差 0.0001)。",
     ),
 )
@@ -2099,7 +2099,7 @@ S9_GATES: tuple[Gate, ...] = _S9_INHERITED_GATES + _S9_NEW_GATES
 
 
 # ---------------------------------------------------------------------------
-# S10: κ 結合 — L2 の性質が観測に**現れる**ことを初めて要求する段階
+# S10: κ 結合 — L2 の性質が観測に現れることを初めて要求する段階
 # ---------------------------------------------------------------------------
 def _gap_halflife_check(value: Any) -> bool:
     return value is not None and 0.0 < float(value) < 600.0
@@ -2119,21 +2119,21 @@ def _corr_positive_check(value: Any) -> bool:
 
 
 #: S9 からの継承にあたっての再スコープ (経緯は各 description):
-#:  - qr_c1_invariant: raw C(1) には κ 追跡の情報チャネル (こぶ) が重畳する —
-#:    符号構造の不変判定は**残差 C(1)** (S10a の解剖) に移す。帯は S8 のまま。
-#:  - gamma_relation / sign_acf_powerlaw (raw 符号 ACF の γ・R²) も同じ理由で
-#:    落とす — ⑪ の判定は cpl_gamma_resid_preserved (残差計器) が引き継ぐ。
-#:    raw γ̂ は multiseed.meta_gamma に記録が残る (こぶ込みの値として)。
-#:  - vr_improved / beta_improved (S8 比の方向ゲート) は S10 の**絶対整合ゲート**
-#:    (下の impact_*) が上位互換なので落とす。
-#:  - sqrt_law_unchanged (S9 soft) と sqrt_law_linear (S8 の「ほぼ線形」>0.75) は
-#:    S10 の sqrt_law_target [0.4, 0.7] と**両立し得ない** (S10 は凹化を要求する
-#:    側) ので落とす。
-#:  - hawkes_fano_invariant: c_vol は分カウントに Var(Z) ぶんの過分散を**設計と
-#:    して**加える (⑦ の物理そのもの)。導出: ΔFano ≈ 分あたりレート×Var(Z)
-#:    ≈ 21.6×0.4 ≈ +8.6 → 期待 ~23、実測 21.5 (整合)。critical を外し
-#:    サニティレール [12, 40] の記録に降格。
-#:  - multiseed_coverage: 1000 日は窓逸脱率 ~17% (S10d 実測) — 床 20 / 30。
+#: - qr_c1_invariant: raw C(1) には κ 追跡の情報チャネル (こぶ) が重畳する —
+#: 符号構造の不変判定は残差 C(1) (S10a の解剖) に移す。帯は S8 のまま。
+#: - gamma_relation / sign_acf_powerlaw (raw 符号 ACF の γ・R²) も同じ理由で
+#: 落とす — (11) の判定は cpl_gamma_resid_preserved (残差計器) が引き継ぐ。
+#: raw γ̂ は multiseed.meta_gamma に記録が残る (こぶ込みの値として)。
+#: - vr_improved / beta_improved (S8 比の方向ゲート) は S10 の絶対整合ゲート
+#: (下の impact_*) が上位互換なので落とす。
+#: - sqrt_law_unchanged (S9 soft) と sqrt_law_linear (S8 のほぼ線形>0.75) は
+#: S10 の sqrt_law_target [0.4, 0.7] と両立し得ない (S10 は凹化を要求する
+#: 側) ので落とす。
+#: - hawkes_fano_invariant: c_vol は分カウントに Var(Z) ぶんの過分散を**設計と
+#: して**加える ((7) の物理そのもの)。導出: ΔFano ≈ 分あたりレート×Var(Z)
+#: ≈ 21.6×0.4 ≈ +8.6 → 期待 ~23、実測 21.5 (整合)。critical を外し
+#: サニティレール [12, 40] の記録に降格。
+#: - multiseed_coverage: 1000 日は窓逸脱率 ~17% (S10d 実測) — 床 20 / 30。
 _S10_DROPPED = {
     "vr_improved", "beta_improved", "sqrt_law_unchanged",
     "gamma_relation", "sign_acf_powerlaw", "sqrt_law_linear",
@@ -2166,7 +2166,7 @@ _S10_INHERITED_GATES: tuple[Gate, ...] = tuple(
             threshold="Fano(1min) ∈ [12, 40] (記録 — c_vol の設計上の増分込み)",
             description=(
                 "c_vol は分カウントに Var(Z) ぶんの過分散を設計として加える"
-                " (⑦ の物理)。導出 ΔFano ≈ 分レート×Var(Z) ≈ +8.6 → 期待 ~23、"
+                " ((7) の物理)。導出 ΔFano ≈ 分レート×Var(Z) ≈ +8.6 → 期待 ~23、"
                 "実測中央値 21.5 で整合。S7 帯 (14.36±15%) との比較は無意味になった"
                 "ため記録に降格。"
             ),
@@ -2175,7 +2175,7 @@ _S10_INHERITED_GATES: tuple[Gate, ...] = tuple(
         else Gate(
             name=g.name, metric_path=g.metric_path,
             check=_corr_positive_check,
-            threshold="corr(Δmid, Δp*) > 0 かつ z > 2 (S6〜S9 の切断確認を**反転**)",
+            threshold="corr(Δmid, Δp*) > 0 かつ z > 2 (S6〜S9 の切断確認を反転)",
             description=(
                 "S6〜S9 は κ=0 の切断 (≈0) を主張するゲートだった — S10 では結合が"
                 "機能する証拠として符号を要求する側に反転する。イベント粒度の相関は"
@@ -2206,7 +2206,7 @@ _S10_NEW_GATES: tuple[Gate, ...] = (
         name="cpl_tracking_daily",
         metric_path="multiseed.cpl_corr_daily_level.median",
         check=_gt(0.90),
-        threshold="corr(log p_obs, log p*) 日次レベル > 0.90 (中央値、指示書 §9)",
+        threshold="corr(log p_obs, log p*) 日次レベル > 0.90 (中央値、設計要件)",
         description="日次以上の地平で観測価格は情報価格を再現する (S10a 実測 ~0.999)。",
     ),
     Gate(
@@ -2227,9 +2227,9 @@ _S10_NEW_GATES: tuple[Gate, ...] = (
         check=_between(0.534, 0.95),
         threshold="残差符号 γ (テール窓 30〜1000) ∈ [S8 実測 0.614 − 0.08, 0.95] (中央値)",
         description=(
-            "⑪ の保存 (指示書 §9 の最重要 L3 項)。raw γ̂ は情報チャネルのこぶで"
+            "(11) の保存 (最重要 L3 項)。raw γ̂ は情報チャネルのこぶで"
             "潰れて見える (S10a: raw 0.33 / 残差 0.611)。さらに κ ハーディングの"
-            "残滓が短ラグに乗るため、判定は**テール窓 (30,1000)** — 1000 日実測で"
+            "残滓が短ラグに乗るため、判定はテール窓 (30,1000) — 1000 日実測で"
             " (2,1000) 0.50 → (30,1000) 0.61 = S8 値を回復 (run length の裾指数は"
             "テールの傾きが担う)。全窓版は cpl_gamma_resid に記録。"
         ),
@@ -2238,7 +2238,7 @@ _S10_NEW_GATES: tuple[Gate, ...] = (
         name="cpl_vol_volume",
         metric_path="multiseed.cpl_rv_volume_log.median",
         check=_between(0.50, 0.70),
-        threshold="corr(log 日次RV, log 日次出来高) ∈ [0.5, 0.7] (⑦、中央値)",
+        threshold="corr(log 日次RV, log 日次出来高) ∈ [0.5, 0.7] ((7)、中央値)",
         description=(
             "c_vol=0.65 の較正点 (S10c 実測 0.596 = 帯中央)。log-log が主計器"
             " (レベル相関は鯨日支配 — S10c DECISION)。"
@@ -2248,7 +2248,7 @@ _S10_NEW_GATES: tuple[Gate, ...] = (
         name="cpl_vol_spread",
         metric_path="multiseed.cpl_rv_spread.median",
         check=_gt(0.30),
-        threshold="corr(log 日次RV, 日次平均スプレッド) > 0.3 (指示書 §7.3)",
+        threshold="corr(log 日次RV, 日次平均スプレッド) > 0.3 ",
         description="高ボラ日はスプレッドが広い (κ 追跡の枯渇由来、S10c 実測 0.44〜0.67)。",
     ),
     # --- L2 性質の観測への出現 (critical — この段階の存在理由) ---
@@ -2256,10 +2256,10 @@ _S10_NEW_GATES: tuple[Gate, ...] = (
         name="obs_gph_d_matches_latent",
         metric_path="multiseed.gph_d_obs_minus_latent.median",
         check=lambda v: v is not None and abs(float(v)) <= 0.05,
-        threshold="③ 日次 |r| の gph_d: 観測 − 潜在 (同一シード対) ∈ ±0.05 (中央値)",
+        threshold="(3) 日次 |r| の gph_d: 観測 − 潜在 (同一シード対) ∈ ±0.05 (中央値)",
         description=(
-            "最重要ゲート (指示書 §9)。★S5 基準値 (5000 日) との横並びは有限標本"
-            "バイアスが異なるため**同一ラン・同一視野の per-seed 差**で判定し、"
+            "最重要ゲート 。S5 基準値 (5000 日) との横並びは有限標本"
+            "バイアスが異なるため同一ラン・同一視野の per-seed 差で判定し、"
             "S5 値 (0.266) は参照記録 (results/S10d/DECISION.md §4)。"
         ),
     ),
@@ -2267,7 +2267,7 @@ _S10_NEW_GATES: tuple[Gate, ...] = (
         name="obs_hill_alpha",
         metric_path="multiseed.hill_alpha.median",
         check=_between(3.0, 5.0),
-        threshold="観測日次リターンの Hill α ∈ [3, 5] (⑧、中央値)",
+        threshold="観測日次リターンの Hill α ∈ [3, 5] ((8)、中央値)",
         description="S5 潜在実測 3.09。結合が裾を破壊しない (S10b 日次 Hill 3.37〜3.66)。",
     ),
     Gate(
@@ -2277,10 +2277,10 @@ _S10_NEW_GATES: tuple[Gate, ...] = (
         critical=False,
         threshold="5 分 BNS の JV share ∈ [0.02, 0.60] (記録 — 計器はジャンプを測れない)",
         description=(
-            "④ の観測計器として**無効と実測で判明**: κ=0 対照 (板ミッドに L2 "
+            "(4) の観測計器として無効と実測で判明: κ=0 対照 (板ミッドに L2 "
             "ジャンプは一切見えない) でも 0.31 を出す — 5 分 BNS が検出するのは"
             "フローの塊り (whale バースト) であってジャンプではない (帰無対照)。"
-            "1 秒版はバウンス誤検出 (0.77)。④ の保存は潜在側 (inv_jv_share) と"
+            "1 秒版はバウンス誤検出 (0.77)。(4) の保存は潜在側 (inv_jv_share) と"
             "裾 (obs_hill_alpha) が担い、この値は記録のみ。潜在の 5 分真値 0.14。"
         ),
     ),
@@ -2291,25 +2291,25 @@ _S10_NEW_GATES: tuple[Gate, ...] = (
         critical=False,
         threshold="観測日次歪度 ∈ [−4, 1.5] (記録 — 検定力なし)",
         description=(
-            "① の観測判定は**この地平では検定にならない**: 同一シードの obs−潜在"
+            "(1) の観測判定はこの地平では検定にならない: 同一シードの obs−潜在"
             "ペア差の SD が 2.7 (κ=0 対照 12 対の実測 — 歪度は最大級の 1〜2 whale "
             "日に支配される)。さらに κ=0 の板ミッドは加法ティック格子の凸性で"
-            "**偽の負歪度** (−1.07、潜在は −0.27) を持っていたことも判明 — κ>0 は"
+            "偽の負歪度 (−1.07、潜在は −0.27) を持っていたことも判明 — κ>0 は"
             "それを除去する方向。ペア差は skew_obs_minus_latent に記録し、"
             "非対称の実体判定は潜在側ゲート (S3/S5) と obs_hill_alpha に委ねる。"
         ),
     ),
-    # --- インパクト整合 (指示書 §9 の 3 点セット) ---
+    # --- インパクト整合 ( 3 点セット) ---
     Gate(
         name="impact_vr_consistency",
         metric_path="multiseed.meta_vr_daily_max.median",
         check=_between(0.90, 1.10),
         threshold="壁時計 (日次) VR ∈ [0.90, 1.10] (中央値) — 赤字の解消",
         description=(
-            "価格効率の判定は**壁時計 VR** (実測 1.08)。S8 で約定時間版を採用した"
+            "価格効率の判定は壁時計 VR (実測 1.08)。S8 で約定時間版を採用した"
             "のは κ=0 で壁時計が whale トレンドに支配され不安定だったから — κ>0 "
             "では p* 錨で安定し (IQR 0.13)、採用理由が消滅した。約定時間 VR(1000)"
-            " は 4.4〜5.9 で**κ に不感** (S10a スイープ実測、κ ∈ [0.2,8] で平坦):"
+            " は 4.4〜5.9 でκ に不感 (S10a スイープ実測、κ ∈ [0.2,8] で平坦):"
             " 情報を運ぶフローが板の気配再提示チャネル無しで取引としてのみ価格に"
             "入る構造の帰結で、κ では直せない。meta_vr_trade_1000 に記録を継続"
             " (results/S10e/DECISION.md)。"
@@ -2322,7 +2322,7 @@ _S10_NEW_GATES: tuple[Gate, ...] = (
         critical=False,
         threshold="propagator β̂ (5,150) ∈ [−0.9, −0.05] (記録 — 理論関係は満たさない)",
         description=(
-            "インパクト整合 β = (1−γ)/2 = 0.20 は**単一べき則の propagator を前提**"
+            "インパクト整合 β = (1−γ)/2 = 0.20 は単一べき則の propagator を前提"
             "とするが、κ 結合後の G(ℓ) は二レジーム (短: 追跡の速い戻り β̂~−0.5、"
             "長: 遅い緩和 β̂~−0.1) で単一指数を持たない — どの窓も 0.20 を出さない"
             " (窓プロファイル実測: (5,150) −0.56 / 長窓 −0.10)。理論との乖離を"
@@ -2335,15 +2335,15 @@ _S10_NEW_GATES: tuple[Gate, ...] = (
         metric_path="multiseed.meta_sqrt_slope.median",
         check=_between(0.40, 1.10),
         critical=False,
-        threshold="サイズ応答の傾き ∈ [0.4, 1.1] (記録 — ⑯ は構造的に出ない)",
+        threshold="サイズ応答の傾き ∈ [0.4, 1.1] (記録 — (16) は構造的に出ない)",
         description=(
-            "指示書 §9 の帯 [0.4, 0.7] は**満たさない** (実測 0.993、IQR 0.017)。"
+            "帯 [0.4, 0.7] は満たさない (実測 0.993、IQR 0.017)。"
             "根拠の連鎖: (1) 生成設計が N ⊥ d (メタオーダー長は情報と独立) で、"
             "√ 則の経済学 (大口ほど情報を持つ) が存在しない (S10a)。"
             "(2) κ を [0.2, 8] に振っても傾きは ~1.0 で平坦 (S10a スイープ) — "
-            "エスカレーション 1 段目は棄却。(3) ★事前測定の 0.745 (凹性が出たかに"
-            "見えた) は**プール漂流の人工物**だった — 供給 ∝ Z 修正で 0.993 に復帰"
-            " (「κ が凹性を作った」という当初の解釈はここで撤回する)。"
+            "エスカレーション 1 段目は棄却。(3) 事前測定の 0.745 (凹性が出たかに"
+            "見えた) はプール漂流の人工物だった — 供給 ∝ Z 修正で 0.993 に復帰"
+            " (κ が凹性を作ったという当初の解釈はここで撤回する)。"
             "帯変更ではなく既知の構造的未達として記録に降格 (VR 約定時間・"
             "レバレッジ水準と同類)。N を |d| に依存させる設計変更が将来の道。"
         ),
@@ -2356,9 +2356,9 @@ S10_GATES: tuple[Gate, ...] = _S10_INHERITED_GATES + _S10_NEW_GATES
 # ---------------------------------------------------------------------------
 # S11: フィードバックと内生的危機 — ループゲインの制御が本体
 # ---------------------------------------------------------------------------
-#: S10 からの再スコープ (指示書 §10 の保持表が明示する緩和):
-#:  - impact_vr_consistency: [0.90, 1.10] → [0.88, 1.12] (危機のトレンド性)
-#:  - cpl_transmission_daily: ±0.05 → ±0.07
+#: S10 からの再スコープ (保持表が明示する緩和):
+#: - impact_vr_consistency: [0.90, 1.10] → [0.88, 1.12] (危機のトレンド性)
+#: - cpl_transmission_daily: ±0.05 → ±0.07
 _S11_INHERITED_GATES: tuple[Gate, ...] = tuple(
     (
         Gate(
@@ -2371,9 +2371,9 @@ _S11_INHERITED_GATES: tuple[Gate, ...] = tuple(
             name=g.name,
             metric_path="multiseed.fb_T_daily_off.median",
             check=_between(0.93, 1.07),
-            threshold="伝達率 T(1日) ∈ 1.00 ± 0.07 — **off 対で判定** (結合忠実度)",
+            threshold="伝達率 T(1日) ∈ 1.00 ± 0.07 — off 対で判定 (結合忠実度)",
             description=(
-                "★指示書内部の矛盾の解消: g ∈ [0.3, 0.6] は日次分散の増幅を強制"
+                "設計要件内部の矛盾の解消: g ∈ [0.3, 0.6] は日次分散の増幅を強制"
                 "する (Var_on = Var_off/(1−g)² — §4.1 の式そのもの) ので、on 側の"
                 " T ±0.07 は loop_gain と両立しない (実測 T_on ~1.9)。κ/σ̄ は"
                 "フィードバックが触らないため結合忠実度は off 対が検証する。"
@@ -2386,11 +2386,11 @@ _S11_INHERITED_GATES: tuple[Gate, ...] = tuple(
             name=g.name,
             metric_path="multiseed.fb_gph_d_diff_masked.median",
             check=lambda v: v is not None and abs(float(v)) <= 0.05,
-            threshold="③ gph_d: 観測 − 潜在 (危機日を**対でマスク**) ∈ ±0.05 (中央値)",
+            threshold="(3) gph_d: 観測 − 潜在 (危機日を対でマスク) ∈ ±0.05 (中央値)",
             description=(
                 "危機スパイクは日次 |r| の GPH を白色希釈する (S3 で解剖済みの"
                 "ジャンプ希釈と同機構 — 生の差は −0.10 に落ちる)。同じ日を両系列"
-                "から除く対マスクで「観測は潜在の記憶を保存するか」を共通サポート"
+                "から除く対マスクで観測は潜在の記憶を保存するかを共通サポート"
                 "で問う。生の差は gph_d_obs_minus_latent に記録を継続。"
             ),
         )
@@ -2416,7 +2416,7 @@ _S11_INHERITED_GATES: tuple[Gate, ...] = tuple(
             description=(
                 "S11 ではレートが設計として状態依存 (n_t·δ_t) になり、共分散"
                 " (静穏期は δ 低×N 大など E[δ_t·N_t] ≠ E[δ]E[N]) で数 % 〜十数 % の"
-                "系統偏差が**正しく**出る (実測 12%)。±5% の閉ループ確認は S7〜S10"
+                "系統偏差が正しく出る (実測 12%)。±5% の閉ループ確認は S7〜S10"
                 " の較正検証として完了 — S11 は破綻検知のサニティ帯に再スコープ。"
             ),
         )
@@ -2439,8 +2439,8 @@ _S11_INHERITED_GATES: tuple[Gate, ...] = tuple(
             check=_lt(0.08),
             threshold="日次 |r| ACF プロファイルの平均 |Δρ| < 0.08 (S11: 設計変化込みの上界)",
             description=(
-                "フィードバックは obs のボラクラスタリングを**設計として**強める"
-                " (⑦・危機の物理) — S10 比の実測 +0.036 は帯 0.035 (S3 較正の"
+                "フィードバックは obs のボラクラスタリングを設計として強める"
+                " ((7)・危機の物理) — S10 比の実測 +0.036 は帯 0.035 (S3 較正の"
                 "ジャンプ希釈マージン) を髪の毛一本超える設計変化。大歪みガード"
                 "として上界 0.08 (設計効果の ~2 倍) で判定を継続する。"
             ),
@@ -2463,12 +2463,12 @@ _S11_INHERITED_GATES: tuple[Gate, ...] = tuple(
             name=g.name,
             metric_path="multiseed.fb_hill_ex_crisis.median",
             check=_between(3.0, 5.0),
-            threshold="⑧ Hill α (**危機日除外** = 指示書 §6.2 の分解) ∈ [3, 5] (中央値)",
+            threshold="(8) Hill α (危機日除外 = 分解) ∈ [3, 5] (中央値)",
             description=(
-                "★増幅は whale 日に集中し (u 高 ⟺ whale 活動 + 日内複利)、全体 α は"
+                "増幅は whale 日に集中し (u 高 ⟺ whale 活動 + 日内複利)、全体 α は"
                 "フィードバックの強さに単調に低下する — b 全域のフロンティア実測で"
                 " α_all ∈ [3,5] と g > 0 の意味ある値は両立しない (b→0 の極限のみ)。"
-                "指示書自身の §6.2 (危機除外 α との差 = テールへの寄与) の分解で、"
+                "設計要件自身の §6.2 (危機除外 α との差 = テールへの寄与) の分解で、"
                 "バックボーンの裾 (危機外) を判定し、全体 α は fb_hill_all に記録"
                 " (実測 ~2.6 — 根因は S8 由来の whale 頻度で、危機頻度 ~50/年が"
                 "実市場の ~10 倍あること。既知の複合偏差)。"
@@ -2489,11 +2489,11 @@ _S11_NEW_GATES: tuple[Gate, ...] = (
         threshold="結合ループゲイン g (30分帯域) ∈ [0.05, 0.60] (中央値、§4 — 下限は再設定)",
         description=(
             "g = 1 − √(Var_off/Var_on)、同一シード・同一 L2 対 (§4.1)。"
-            "★指示書の下限 0.30 は「g < 0.2 では危機が起きない」という前提だが、"
+            "設計要件の下限 0.30 は「g < 0.2 では危機が起きない」という前提だが、"
             "この生成系では危機の存在は whale スイープが供給する (基線 ~51/年 — "
             "S11c) ため前提が成立せず、さらに g は裾実在性と正面衝突する: "
             "フロンティア実測 (b 6 点 × 1000 日) で g 0.16/0.31/0.37 ⇒ 全体 Hill "
-            "2.62/2.31/2.23 — g ≥ 0.3 は ⑧ を必ず破壊する (増幅が whale 日に集中"
+            "2.62/2.31/2.23 — g ≥ 0.3 は (8) を必ず破壊する (増幅が whale 日に集中"
             "する構造)。作業点 (0.3,0.3,2) は g ≈ 0.10、危機増幅 +20%、"
             "バックボーン裾 ∈ [3,5] を同時に満たす最大ゲイン。"
         ),
@@ -2512,7 +2512,7 @@ _S11_NEW_GATES: tuple[Gate, ...] = (
         threshold="発散 0 件 (全シード、30 日平滑ペア判定 §10)",
         description=(
             "検定 2 段: (1) 単独ラン判定は L2 の MSM 高ボラ持続を誤検出 (S11a) → "
-            "同一シード off 対。(2) **日次**ペア差は whale の出方の不一致で ±3〜5 "
+            "同一シード off 対。(2) 日次ペア差は whale の出方の不一致で ±3〜5 "
             "揺れ、鯨週が発散に見える (S11e) → 30 日移動平均 (真の g≥1 は持続的な"
             "天井増幅、鯨タイミング差は多週で相殺 — 3.6σ 分離)。max 判定 "
             "(1 シードでも発散したら不合格)。"
@@ -2545,7 +2545,7 @@ _S11_NEW_GATES: tuple[Gate, ...] = (
         check=_is_true,
         threshold="L2 が事前生成のまま (§2.3) — 板 off 基準ランとビット単位一致",
         description=(
-            "inv_l2_frozen と同一の検査を S11 の名前でも指す (指示書 §10 の追跡性)。"
+            "inv_l2_frozen と同一の検査を S11 の名前でも指す (追跡性)。"
             "without_book はフィードバックも外すので、一致 = RV が L2 に戻る経路が"
             "存在しない証明。"
         ),
@@ -2554,9 +2554,9 @@ _S11_NEW_GATES: tuple[Gate, ...] = (
         name="signal_is_surprise",
         metric_path="multiseed.fb_u_mean_time.median",
         check=_between(-0.35, 0.35),
-        threshold="u_t の**時間加重**平均 ≈ 0 (中央値、§2.1 — 水準反応の否定)",
+        threshold="u_t の時間加重平均 ≈ 0 (中央値、§2.1 — 水準反応の否定)",
         description=(
-            "対数域デトレンド形で構造的に 0 (実測 0.000)。★イベント加重平均は"
+            "対数域デトレンド形で構造的に 0 (実測 0.000)。イベント加重平均は"
             " +1 前後になる (活動が高 u 状態に集積する — それ自体が情報) ので"
             " fb_u_mean_event に別記録。定常性の判定は時間測度で行う。"
         ),
@@ -2568,7 +2568,7 @@ _S11_NEW_GATES: tuple[Gate, ...] = (
         check=_between(5.0, 150.0),
         threshold="流動性イベント ∈ [5, 150] 件/年 (k=8, m=5 の深刻度で)",
         description=(
-            "★存在は whale スイープが主因 (off 基線 ~51/年 — S11c で実測確定)。"
+            "存在は whale スイープが主因 (off 基線 ~51/年 — S11c で実測確定)。"
             "フィードバックは深さを増す側。帯は死んだループ (≈基線) と爆発"
             " (数百+発散) を挟むガードレール。帰属は fb_crises_per_year_off に記録。"
         ),
@@ -2593,10 +2593,10 @@ _S11_NEW_GATES: tuple[Gate, ...] = (
         check=_gt(0.30),
         threshold="無情報事象 (dislocation) の 30 分回復率 > 0.3 (§6.3)",
         description=(
-            "★回復は情報性で二相 (S11c の中心的発見): |d| 拡大 = 無情報スイープは"
+            "回復は情報性で二相 (S11c の中心的発見): |d| 拡大 = 無情報スイープは"
             "完全回復する (rec30 0.45〜0.93、rec1d ≈ 1.0 — κ が薄い板を通じて"
             "高速に引き戻す)。|d| 縮小 = 追いつきカスケードは情報的で戻らないのが"
-            "**正しい** (rec1d 負 — 継続)。一括中央値 (~0.05) は二相の混合物で"
+            "正しい (rec1d 負 — 継続)。一括中央値 (~0.05) は二相の混合物で"
             "検定にならない — 分類してから測る (fb_recovery1d_catchup に記録)。"
         ),
     ),
@@ -2608,9 +2608,9 @@ _S11_NEW_GATES: tuple[Gate, ...] = (
         critical=False,
         threshold="全体 Hill α ∈ [2.0, S10 実測 3.18] (記録 — 前提が崩れた方向ゲート)",
         description=(
-            "指示書 §8.1 の「低下 = 改善」は S10 でジャンプ平滑化により α が上振れ"
+            "低下 = 改善は S10 でジャンプ平滑化により α が上振れ"
             "している前提だった — 実際の S10 は 3.18 (帯の下寄り) で、低下は帯からの"
-            "**離脱**を意味する。前提の崩れた改善ゲートは記録に降格し、実在性の"
+            "離脱を意味する。前提の崩れた改善ゲートは記録に降格し、実在性の"
             "判定は obs_hill_alpha (危機除外) が担う。"
         ),
     ),
@@ -2618,7 +2618,7 @@ _S11_NEW_GATES: tuple[Gate, ...] = (
         name="depth_variability_increased",
         metric_path="multiseed.fb_depth_cv_ratio.median",
         check=_gt(1.0),
-        threshold="⑭ デプス変動係数が off 対より増大 (同一シードペア比 > 1)",
+        threshold="(14) デプス変動係数が off 対より増大 (同一シードペア比 > 1)",
         description="基準値を要さないペア計器 (S10 に CV の記録が無いため)。",
     ),
     Gate(
@@ -2674,7 +2674,7 @@ _S12_INHERITED_GATES: tuple[Gate, ...] = tuple(
             threshold="|r| ACF べき則の R² > 0.45 (記録 — χ₁ の設計振動込み)",
             description=(
                 "χ₁ (4.7 日ピーク) は活動リズムのうねりとして日次 |r| ACF に"
-                "**設計として**構造を加える (⑤⑫ — この段階の目的そのもの)。"
+                "設計として構造を加える ((5)(12) — この段階の目的そのもの)。"
                 "χ₂ (30 日) が γ を動かした S5 の帰結と同機構の S12 版で、"
                 "べき則の直線性 (R² 0.85→0.67 実測) は χ₁ の帯域が ACF 測定窓"
                 " (1〜100 日) の内側にある以上、崩れるのが正しい。完全消失"
@@ -2688,7 +2688,7 @@ _S12_INHERITED_GATES: tuple[Gate, ...] = tuple(
             check=_between(0.76, 0.94),
             threshold="時間加重 E[n_t] が [n_min, n_max] の内側 (中点 0.85 近傍)",
             description=(
-                "★イベント加重 (エンジンカウンタ) は n_max=0.95 で 1/(1−n) の"
+                "イベント加重 (エンジンカウンタ) は n_max=0.95 で 1/(1−n) の"
                 " 20 倍重みが効き ~0.90 に張り付く — S11 の signal_is_surprise と"
                 "同じ時間/イベント加重の混同。判定は時間加重 (実測 ~0.85)。"
                 "イベント加重は fb_nt_mean に記録継続。"
@@ -2728,7 +2728,7 @@ _S12_INHERITED_GATES: tuple[Gate, ...] = tuple(
             threshold="実現レート (z·n_t 結合正規化) が予測 ±40% (S12 サニティ帯)",
             description=(
                 "分解連鎖 (1000 日実測): raw ×1.85 = z (Jensen 済) ×0.92 × "
-                "n_t 結合予測 E[z/(1−n_t)] ×1.55 × **非断熱カスケード残差 ×1.26**。"
+                "n_t 結合予測 E[z/(1−n_t)] ×1.55 × 非断熱カスケード残差 ×1.26。"
                 "残差はバーストが高 n 窓に集中しカスケードの実効 n が時間平均を"
                 "超えることによる (同じ凸性のもう一段 — 全タイプ均一 ±0.01 が傍証)。"
                 "準静的予測子のこれ以上の追撃は逓減 — 破綻検知の帯 ±40% で確定。"
@@ -2739,14 +2739,14 @@ _S12_INHERITED_GATES: tuple[Gate, ...] = tuple(
             name=g.name,
             metric_path="multiseed.fb_gph_d_diff_masked.median",
             check=lambda v: v is not None and abs(float(v)) <= 0.10,
-            threshold="③ gph_d: 観測 − 潜在 (対マスク + χ₁/χ₃ 正規化) ∈ ±0.10 (中央値)",
+            threshold="(3) gph_d: 観測 − 潜在 (対マスク + χ₁/χ₃ 正規化) ∈ ±0.10 (中央値)",
             description=(
                 "S12 の計器分解: (1) χ₁ (4.7 日) の系統傾き −0.02 は e^{a₁χ₁/2}"
                 " 正規化で厳密に除去 (シード単位で検証)。(2) χ₃ の決定論活動係数"
                 " √[(1−n_d)/(1−n_t^det)] も除去。(3) 残差中央値 −0.05 は per-seed"
                 " IQR 0.13 (ペア実現ノイズ) に対し SE ≈ 0.05 — ゼロと 1σ で区別"
                 "不能。±0.05 帯はこの計器のノイズ床に対し検定力不足だった"
-                " (S10/S11 は −0.011/−0.035 で余裕通過)。③ の真の破綻 (切断なら"
+                " (S10/S11 は −0.011/−0.035 で余裕通過)。(3) の真の破綻 (切断なら"
                 " |diff| ≫ 0.1) の検出力を保つ帯 ±0.10 に再設定。"
             ),
         )
@@ -2791,7 +2791,7 @@ _S12_NEW_GATES: tuple[Gate, ...] = (
         check=lambda v: v is not None and float(v) < 0.1,
         threshold="|corr(χ_i, χ_j)| < 0.1 (全ペア、共通日格子 §3.1)",
         description=(
-            "★時間写像は非共鳴に離調してある: 当初の χ₃=15 日は χ₂ (30 日) と"
+            "時間写像は非共鳴に離調してある: 当初の χ₃=15 日は χ₂ (30 日) と"
             "厳密 2:1 共鳴で |corr|=0.22 を実測 → 4.7/13.1/30 日 (低次整数比なし)。"
         ),
     ),
@@ -2825,7 +2825,7 @@ _S12_NEW_GATES: tuple[Gate, ...] = (
         check=_between(0.20, 0.32),
         threshold="χ₁ の log λ 分散シェア ∈ [0.20, 0.32] (設計 25% ±エポック幅)",
         description=(
-            "指示書帯 [22, 28]% は分散シェアが決定論の前提 — 本実装の分母"
+            "設計要件帯 [22, 28]% は分散シェアが決定論の前提 — 本実装の分母"
             " Var(log Z) は V のエポック実現 (±20%、S10c) で揺れるため、"
             "シェアは ±0.04 動く。導出込みで帯を [0.20, 0.32] に設定。"
             "設計値 a₁²/(a₁²+c_vol²) = 0.25 は構成から厳密。"
@@ -2852,7 +2852,7 @@ _S12_NEW_GATES: tuple[Gate, ...] = (
         check=_gt(0.30),
         threshold="脆弱変数 n_t の窓 (5 日) 平均のシード横断相関 > 0.30 (§8.1 の直接検証)",
         description=(
-            "「脆弱性の窓は再現される」の窓そのもの — n_t の緩慢成分は全シード"
+            "脆弱性の窓は再現されるの窓そのもの — n_t の緩慢成分は全シード"
             "共通の χ₃ が支配する。u (シード固有) の混入分だけ 1 を下回る。"
         ),
     ),
@@ -2862,7 +2862,7 @@ _S12_NEW_GATES: tuple[Gate, ...] = (
         check=_between(0.05, 0.60),
         threshold="窓あたり危機件数のシード横断相関 ∈ [0.05, 0.60] (§8.2 — 下限は再設定)",
         description=(
-            "★指示書帯 [0.3, 0.6] の下限は「危機の発生が n_t に強く律速される」"
+            "設計要件帯 [0.3, 0.6] の下限は危機の発生が n_t に強く律速される"
             "前提 — この生成系では危機の存在が whale 供給 (シード固有、S11c) の"
             "ため、χ₃ が窓カウント分散に占められる share (ICC) の天井は ~0.15"
             " (8 シード分散分解・窓長 5/10/13/20 日走査・適応/緩慢両基準で実測。"
@@ -2877,7 +2877,7 @@ _S12_NEW_GATES: tuple[Gate, ...] = (
         name="vol_volume_dilution",
         metric_path="multiseed.cpl_rv_volume_log.median",
         check=_between(0.521, 0.585),
-        threshold="⑦ が予測どおり希釈: corr ∈ 0.6354 × [0.82, 0.92] = [0.521, 0.585]",
+        threshold="(7) が予測どおり希釈: corr ∈ 0.6354 × [0.82, 0.92] = [0.521, 0.585]",
         description=(
             "χ₁ は L2 ボラと無相関の決定論変調 — Var(log λ) ×4/3 で相関は"
             " √(3/4) = 0.866 倍に希釈される (S11 実測 0.6354 → 予測 0.550)。"
@@ -2908,11 +2908,11 @@ S12_GATES: tuple[Gate, ...] = _S12_INHERITED_GATES + _S12_NEW_GATES
 
 
 # ---------------------------------------------------------------------------
-# S13 のゲート (多資産 — 指示書 §10)
+# S13 のゲート (多資産 — 設計要件)
 # ---------------------------------------------------------------------------
 #: S12 のベースライン照合 (runtime.baseline_invariance.*) に依存するゲート。
 #: S13 では L2 の再構成 (因子合成) が段階の差分そのものなので S12 メトリクスとの
-#: 直接照合は成立しない — 凍結性の検証は**ビット単位の構造検査 3 種**
+#: 直接照合は成立しない — 凍結性の検証はビット単位の構造検査 3 種
 #: (n1_regression / factor_degeneracy / asset_addition) と l2_frozen_multi
 #: (板 off 多資産ランとの潜在照合) に置き換える。
 _S13_BASELINE_REPLACED = frozenset({
@@ -2923,7 +2923,7 @@ _S13_BASELINE_REPLACED = frozenset({
 #: ペア (off 対) 計器のゲート → S12 本番の実測値 (metrics.s12_carryover) を読む。
 #: 帯と check は S12 と同一。繰り越しの妥当性は n1_regression のビット単位一致が
 #: 担保する (ループ機構のコードパスは S12 と同一で、因子合成・χ 共有は
-#: フィードバック経路に入らない)。§11「参照資産の単変量性質は S12 の結果を流用」。
+#: フィードバック経路に入らない)。§11参照資産の単変量性質は S12 の結果を流用。
 _S13_CARRYOVER_REMAP: dict[str, str] = {
     "loop_gain": "s12_carryover.fb_g_30min.median",
     "feedback_ablation": "s12_carryover.fb_g_daily.median",
@@ -2932,8 +2932,8 @@ _S13_CARRYOVER_REMAP: dict[str, str] = {
     "depth_variability_increased": "s12_carryover.fb_depth_cv_ratio.median",
     "excess_volatility": "s12_carryover.fb_rv_excess_ari.median",
     "iceberg_ablation": "s12_carryover",
-    # ③ と Hill (テール/記憶統計): 500 日では計器が検定力不足 —
-    # ③ の per-seed IQR 0.185 (マスク後 365 日の GPH)、hill は k=18 点で
+    # (3) と Hill (テール/記憶統計): 500 日では計器が検定力不足 —
+    # (3) の per-seed IQR 0.185 (マスク後 365 日の GPH)、hill は k=18 点で
     # IQR 0.78 (事前測定 #3 実測)。S12 の 1000 日 × 30 実測を繰り越し、
     # 500 日の再測定は multiseed に記録として残る。
     "obs_gph_d_matches_latent": "s12_carryover.fb_gph_d_diff_masked.median",
@@ -2971,12 +2971,12 @@ def _s13_remap(g: Gate) -> Gate:
             name="vol_volume_range",
             metric_path=g.metric_path,
             check=_between(0.50, 0.70),
-            threshold="⑦ corr(log RV, log 出来高) ∈ [0.50, 0.70] (S10 の元帯 — c_vol 不変)",
+            threshold="(7) corr(log RV, log 出来高) ∈ [0.50, 0.70] (S10 の元帯 — c_vol 不変)",
             description=(
                 "S12 の希釈帯 [0.521, 0.585] は S12 の組成 (ジャンプが自資産の瞬時 σ"
-                " で変調) の予測値。S13 では共通ジャンプの変調が**遅い共通成分**"
+                " で変調) の予測値。S13 では共通ジャンプの変調が遅い共通成分"
                 " (= V の 3 日 MA 帯域そのもの) なので、ジャンプ RV と出来高の結合が"
-                "強まり ⑦ が上がる (seed42 同一シード比較 0.510 → 0.625、S12 の"
+                "強まり (7) が上がる (seed42 同一シード比較 0.510 → 0.625、S12 の"
                 " 30 シード範囲外 — 機構シフト)。c_vol は触っていない (§7.1) ため"
                 "判定は元の帯 [0.5, 0.7] に戻す。"
             ),
@@ -3055,7 +3055,7 @@ _S13_NEW_GATES: tuple[Gate, ...] = (
         metric_path="s12_carryover.available",
         check=lambda v: v is True,
         threshold="S12 本番の繰り越し値が読めている (results/S12/metrics.json)",
-        description="ペア計器 (g・発散・T_off・⑭・iceberg) の繰り越し前提。",
+        description="ペア計器 (g・発散・T_off・(14)・iceberg) の繰り越し前提。",
     ),
     # --- クロス資産の創発性質 (critical — §10) ---
     Gate(
@@ -3081,9 +3081,9 @@ _S13_NEW_GATES: tuple[Gate, ...] = (
         check=lambda v: v is not None and float(v) <= 0.05,
         threshold="HY 推定量が真の相関 ±0.05 (全ペア × 間引き 1/2/4 × 全シード最大)",
         description=(
-            "p* を**各資産の実約定時刻**でサンプルした系列に HY を適用し、"
+            "p* を各資産の実約定時刻でサンプルした系列に HY を適用し、"
             "潜在 1 分リターンの実現相関 (真値) と照合 — 推定量と非同期性の"
-            "検定 (§3「HY で真の相関に戻るか」の実装)。板約定値での HY は"
+            "検定 (§3HY で真の相関に戻るかの実装)。板約定値での HY は"
             "マイクロ構造減衰込みの記録 (pairs.*.hy_book_vwap)。"
         ),
     ),
@@ -3109,7 +3109,7 @@ _S13_NEW_GATES: tuple[Gate, ...] = (
             "500 日窓では最遅の共有成分 (500/250/125 日 MSM) が実現しきらず、"
             "切替率からの閉形式で期待実現 corr ≈ 0.574 (f(aT) = 1−(2/aT)(1−…) の"
             "成分和 — DECISION.md §6e)。実測ペア中央値 0.51-0.55。帯はこの"
-            "視野に較正 (指示書帯 [0.55,0.85] は ∞ 視野の値)。"
+            "視野に較正 (設計要件帯 [0.55,0.85] は ∞ 視野の値)。"
         ),
     ),
     Gate(
@@ -3132,10 +3132,10 @@ _S13_NEW_GATES: tuple[Gate, ...] = (
         check=lambda v: v is not None and float(v) > 0.15,
         threshold="共通変動の大きい日の潜在相関上昇 > 0.15 (|z_F| 上位 10%、プール §7.1)",
         description=(
-            "★§6c の事前約束規則 3 を適用 (事前測定 #3): 字義 (検出危機日の"
+            "§6c の事前約束規則 3 を適用 (事前測定 #3): 字義 (検出危機日の"
             "和集合) はプール Δ = −0.075 — 危機の存在が whale 供給 (資産固有)"
             "のため、条件付けが固有内生変動の支配日を選択する (g 帯・hill・窓"
-            " ICC と同根の制約の**第四の顔**)。観測可能なブレッドス形 (≥2 資産"
+            " ICC と同根の制約の第四の顔)。観測可能なブレッドス形 (≥2 資産"
             "同時、検出器ベース) は全ペア正 (+0.089) だが 0.15 未満。機構"
             " (§7.1 共通因子の同時拡大) は潜在層で Δ = +0.391 (全ペア"
             " +0.34〜0.41) と明確に実在 — これを判定し、観測 2 形は"
@@ -3173,9 +3173,9 @@ S13_GATES: tuple[Gate, ...] = _S13_INHERITED_GATES + _S13_NEW_GATES
 # ---------------------------------------------------------------------------
 # perp フォーク (S0-perp §9 / §11)
 # ---------------------------------------------------------------------------
-#: ★株式のゲート定義は一切変更しない (§9)。perp は**別の集合**として定義し、
+#: 株式のゲート定義は一切変更しない (§9)。perp は別の集合として定義し、
 #: cmd_run が実行ラベル ("perp_S0") で選択する。GBM 統計は株式 S0 と同一基準
-#: (S0_GATES をそのまま承継 — §10「perp らしい統計量は S1-perp 以降」)。
+#: (S0_GATES をそのまま承継 — §10perp らしい統計量は S1-perp 以降)。
 def _perp_placeholders_ok(value: Any) -> bool:
     """S10/S11-perp の関数群が全て ok / not_applicable で返っていること。"""
     if not isinstance(value, Mapping) or not value:

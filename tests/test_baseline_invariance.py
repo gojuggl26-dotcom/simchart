@@ -1,6 +1,6 @@
 """前段階との不変性照合 (baseline_invariance_check) のロジック検証。
 
-S2 の合否機構そのものなので、「一致すれば通る」「壊せば落ちる」の両方向を固定する。
+S2 の合否機構そのものなので、一致すれば通る壊せば落ちるの両方向を固定する。
 """
 
 from __future__ import annotations
@@ -65,7 +65,7 @@ def test_invariance_detects_touched_s1_streams(setup) -> None:
 def test_invariance_detects_moved_gph_d(setup) -> None:
     """帰無対照: d が動いたら inv_gph_d が落ちる (スケール分離失敗の想定)。
 
-    S3 から判定は潜在 log sigma の GPH (③ の構造の直接測定) で行うため、
+    S3 から判定は潜在 log sigma の GPH ((3) の構造の直接測定) で行うため、
     壊すのも latent 側。observed 側は記録として併記される。
     """
     root, c2, m2 = setup

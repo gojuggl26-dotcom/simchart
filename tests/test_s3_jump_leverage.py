@@ -117,7 +117,7 @@ def test_bns_recovers_planted_jv_share() -> None:
 
 
 def test_hill_by_scale_increases_for_exponential_jumps() -> None:
-    """指数ジャンプ + 正規では α がスケールで上昇する (⑱)。"""
+    """指数ジャンプ + 正規では α がスケールで上昇する ((18))。"""
     rng = np.random.default_rng(2)
     n = 6000
     r = 0.012 * rng.standard_normal(n)

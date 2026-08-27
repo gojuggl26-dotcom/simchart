@@ -1,6 +1,6 @@
 """S6: ZI 板のイベント駆動エンジン (numba JIT カーネル)。
 
-なぜ numba か (指示書 §4)
+なぜ numba か 
 -------------------------
 S10 は 5000 日 × 10 シードの結合実行で ~5,000 万イベント/シードになる。純 Python の
 イベントループは 3〜8k events/sec で 100 時間規模 — 目標 ≥ 50k events/sec のため
@@ -10,7 +10,7 @@ S10 は 5000 日 × 10 シードの結合実行で ~5,000 万イベント/シー
 乱数の扱い
 ----------
 numpy の ``Generator`` を njit にそのまま渡す。numba は Generator の状態を
-**in-place で前進**させるので (実測で確認済み: njit 内の draw 列は numpy と同一、
+in-place で前進させるので (実測で確認済み: njit 内の draw 列は numpy と同一、
 消費後の状態も外側から可視)、RNG レジストリの会計 (フィンガープリント・ストリーム
 独立性) がそのまま成立する。カーネル内では ``.random()`` (一様) だけを使い、
 指数・べき則・離散は逆関数法で組み立てる — サポート面の最も固い口に限定するため。
@@ -20,21 +20,21 @@ numpy の ``Generator`` を njit にそのまま渡す。numba は Generator の
   l3.order_size : 注文 (MO/LO) ごとに 2 draw (混合の枝、値)
   l3.order_price: LO ごとに 1 draw (配置距離)。S8 のアイスバーグ判定で
                   板に載る LO ごとに +1 draw (enable_iceberg 時のみ)
-  l3.cancel     : 取消ごとに 1 draw (対象選択)
-  l3.metaorder  : (S8) 到着ごとに 3 draw (間隔、符号、長さ)、空プール生成は
+  l3.cancel : 取消ごとに 1 draw (対象選択)
+  l3.metaorder : (S8) 到着ごとに 3 draw (間隔、符号、長さ)、空プール生成は
                   2 draw (符号、長さ)、成行ごとに 1 draw (ψ 混合) +
                   子なら 1 draw (プール選択) / ノイズなら 1 draw (符号)
 
 板の表現
 --------
-- 価格レベル: **絶対ティック整数を添字とする配列** (窓 ``2*half_ticks``、中心 p0)。
-  SortedDict 等は使わない (オーバーヘッド、指示書 §5.1)
+- 価格レベル: 絶対ティック整数を添字とする配列 (窓 ``2*half_ticks``、中心 p0)。
+  SortedDict 等は使わない (オーバーヘッド、設計要件)
 - 各レベル: 連結リストによる FIFO キュー (order_next/prev + level head/tail)
 - 取消の O(1) 一様抽選: 生存注文の密な配列 + 位置索引 (swap-remove)
-- best_bid/best_ask はインクリメンタル追跡。片側枯渇時は**直近の有効 best を記憶**
-  し、新規指値はそれを基準に配置。空の側への成行は棄却してログ (指示書 §8.2)
+- best_bid/best_ask はインクリメンタル追跡。片側枯渇時は直近の有効 best を記憶
+  し、新規指値はそれを基準に配置。空の側への成行は棄却してログ 
 
-ZI ミッドはランダムウォークするので窓の端に近づき得る。**黙って詰まらず**、
+ZI ミッドはランダムウォークするので窓の端に近づき得る。黙って詰まらず、
 オーバーフローのフラグを立てて停止する (500 日の SD ~1,600 ティック vs 窓 ±65,536
 なので実際には起きない — 起きたら設定の見直しが必要な異常)。
 
@@ -61,13 +61,13 @@ EV_BB = 6  # イベント後の best bid ティック (-1 = 空)
 EV_BA = 7  # イベント後の best ask ティック (-1 = 空)
 EV_DBID = 8  # best から depth_ticks 以内の買いデプス (ロット)
 EV_DASK = 9  # 同 売り
-EV_PSTAR = 10  # log p*(t) — κ=0 でも配線して記録する (指示書 §10)
+EV_PSTAR = 10  # log p*(t) — κ=0 でも配線して記録する 
 EV_OID = 11  # 注文 id (TRADE は受動側注文の id)
-#: S8 で追加。**行種別ごとに意味が変わる** (EV_PRICE/EV_OID と同じ流儀):
-#:   MO / TRADE 行 : 攻撃側のメタオーダー記録行番号 (-1 = ノイズトレード)
-#:   LIMIT_ADD 行  : アイスバーグの初期表示量 (>0)。非アイスバーグは -1
-#:   MODIFY(3) 行  : アイスバーグ補充 (EV_SIZE=補充量, EV_EXEC=補充後の隠れ量)
-#:   その他        : -1
+#: S8 で追加。行種別ごとに意味が変わる (EV_PRICE/EV_OID と同じ流儀):
+#: MO / TRADE 行 : 攻撃側のメタオーダー記録行番号 (-1 = ノイズトレード)
+#: LIMIT_ADD 行 : アイスバーグの初期表示量 (>0)。非アイスバーグは -1
+#: MODIFY(3) 行 : アイスバーグ補充 (EV_SIZE=補充量, EV_EXEC=補充後の隠れ量)
+#: その他 : -1
 EV_META = 12
 N_EV_FIELDS = 13
 
@@ -93,7 +93,7 @@ C_SUBMITTED_LO = 0
 C_SUBMITTED_MO = 1
 C_CANCELLED = 2
 C_FILLED_ORDERS = 3  # 完全約定した指値の数
-#: ★「買い約定総量 = 売り約定総量」の実装形。1 つの約定には攻撃側と受動側が必ず
+#: 買い約定総量 = 売り約定総量の実装形。1 つの約定には攻撃側と受動側が必ず
 #: 存在するので、**攻撃側の約定量 (別経路で集計) と受動側の約定量 (take ごとに
 #: 集計) の一致**が数量保存になる。攻撃側の買い量と売り量を比べるのは誤り —
 #: どちらの側が攻撃するかは確率的で、等しくなる理由がない (初版で実際に間違えた)。
@@ -119,7 +119,7 @@ C_VOL_LO_ENTRY_EXEC = 22  # aggressive LO が入り口で約定した量 (板に
 # S7: Hawkes thinning の診断
 C_H_CANDIDATES = 23  # thinning 候補数 (棄却込み)
 C_H_REJECTED = 24  # 棄却数 (受理率 = 1 - rejected/candidates)
-C_H_CAP_HITS = 25  # 強度上限ガードの発動数 (指示書 §5.3)
+C_H_CAP_HITS = 25  # 強度上限ガードの発動数 
 C_H_DAYCAP_HITS = 26  # 日次イベント上限ガードの発動数
 C_CX_NOOP = 27  # 励起由来の取消が空板で空振りした数 (n の会計から漏れる分 — 記録)
 # S8: メタオーダー・プールとアイスバーグの診断
@@ -208,7 +208,7 @@ def uz_transform(mid_ticks, eta):
     1 tick ずつ更新する (ヒステリシス)。更新直後のミッドは新しい P から
     ~(η−0.5) の位置にあり、反転には 2η・継続には 1 tick の移動で足りるため、
     η < 0.5 で交替過多 (負の自己相関) が生じる — R-R の η と同じ向き。
-    ★常用しない: queue-reactive の較正で届かない場合の非常口 (README 記録必須)。
+    常用しない: queue-reactive の較正で届かない場合の非常口 (README 記録必須)。
     """
     out = np.empty_like(mid_ticks)
     p = np.round(mid_ticks[0])
@@ -231,7 +231,7 @@ def _kappa_p_up(
     """S10: メタオーダー生成時の買い確率 P(+1) = 0.5 + 0.5·tanh(κ·d/s)。
 
     d = log p*(t) − log mid(t)、s = σ_t·√τ_meta (s_scale_grid で事前計算済み)。
-    σ_t で正規化するので高ボラ期に反応が鈍らない (指示書 §2.1)。
+    σ_t で正規化するので高ボラ期に反応が鈍らない 。
     """
     pos = t_now / pstar_step_sec
     i0 = int(pos)
@@ -257,9 +257,9 @@ def _meta_spawn(
     """新規メタオーダーを 1 本生成してアクティブ集合へ。戻り値 (n_meta, n_act)。
 
     長さは N = floor(N_min·(1−u)^{-1/α}) — 離散裾 P(N ≥ n) = (N_min/n)^α が厳密で、
-    符号 ACF の減衰指数 γ = α − 1 の理論対応がそのまま成立する (指示書 §4)。
+    符号 ACF の減衰指数 γ = α − 1 の理論対応がそのまま成立する 。
     符号は P(+1) = p_up (κ=0 なら 0.5 — 比較定数が同じなのでビット単位同一)。
-    ★S10 の κ バイアスは**ここ (生成時) だけ**に乗り、子は親符号を継承する
+    S10 の κ バイアスはここ (生成時) だけに乗り、子は親符号を継承する
     (§2.2 — 子レベルで掛けると run length が壊れ γ = α−1 が崩れる)。
     消費は常に 2 draw (符号 → 長さ)。容量到達時は生成せずカウンタに記録する
     (draw も消費しない — 失敗経路は決定論的に同一)。
@@ -331,8 +331,8 @@ def run_zi_book(
     ice_display,  # 表示量 [ロット]
     ice_refill_tail,  # True: 補充でキュー末尾へ / False: 時間優先を保持
     # --- S9: queue-reactive の意思決定層 (use_qr=False なら無視) ---
-    # ★強度には触れない: Hawkes の時刻・種別・サイドを所与として
-    # 「どこに置くか」「どれを取り消すか」だけを板の状態から決める (§3.2)。
+    # 強度には触れない: Hawkes の時刻・種別・サイドを所与として
+    # どこに置くかどれを取り消すかだけを板の状態から決める (§3.2)。
     use_qr,
     qr_inspread_slope, qr_spread_ref, qr_inspread_cap,  # §5 配置 m(s)
     qr_inspread_flat,  # §5 h の形状: 0=べき則, 1=d=1 の重みで平坦 (深い改善)
@@ -396,7 +396,7 @@ def run_zi_book(
     # 出力
     ev = np.zeros((N_EV_FIELDS, ev_capacity), dtype=np.float64)
     for j in range(ev_capacity):
-        ev[EV_META, j] = -1.0  # 既定は「該当なし」(0 は正当な記録行番号なので不可)
+        ev[EV_META, j] = -1.0  # 既定は該当なし(0 は正当な記録行番号なので不可)
     n_grid = int(round(horizon_sec / mid_grid_step_sec)) + 1
     mid_grid = np.zeros(n_grid, dtype=np.float64)
     n_snap_cap = int(horizon_sec / snapshot_interval_sec) + 2
@@ -508,8 +508,8 @@ def run_zi_book(
     m_t_created = np.zeros(meta_log_cap, dtype=np.float64)
     m_t_first = np.full(meta_log_cap, -1.0, dtype=np.float64)
     m_t_last = np.full(meta_log_cap, -1.0, dtype=np.float64)
-    m_mid_first = np.zeros(meta_log_cap, dtype=np.float64)  # 初子の**直前**ミッド
-    m_mid_last = np.zeros(meta_log_cap, dtype=np.float64)  # 最終子の**直後**ミッド
+    m_mid_first = np.zeros(meta_log_cap, dtype=np.float64)  # 初子の直前ミッド
+    m_mid_last = np.zeros(meta_log_cap, dtype=np.float64)  # 最終子の直後ミッド
     m_vol_first = np.zeros(meta_log_cap, dtype=np.float64)  # 初子直前の累積攻撃約定量
     m_vol_last = np.zeros(meta_log_cap, dtype=np.float64)  # 最終子直後の同
     m_own_vol = np.zeros(meta_log_cap, dtype=np.float64)  # 自身の子の約定量合計 (Q)
@@ -608,12 +608,12 @@ def run_zi_book(
                     x_g = r_g * r_g / phi_sig2_table[pj]
                     fb_rv_s = fb_lam_short * fb_rv_s + (1.0 - fb_lam_short) * x_g
                     fb_ws = fb_lam_short * fb_ws + (1.0 - fb_lam_short)
-                    # ★RV_long は RV_short の**対数域** EWMA (幾何的な「通常水準」)。
+                    # RV_long は RV_short の対数域 EWMA (幾何的な通常水準)。
                     # 算術 EWMA だとバーストが基準を ~2 日汚染し、危機後に
-                    # 「静かすぎる」偽の驚き (u < 0) → 板肥厚 → 反持続的ボラ応答
+                    # 静かすぎる偽の驚き (u < 0) → 板肥厚 → 反持続的ボラ応答
                     # という逆向きの平衡に落ちる (作業点で E[u] = −1.6 を実測)。
                     # 対数域なら u = log RV_s − EWMA(log RV_s) は構造的に平均 ≈ 0
-                    # (指示書 §2.1 の要件をこの形で満たす)。
+                    # (要件をこの形で満たす)。
                     if fb_rv_s > 0.0 and fb_ws > 0.0:
                         y_g = np.log(fb_rv_s / fb_ws)
                         fb_rv_l = fb_lam_long * fb_rv_l + (1.0 - fb_lam_long) * y_g
@@ -812,7 +812,7 @@ def run_zi_book(
                 kind = 2
 
         # ---------------- S8: 成行の符号決定 (メタオーダー・プール §3) ----------------
-        # Hawkes が「いつ」を、ここが「どちらの符号か」**だけ**を決める (§3.1 の
+        # Hawkes がいつを、ここがどちらの符号かだけを決める (§3.1 の
         # 役割分離)。確率 ψ でプールから一様に選び、その符号の子注文を出す。
         # 残りはノイズトレード (iid 50/50)。プールが空なら需要駆動で即時生成する
         # (Poisson 供給 ρ<1 の不足分の調整弁 — 発生数はカウンタで監視)。
@@ -847,7 +847,7 @@ def run_zi_book(
                     cur_meta = mi
                     counters[C_META_CHILD] += 1.0
                     if m_nexec[mi] == 0.0:
-                        # 初子: 実行スパンの始点 (ミッドは**約定前**の値)
+                        # 初子: 実行スパンの始点 (ミッドは約定前の値)
                         pb = best_bid if best_bid >= 0 else ref_bid
                         pa = best_ask if best_ask >= 0 else ref_ask
                         m_t_first[mi] = t_now
@@ -868,9 +868,9 @@ def run_zi_book(
                 counters[C_META_NOISE] += 1.0
 
         # ---------------- S9: OBI 符号バイアス (§7.2 — 既定は無効) ----------------
-        # ★メタオーダーの子には触れない (⑪ の系譜を汚さない)。ノイズ成行のみ、
+        # メタオーダーの子には触れない ((11) の系譜を汚さない)。ノイズ成行のみ、
         # best レベルの不均衡 I に比例した確率で薄い側へ寄せる。使用時は on/off の
-        # γ アブレーションが必須 (指示書 §7.2)。
+        # γ アブレーションが必須 。
         if use_qr and qr_obi_bias > 0.0 and kind == 0 and cur_meta < 0:
             if best_bid >= 0 and best_ask >= 0:
                 qb = lv_vol[best_bid]
@@ -886,7 +886,7 @@ def run_zi_book(
             # ---------------- 成行 ----------------
             size = _draw_size(rng_size, w_round, lot_cum, lot_vals, pareto_alpha)
             # S9: 利用可能デプスへのサイズ適応 (§3.2 表 — 既定は無効)。
-            # ★有効化するとサイズ分布ゲート (仕様適合) と衝突するため、まず
+            # 有効化するとサイズ分布ゲート (仕様適合) と衝突するため、まず
             # 配置・取消の状態依存だけで届くかを測る方針 (config の注記)。
             if use_qr and qr_mo_frac > 0.0:
                 ob_q = best_ask if side == 1 else best_bid
@@ -916,7 +916,7 @@ def run_zi_book(
             while remaining > 0.0:
                 bt = best_ask if side == 1 else best_bid
                 if bt < 0:
-                    # 反対側枯渇 → 残量棄却。★remaining をゼロにして抜けてはならない:
+                    # 反対側枯渇 → 残量棄却。remaining をゼロにして抜けてはならない:
                     # exec = size - remaining の計算が棄却分まで約定に数えてしまい、
                     # 数量保存 (攻撃側 = 受動側) が破れる (意地悪テストで実際に検出)。
                     counters[C_MO_REJECT_EVENTS] += 1.0
@@ -929,7 +929,7 @@ def run_zi_book(
                     remaining -= take
                     lv_vol[bt] -= take
                     counters[C_VOL_PASSIVE] += take
-                    # TRADE 行 (攻撃側のメタオーダー行番号も刻む — ⑪ の系譜追跡用)
+                    # TRADE 行 (攻撃側のメタオーダー行番号も刻む — (11) の系譜追跡用)
                     tr = n_events
                     if tr < ev_capacity:
                         ev[EV_T, tr] = t_now
@@ -1020,7 +1020,7 @@ def run_zi_book(
             ev[EV_EXEC, ev_row] = size - remaining
             counters[C_VOL_AGGR] += size - remaining
             # S8: 子注文の実行後スナップショット (最終子の統計は毎回上書きされ、
-            # 完走しなかったメタオーダーでも「実行済み部分」の始終点が残る)
+            # 完走しなかったメタオーダーでも実行済み部分の始終点が残る)
             if cur_meta >= 0:
                 pb = best_bid if best_bid >= 0 else ref_bid
                 pa = best_ask if best_ask >= 0 else ref_ask
@@ -1092,7 +1092,7 @@ def run_zi_book(
                 delta = lo_i
                 # S11: Δ_scale = e^{b_Δ·tanh(u/u_s)} — 配置距離の乗法スケール。
                 # 乗法は距離分布の裾指数を厳密に保つ。上限は基表の打ち切り (200)
-                # のまま (S6 §6.2 の「遠方滞留を防ぐ」設計を維持 — 危機時の
+                # のまま (S6 §6.2 の遠方滞留を防ぐ設計を維持 — 危機時の
                 # 拡大は [0, 200] 内の質量シフトで表現される)。
                 if use_feedback and fb_b_place > 0.0 and delta > 0:
                     delta = int(delta * fb_mult_place + 0.5)
@@ -1218,7 +1218,7 @@ def run_zi_book(
                     counters[C_ORDER_POOL_FULL] += 1.0
                     break
                 # S8: アイスバーグ判定 — 表示上限を超える残量の一部を隠す。
-                # 板 (lv_vol・デプス・スナップショット) は**表示量だけ**を見る。
+                # 板 (lv_vol・デプス・スナップショット) は表示量だけを見る。
                 disp = remaining
                 hidden = 0.0
                 if (
@@ -1278,7 +1278,7 @@ def run_zi_book(
             if use_qr:
                 # S9 (§6): 重み付き取消選択。w = exp(−dist·Δ)·L^p·(1 + back·b)。
                 # 遠い注文は取り消されにくく、長い列・後方ほど取り消されやすい —
-                # デプスのハンプを鋭くする (⑳)。後方度 b は同一レベルの
+                # デプスのハンプを鋭くする ((20))。後方度 b は同一レベルの
                 # 先頭/末尾 seq からの相対位置で O(1) 近似 (rank 単調)。
                 wtot = 0.0
                 for j in range(n_live):

@@ -9,14 +9,14 @@ S1: 対数ボラに MSM (Markov-Switching Multifractal) と緩慢 OU を加算�
                                                            ^^^^^^^^ 凸性補正
 
 これで |r| の長期記憶 (べき則的 ACF)・ボラティリティ・クラスタリング・
-集計正規性・マルチフラクタルスケーリングが初めて現れる。**革新項 z は正規のまま。**
+集計正規性・マルチフラクタルスケーリングが初めて現れる。革新項 z は正規のまま。
 テールはボラ過程 (と S3 のジャンプ) から内生的に出す。t 分布などを外生的に入れると
 時間集計で尖度が下がる性質が永久に再現できなくなる。
 
 時間スケール不変性 (最重要の設計制約)
 ------------------------------------
-MSM の切替強度 gamma_i と OU の theta は**物理時間 (1 日 = 1 セッション) で定義**し、
-グリッド刻みへの変換は実装内部で行う。「1 ステップあたり切替確率」で実装すると
+MSM の切替強度 gamma_i と OU の theta は物理時間 (1 日 = 1 セッション) で定義し、
+グリッド刻みへの変換は実装内部で行う。1 ステップあたり切替確率で実装すると
 steps_per_day を変えた瞬間に別のモデルになる。具体的には:
 
 - MSM は切替時刻を連続時間で生成する (Poisson 個数 + 一様時刻)。グリッドへは
@@ -66,7 +66,7 @@ __all__ = [
 ]
 
 #: 診断用サブサンプルの間隔 (秒)。全ステップの成分内訳を保持すると本番設定で
-#: 数 GB になるため、分単位に間引いて保存する (指示書 §8)。
+#: 数 GB になるため、分単位に間引いて保存する 。
 VOL_SUBSAMPLE_SECONDS: float = 60.0
 
 
@@ -123,7 +123,7 @@ def rough_discrete_stationary_variance(
         Var(Y) = eta^2 dt^{2H} / (1 - a^2) * [1 + 2 sum_{h>=1} a^h rho(h)]
 
     (rho は単位 fGn の自己相関)。連続式 (:func:`solve_eta_rough` の分母) とは
-    離散化の分だけずれるので、**凸性補正とアンサンブル断面はこちらを使う** —
+    離散化の分だけずれるので、凸性補正とアンサンブル断面はこちらを使う —
     補正が実際に生成される過程の分散と一致していないと E[sigma^2] = sigma_bar^2
     が崩れるため。H < 1/2 では rho の総和が -1/2 に収束する (スペクトルが原点で
     消える) ため、和の打ち切りは a^h の減衰で決める。
@@ -144,7 +144,7 @@ def davies_harte_fgn(n: int, hurst: float, rng: np.random.Generator) -> np.ndarr
     (テストが標本自己共分散と理論値の一致を確認する)。H < 1/2 では埋め込みの
     非負定値性が保証される。Cholesky (O(N^2)) は使わない。
 
-    乱数消費: ``rng.standard_normal(2m)`` を**一度だけ** (m は n 以上の FFT 高速長)。
+    乱数消費: ``rng.standard_normal(2m)`` を一度だけ (m は n 以上の FFT 高速長)。
     m は n にのみ依存するので、同じ n なら消費列は同一。
     """
     if n < 2:
@@ -182,7 +182,7 @@ def davies_harte_fgn(n: int, hurst: float, rng: np.random.Generator) -> np.ndarr
 def prepare_chaos_component(
     config, n_days: float
 ) -> tuple[np.ndarray, np.ndarray, float, float, dict]:
-    """chi_2 の窓を用意する (S5)。**生成とアンサンブル検証の両方がこれを使う。**
+    """chi_2 の窓を用意する (S5)。生成とアンサンブル検証の両方がこれを使う。
 
     Returns
     -------
@@ -190,13 +190,13 @@ def prepare_chaos_component(
         ``chaos_t_days`` は市場日単位の格子、``chi_norm`` は正規化済み系列。
         注入は ``a * interp(t_days, chaos_t_days, chi_norm) - c_chi``。
 
-    正規化は**使用する窓の上で**行う (平均 0・分散 1)。これにより経路上の chi
+    正規化は使用する窓の上で行う (平均 0・分散 1)。これにより経路上の chi
     分散寄与が厳密に ``a^2 = vol_var_target_chaos`` になり、シード横断相関ゲート
-    (指示書 §8) の目標値 0.20 = 0.05/0.25 が構成から導ける。
+     の目標値 0.20 = 0.05/0.25 が構成から導ける。
 
-    ★凸性補正 c_chi は数値で求める (指示書 §5.3)。S1 の -Var(X) は X がガウス
+    凸性補正 c_chi は数値で求める 。S1 の -Var(X) は X がガウス
     だから成立した式で、chi はガウスでない (MG の周辺分布は有界・歪み・多峰)。
-    ガウスの公式を流用すると E[sigma^2] の水準がずれ、「なんとなくボラが高い」と
+    ガウスの公式を流用すると E[sigma^2] の水準がずれ、なんとなくボラが高いと
     しか見えない壊れ方をする (S1・S4 と同型の事故)。
     c_chi = 0.5 log(mean(exp(2 a chi))) で時間平均の意味で
     E[sigma_t^2] = sigma_bar^2 が厳密に保たれる。
@@ -258,7 +258,7 @@ def prepare_chaos_component(
         "n_grid_points": int(chi_norm.shape[0]),
         "a": a,
         "c_chi_numerical": c_chi,
-        # ガウス公式 (Var = a^2) との差 — 数値補正が「効いている」ことの証拠。
+        # ガウス公式 (Var = a^2) との差 — 数値補正が効いていることの証拠。
         "c_chi_gaussian_formula": config.vol_var_target_chaos,
         "c_chi_difference": c_chi - config.vol_var_target_chaos,
         "window_mean": mu,
@@ -278,18 +278,18 @@ def compose_log_sigma(
     var_rough: float = 0.0,
     inplace: bool = False,
 ) -> np.ndarray | float:
-    """log sigma の合成式。**生成とアンサンブル検証の両方がこの 1 つを使う。**
+    """log sigma の合成式。生成とアンサンブル検証の両方がこの 1 つを使う。
 
     式を 2 か所に書くと、片方だけ直して乖離する事故が起きる。凸性補正
     -Var(X) - Var(Y) はガウス成分 (OU とラフ fOU) のためのもの:
     E[e^{2X}] = e^{2Var(X)} != 1 なので、引かないと実効ボラが e^{Var} 倍に膨らむ。
     MSM 側は E[prod M_i] = 1 なので補正不要。**var_rough には生成される離散過程の
-    実分散** (:func:`rough_discrete_stationary_variance`) **を渡すこと** — 連続式の
+    実分散 (:func:`rough_discrete_stationary_variance`) を渡すこと** — 連続式の
     目標値を渡すと離散化の分だけ E[sigma^2] がずれる。
 
     ``inplace=True`` のとき ``half_log_msm`` を書き換えて返す (呼び出し側が所有権を
     渡す)。本番設定では 1 配列 936MB なので、素直に書くと中間結果だけで数 GB を
-    使ってしまうため。**両経路の結果はビット単位で一致する**: IEEE754 の加算は
+    使ってしまうため。両経路の結果はビット単位で一致する: IEEE754 の加算は
     可換なので ``log_sigma_bar + a == a + log_sigma_bar`` であり、それ以外の演算
     順序は同一だからである (tests が一致を固定している)。
     """
@@ -321,10 +321,10 @@ def simulate_msm_path(
     """MSM の ``0.5 * sum_i log M_i(t)`` を成分レンジ指定つきで生成する。
 
     :meth:`GBMPriceLayer._simulate_msm` の実体 (アルゴリズムの説明はそちら)。
-    S13 の共通因子 (cross_factor) と資産固有側が**この 1 つの関数**を使う —
+    S13 の共通因子 (cross_factor) と資産固有側がこの 1 つの関数を使う —
     式を 2 か所に書くと片方だけ直して乖離する事故が起きるため。
 
-    - ``component_range=None`` は全成分 [0, k)。**S12 までの経路とビット単位同一**
+    - ``component_range=None`` は全成分 [0, k)。S12 までの経路とビット単位同一
       (乱数消費列・浮動小数の演算順序とも変更なし)。
     - m0 は常に全体の配分 (vol_var_target_msm, k) から解く — 部分集合でも
       1 成分あたりの分散寄与は変わらない (共有分割は周辺分布を保存する §4.2)。
@@ -353,7 +353,7 @@ def simulate_msm_path(
         states = rng.integers(0, 2, n_switch + 1)
 
         # 切替 m 以降の状態を使い始める最初の格子点。
-        # bounds[m] <= j  <=>  switch_times[m] <= t_days[j] なので、
+        # bounds[m] <= j <=> switch_times[m] <= t_days[j] なので、
         # 素朴版の状態番号 (自分以下の切替の個数) と厳密に一致する。
         bounds = np.searchsorted(t_days, switch_times, side="left")
         np.clip(bounds, 0, n_points, out=bounds)
@@ -402,7 +402,7 @@ def simulate_msm_path(
         "horizon_days": T,
         "n_merged_segments": int(starts.size),
         # 切替過程のダイジェスト。解像度を変えても一致することが
-        # 「物理時間定義」の直接証拠になる (test_scale_invariance)。
+        # 物理時間定義の直接証拠になる (test_scale_invariance)。
         "switch_digest": switch_hash.hexdigest(),
     }
     return total, diag
@@ -438,7 +438,7 @@ def simulate_ou_path(
         if driver.shape[0] != t_days.shape[0] - 1:
             raise ValueError("OU 駆動列の長さがステップ数と一致しません")
         z = driver
-    # X_j = a X_{j-1} + s z_j  (j >= 1) を lfilter で。zi = [a * x0] により
+    # X_j = a X_{j-1} + s z_j (j >= 1) を lfilter で。zi = [a * x0] により
     # y[0] = s z[0] + a x0 = X_1 となる。
     y, _ = signal.lfilter([s], [1.0, -a], z, zi=np.array([a * x0]))
     if driver is None:
@@ -490,7 +490,7 @@ class GBMPriceLayer:
         #: 秒 -> 年 の換算。年 = ann_days 日 x 1 日の取引秒数 (equity 252 x 23400 /
         #: perp 365 x 86400 — 時間軸の単一情報源は config、S0-perp §4)。
         self._seconds_per_year = config.ann_days * calendar.session_seconds()
-        #: 秒 -> 日 の換算。gamma_i と theta は「1 日あたり」の物理時間定義 (§7)。
+        #: 秒 -> 日 の換算。gamma_i と theta は1 日あたりの物理時間定義 (§7)。
         self._seconds_per_day = calendar.session_seconds()
         #: 直近の simulate() の診断。pipeline が StageResult.meta に回収する。
         self.last_diagnostics: dict[str, Any] = {}
@@ -511,7 +511,7 @@ class GBMPriceLayer:
 
         Var(log sigma) の予算 (変動幅) とは独立な軸で、S1/S2 の配分は変わらない。
         phi の正規化 ((1/T)∫phi^2 du = 1) が正しければ、季節性の導入自体は
-        日次積分分散を変えないので σ̄ の修正には効かない (指示書 §7)。
+        日次積分分散を変えないので σ̄ の修正には効かない 。
         """
         cfg = self._config
         sigma = cfg.sigma_bar
@@ -525,21 +525,21 @@ class GBMPriceLayer:
     def jump_intensity_scale(self) -> float:
         """ジャンプ基準強度 ``lambda0`` に掛ける S4 の補正係数。
 
-        S4 を入れたことで**日中のジャンプ/拡散の配分が動いてしまう**のを止める。
+        S4 を入れたことで日中のジャンプ/拡散の配分が動いてしまうのを止める。
         補正しないと実測で JV シェアが 12.7% → 14.9% に動いた (S3 の QV 予算の破壊)。
         原因は 2 つあり、どちらも「季節性・ON は配分を変えるが総量は変えない」という
         S4 の設計原則からの逸脱なので、両方を打ち消す。
 
-        1. **ON の取り分**: 拡散側だけが ``sqrt(1-ON_share)`` で縮み、ジャンプ側は
+        1. ON の取り分: 拡散側だけが ``sqrt(1-ON_share)`` で縮み、ジャンプ側は
            そのままだったので、日中 QV に占めるジャンプの比率が上がった。
            日中 QV 全体を ``(1-ON_share)`` 倍にするには強度も同率で縮める。
-        2. **phi の Jensen 効果**: 強度は ``lambda0 (sigma_t/sigma_bar)^rho`` で、
+        2. phi の Jensen 効果: 強度は ``lambda0 (sigma_t/sigma_bar)^rho`` で、
            sigma に phi が掛かると平均強度が ``(1/T)∫phi^rho du`` 倍になる。
            phi の正規化は ``∫phi^2 du = 1`` (二乗) なので、rho != 2 では
-           ``∫phi^rho du != 1`` になり、既定の rho=1 では **0.969 倍**に下がる。
+           ``∫phi^rho du != 1`` になり、既定の rho=1 では 0.969 倍に下がる。
            φ_σ の二乗正規化をそのまま強度に流用してはならない、ということ。
 
-        補正後は「ジャンプの**時刻**が日内で偏るが、**本数と分散寄与は S3 と同じ**」
+        補正後はジャンプの時刻が日内で偏るが、本数と分散寄与は S3 と同じ
         になる。これがジャンプ側の季節性の正しい入れ方である。
         """
         cfg = self._config
@@ -575,7 +575,7 @@ class GBMPriceLayer:
         per-step の Bernoulli ループは k*N 回の乱数生成になり 11.7M ステップでは
         非現実的。成分ごとに (1) 切替回数 ~ Poisson(gamma_i * T)、(2) 切替時刻 ~
         Uniform(0, T) ソート、(3) 各区間の値を等確率で引く、の順で生成する。
-        **この生成はグリッド解像度に一切依存しない** (t_days の値でしか使わない)
+        この生成はグリッド解像度に一切依存しない (t_days の値でしか使わない)
         ので、同一シードなら steps_per_day を変えても切替過程がビット単位で一致する。
 
         乱数消費は ``l2.vol_msm`` ストリームから成分 i=1..k の順に固定
@@ -590,7 +590,7 @@ class GBMPriceLayer:
         定数埋めで済む。さらに全成分の切替点を統合すると、区間ごとの合計値を
         小さい配列の上で計算してから N 要素を 1 回書くだけになる。
 
-        **この経路変更は出力をビット単位で変えない。** 統合区間の値は
+        この経路変更は出力をビット単位で変えない。 統合区間の値は
         ``(((0 + v_0) + v_1) + ... ) * 0.5`` を成分順に計算しており、素朴版が
         格子点ごとに行う浮動小数演算と順序も含めて同一だからである
         (tests/test_s1_vol.py がリファレンス実装との一致を固定している)。
@@ -632,8 +632,8 @@ class GBMPriceLayer:
         driver:
             S3 のレバレッジ長期チャンネル用の外部駆動列 (N(0,1)、ステップ数本)。
             与えられた場合、z 列は消費せず driver で駆動する — レバレッジとは
-            「OU の駆動が価格革新と相関を持つ」ことそのものなので、駆動の
-            置き換えが実装である。**x0 は常に ``l2.vol_slow`` から引く** ので、
+            OU の駆動が価格革新と相関を持つことそのものなので、駆動の
+            置き換えが実装である。x0 は常に ``l2.vol_slow`` から引く ので、
             前段階照合の証人 (x0 の厳密一致) はレバレッジ有効時も機能する。
         """
         cfg = self._config
@@ -654,19 +654,19 @@ class GBMPriceLayer:
     def _simulate_rough(self, t: np.ndarray) -> np.ndarray:
         """定常 fOU (H ~ 0.1) を専用の物理グリッドで生成し、価格グリッドへ展開する。
 
-        なぜ fOU か (指示書 §4)
+        なぜ fOU か 
         -----------------------
         rough Bergomi の Volterra 過程 W^H_t は非定常 (分散が t^{2H} で増大) で、
         5000 日のシミュレーションではそのドリフトが低周波の見かけの長期記憶として
         GPH に混入する。定常な fOU なら長スケールでは指数減衰し、MSM/OU の帯域を
         汚染しない。
 
-        なぜ専用グリッドか (指示書 §6)
+        なぜ専用グリッドか 
         ------------------------------
         価格グリッド (117M 点) で Davies-Harte を回すと FFT が数 GB になる。
-        ラフ成分は ``rough_grid_seconds`` (既定 60 秒) の**物理グリッド**で生成し、
+        ラフ成分は ``rough_grid_seconds`` (既定 60 秒) の物理グリッドで生成し、
         価格グリッドへは区分定数で展開する。「ボラの粗さは 1 分まで解像され、
-        それ以下では一定」というモデル化であり、**steps_per_day と独立**なので
+        それ以下では一定」というモデル化であり、steps_per_day と独立なので
         同一シードならラフ経路は解像度に依らずビット単位で一致する
         (時間スケール不変性が構造的に成立する)。
 
@@ -693,7 +693,7 @@ class GBMPriceLayer:
         burnin = int(math.ceil(40.0 * cfg.rough_half_life_days / dt_days))
 
         fgn = davies_harte_fgn(burnin + n_steps_rough, hurst, rng)
-        # レバレッジ (S3) 用に、スケール前の単位分散 fGn を **burnin 込みで** 保持
+        # レバレッジ (S3) 用に、スケール前の単位分散 fGn を burnin 込みで 保持
         # (whitening フィルタの先頭が文脈を必要とするため。~16MB)。
         self._last_fgn_unit = fgn.copy()
         self._last_fgn_burnin = burnin
@@ -720,7 +720,7 @@ class GBMPriceLayer:
             "n_rough_points": int(y.shape[0]),
             "burnin_steps": burnin,
             "ar_coeff": a,
-            # 解像度を変えても一致することが「物理グリッド定義」の直接証拠
+            # 解像度を変えても一致することが物理グリッド定義の直接証拠
             # (scale_invariance が照合する)。
             "y_digest": hashlib.sha256(np.ascontiguousarray(y).tobytes()).hexdigest(),
         }
@@ -764,18 +764,18 @@ class GBMPriceLayer:
     ) -> tuple[np.ndarray, np.ndarray, float]:
         """fGn を AR(order) で白色化し、innovation 列 (ほぼ iid N(0,1)) を返す。
 
-        ★なぜ fGn そのものと相関させないか (指示書 §6 からの意図的な逸脱)
+        なぜ fGn そのものと相関させないか (設計要件 からの意図的な逸脱)
         --------------------------------------------------------------------
-        指示書 §6.2 の字義どおり「セル集計を fGn 増分 G_j と相関」させると、
+        字義どおりセル集計を fGn 増分 G_j と相関させると、
         fGn の反持続 (lag-1 自己相関 2^{2H-1}-1 ~ -0.43) がセル集計 A_j の系列に
-        rho^2 倍で乗り移り、**60 秒バーのリターン自己相関が -0.21 になる**
-        (実測)。これは指示書 §10 が「最重要」とする ② の不変ゲート
+        rho^2 倍で乗り移り、60 秒バーのリターン自己相関が -0.21 になる
+        (実測)。これは設計要件 が最重要とする (2) の不変ゲート
         (acf_r / ljung_box の S0 基準維持) と両立しない — §6 の検証表はセル内
         しか確認しておらず、セル間の fGn 継承を見落としている。
 
-        rough Bergomi が価格の dW を W^H そのものではなく**背後の駆動 BM dZ** と
+        rough Bergomi が価格の dW を W^H そのものではなく背後の駆動 BM dZ と
         相関させるのと同じ構造で、fGn の時間領域 innovation epsilon (iid) を相関
-        相手にすれば、(a) z は全ラグで厳密に無相関 (②維持)、(b) epsilon_j は
+        相手にすれば、(a) z は全ラグで厳密に無相関 ((2)維持)、(b) epsilon_j は
         g_j, g_{j+1}, ... へ因果的に伝播して将来のボラだけを動かす (レバレッジ)、
         の両方が成立する。
 
@@ -802,23 +802,23 @@ class GBMPriceLayer:
         return eps, phi, math.sqrt(pred_var)
 
     def _bridge_innovations(self, b: np.ndarray, t: np.ndarray) -> np.ndarray:
-        """価格革新 z を Brownian bridge 分解で構成する (S3 指示書 §6 — 最重要)。
+        """価格革新 z を Brownian bridge 分解で構成する (S3 設計要件 — 最重要)。
 
         ラフセル j に n 個の価格ステップがあるとき:
 
-            S = sum(b),  A = rho sqrt(n) eps_j + sqrt(1-rho^2) sqrt(n) w_j
+            S = sum(b), A = rho sqrt(n) eps_j + sqrt(1-rho^2) sqrt(n) w_j
             z = b - S/n + A/n
 
         この構成は厳密に Var(z_i)=1, Cov(z_i,z_k)=0 (i != k), sum z = A,
-        corr(sum z / sqrt(n), eps_j) = rho を満たす。**「共通ショックを足す」実装は
-        セル内に正の自己相関 (+rho^2/n) を作り ② を壊す** — bridge 項の -1/n が
+        corr(sum z / sqrt(n), eps_j) = rho を満たす。**共通ショックを足す実装は
+        セル内に正の自己相関 (+rho^2/n) を作り (2) を壊す** — bridge 項の -1/n が
         集計項の +1/n をちょうど打ち消すのがこの分解の要点。
 
         相関相手 eps_j は fGn の whitening innovation
-        (:meth:`fgn_whitening_innovations` — fGn 直結が ② を壊す理由もそこに記載)。
+        (:meth:`fgn_whitening_innovations` — fGn 直結が (2) を壊す理由もそこに記載)。
 
         b は ``l2.diffusion`` から引いた列そのもの (in-place で z に変換する) なので、
-        **l2.diffusion の消費列は S0 以来ビット単位で不変のまま** (使い方が変わる
+        l2.diffusion の消費列は S0 以来ビット単位で不変のまま (使い方が変わる
         だけ)。セル直交成分 w は ``l2.leverage`` から。
         """
         cfg = self._config
@@ -881,7 +881,7 @@ class GBMPriceLayer:
         return b
 
     def _simulate_mid_leverage(self, z: np.ndarray, t: np.ndarray) -> np.ndarray:
-        """中速レバレッジ成分 X_mid (日次グリッド OU、2026-08-19 オペレータ承認)。
+        """中速レバレッジ成分 X_mid (日次グリッド OU、2026-08-19 設計判断)。
 
         なぜ必要か: 緩慢 OU (HL 30 日) は 1 日の駆動が定常 sd の
         sqrt(1-e^{-2 theta}) ~ 21% しか動かせず、ラフ fOU は反持続でショックの
@@ -889,12 +889,12 @@ class GBMPriceLayer:
         が理論上限 ~-0.06 でゲート帯 [-0.28, -0.16] に届かない (実測済み)。
         HL ~5 日なら 1 日の駆動が sd の sqrt(1-e^{-2 ln2/5}) ~ 49% を動かせる。
 
-        構成 (rough の 60 秒グリッドと同型の「専用物理グリッド」— 日次):
+        構成 (rough の 60 秒グリッドと同型の専用物理グリッド— 日次):
 
-            u_d = (日 d の z の和) / sqrt(n_steps_day)          … 厳密 N(0,1)
+            u_d = (日 d の z の和) / sqrt(n_steps_day) … 厳密 N(0,1)
             X[d+1] = a X[d] + s (rho_mid u_d + sqrt(1-rho^2) w_d)
 
-        **因果**: 日 d の sigma に入るのは X[d] = 日 d-1 までの u のみ。同日の
+        因果: 日 d の sigma に入るのは X[d] = 日 d-1 までの u のみ。同日の
         z と sigma の同時相関は作らない (ルックアヘッドなし、増分の条件付き
         正規性も保たれる)。分散は vol_var_target_slow の内数
         (leverage_mid_var) — 総予算は不変。
@@ -970,7 +970,7 @@ class GBMPriceLayer:
     def _simulate_jumps(
         self, t: np.ndarray, sigma_left: np.ndarray, dt_years: float
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Kou 二重指数ジャンプを生成する (S3 指示書 §4)。
+        """Kou 二重指数ジャンプを生成する (S3 設計要件)。
 
         強度はボラ変調 ``lambda(t) = lambda0 min((sigma_t/sigma_bar_diff)^rho_J, cap)``
         で、クラスタリングは既存ボラ状態から得る (自己励起 Hawkes は S11 の担当 —
@@ -990,7 +990,7 @@ class GBMPriceLayer:
         lam = sigma_left / sig_bar
         if cfg.jump_vol_exponent != 1.0:
             np.power(lam, cfg.jump_vol_exponent, out=lam)
-        # 上限は**ボラ比の増幅**に掛ける (S4 の phi もこの比に入る)。既定 cap=10 は
+        # 上限はボラ比の増幅に掛ける (S4 の phi もこの比に入る)。既定 cap=10 は
         # phi の最大 1.48 では滅多に binding しないが、黙って効いていると強度の
         # 設計値がずれるので、実際に binding した割合を診断に残す。
         cap_binding = float((lam > cfg.jump_intensity_cap).mean())
@@ -1035,7 +1035,7 @@ class GBMPriceLayer:
         )
         lam_eff = -float(compensation.mean()) / (k_comp * dt_years)  # 実効平均強度
         diffusion_qv = sig_bar**2
-        # S13: jv_share_theory は**共通ジャンプ込みの総量**で報告する (固有だけだと
+        # S13: jv_share_theory は共通ジャンプ込みの総量で報告する (固有だけだと
         # (1−s_J) 倍に見え、QV 予算の照合が誤る)。共通側の実効強度は
         # cross_factor が同じ規約 (補償平均 / (k dt)) で計算した値。
         lam_eff_common = 0.0
@@ -1079,12 +1079,12 @@ class GBMPriceLayer:
     ) -> np.ndarray:
         """日 d の引けと日 d+1 の寄付の間のギャップ・リターンを生成する。
 
-        ★物理時間比例 (17.5h/6.5h) では作らない (指示書 §6.3)。取引の無い時間帯は
-        情報時計がほとんど進まないので、**別レジーム**として扱う:
+        物理時間比例 (17.5h/6.5h) では作らない 。取引の無い時間帯は
+        情報時計がほとんど進まないので、別レジームとして扱う:
 
-            r_ON(d) = sigma_ON(d) z + J_ON(d),   sigma_ON(d) = c_ON sigma_close(d)
+            r_ON(d) = sigma_ON(d) z + J_ON(d), sigma_ON(d) = c_ON sigma_close(d)
 
-        ``c_ON`` は「クローズ・トゥ・クローズ分散に占める ON の寄与」が設定値に
+        ``c_ON`` はクローズ・トゥ・クローズ分散に占める ON の寄与が設定値に
         なるように逆算する。日中の 1 日分の分散は sigma_bar_diff^2/252 なので、
 
             share = var_ON / (var_ON + var_intraday)
@@ -1109,12 +1109,12 @@ class GBMPriceLayer:
 
         # ON の分散水準。設計上「クローズ・トゥ・クローズ分散 sigma_bar^2/252 の
         # うち share を ON が取る」なので、目標は sigma_bar^2 share / 252。
-        # ★sigma_bar_diffusion (拡散のみ) から (1-share) 経由で逆算してはならない —
+        # sigma_bar_diffusion (拡散のみ) から (1-share) 経由で逆算してはならない —
         # 日中の分散にはジャンプ分も含まれるため share がずれる。
         share = cfg.overnight_variance_share
         var_on_target = cfg.sigma_bar**2 * share / cfg.ann_days
 
-        # ジャンプは**分散シェアで指定**し、そこから Kou の eta スケールを逆算する。
+        # ジャンプは分散シェアで指定し、そこから Kou の eta スケールを逆算する。
         # サイズ倍率で指定すると E[J^2] が ON の分散予算と噛み合わず、実測シェアが
         # 目標の 3 倍になる (実際にそうなった)。形状 (p_up, eta 比) は S3 のまま。
         jshare = cfg.overnight_jump_variance_share
@@ -1136,7 +1136,7 @@ class GBMPriceLayer:
                     f" E[e^J] が発散するので overnight_jump_variance_share を下げるか"
                     f" overnight_jump_prob を上げてください。"
                 )
-        # ★sigma_close は**引け時点**の値なので、季節性があると phi(引け) 倍に
+        # sigma_close は引け時点の値なので、季節性があると phi(引け) 倍に
         # 膨らんでいる (既定で 1.38、二乗で 1.90 倍)。E[sigma_close^2] =
         # phi_close^2 sigma_bar_diff^2 なので、その分を割って基準を揃える。
         # 割らないと ON シェアが目標の 1.9 倍になる (実際にそうなった)。
@@ -1173,7 +1173,7 @@ class GBMPriceLayer:
         gaps -= 0.5 * sigma_on**2
 
         # sigma_ON ∝ sigma_close なので構成上の相関は 1。ゲートが見るべきは
-        # **観測可能な連動** (|gap| と sigma_close の相関) — こちらは z のノイズで
+        # 観測可能な連動 (|gap| と sigma_close の相関) — こちらは z のノイズで
         # 1 より小さくなる。両方を記録して取り違えを防ぐ。
         corr_obs = float(np.corrcoef(np.abs(gaps), sigma_close)[0, 1])
         self.last_diagnostics["overnight"] = {
@@ -1191,7 +1191,7 @@ class GBMPriceLayer:
             "n_on_jumps": n_on_jumps,
             "sample_var": float(gaps.var()),
             "sample_mean": float(gaps.mean()),
-            # ★分散設計の直接の証人。検証側の variance_share は分母 (日中日次分散)
+            # 分散設計の直接の証人。検証側の variance_share は分母 (日中日次分散)
             # が右に歪んだ推定量なので系統的に上振れするが、こちらは分子だけを
             # 設計値と比べるので偏らない (6 シード実測 0.93〜1.19、平均 1.05)。
             "sample_var_over_target": float(gaps.var() / var_on_target),
@@ -1230,7 +1230,7 @@ class GBMPriceLayer:
     ) -> np.ndarray:
         """log (瞬間ボラ) の経路。
 
-        すべて対数ボラの**加法**成分として設計する (各成分の寄与を分散分解で
+        すべて対数ボラの加法成分として設計する (各成分の寄与を分散分解で
         切り分けられるようにするため。乗法で混ぜると成分の効果が分離できない)。
 
         - S1: MSM ``+ 0.5 sum log M_i`` と緩慢 OU ``+ X_t - Var(X)`` (実装済み)
@@ -1251,7 +1251,7 @@ class GBMPriceLayer:
         n = t.shape[0]
         log_sigma_bar = math.log(self.sigma_bar_diffusion)
 
-        # ★早期リターンは「log σ に何も足さない」場合のみ。カオス (S5) と季節性
+        # 早期リターンは「log σ に何も足さない」場合のみ。カオス (S5) と季節性
         # (S4) は確率成分が無くても log σ を変えるので、ここを通ってはならない
         # (通すと有効フラグが暗黙 no-op になる — このプロジェクトの禁止事項)。
         if not (
@@ -1269,7 +1269,7 @@ class GBMPriceLayer:
         y_rough: np.ndarray | float = 0.0
         var_slow = 0.0
         var_rough = 0.0
-        # ★生成順は OU -> MSM。ストリームは名前ごとに独立なので消費列は順序に
+        # 生成順は OU -> MSM。ストリームは名前ごとに独立なので消費列は順序に
         # 依存せず (rng.py の設計、test_stream_order_does_not_matter が固定)、
         # 出力はビット単位で不変。OU の一時配列 (z/y/x) と MSM の出力配列が同時に
         # 生きる時間を無くすことで、本番設定 (1 配列 936MB) のピークが 5.6 -> 4.7GB
@@ -1285,7 +1285,7 @@ class GBMPriceLayer:
             if self._common is not None and self._common.ou_common_var > 0.0:
                 slow_var = cfg.vol_var_target_slow - self._common.ou_common_var
             x_slow = self._simulate_slow_ou(t_days, driver=ou_driver, var_override=slow_var)
-            # 凸性補正は OU 族の**合計**分散 (共通 + 固有 = 総予算) に対して行う。
+            # 凸性補正は OU 族の合計分散 (共通 + 固有 = 総予算) に対して行う。
             # x_mid の場合のみ、後段の加算ブロックが mid の分を足し戻す。
             var_slow = cfg.vol_var_target_slow if x_mid is None else slow_var
             # S13: 共通 OU を加算 (固有配列は自分の所有なので in-place 可)。
@@ -1317,7 +1317,7 @@ class GBMPriceLayer:
 
         # 診断用サブサンプル (分単位)。成分内訳を全ステップ保持すると本番設定で
         # 数 GB になるため間引く。検証スイートの path 診断がこれを使う。
-        # **合成の前に採る**: 下の合成は half_log_msm の配列を書き換えるので、
+        # 合成の前に採る: 下の合成は half_log_msm の配列を書き換えるので、
         # あとから採ると成分内訳ではなく log sigma そのものになってしまう。
         step_seconds = float(t[1] - t[0])
         stride = max(int(round(VOL_SUBSAMPLE_SECONDS / step_seconds)), 1)
@@ -1361,8 +1361,8 @@ class GBMPriceLayer:
             del y_rough
 
         # S5: 決定論的カオス成分 chi_2。確率成分と同じ log 加算だが、凸性補正は
-        # ガウス公式ではなく**数値** (c_chi) — 詳細は _simulate_chaos。φ の前に足す
-        # (指示書 §5.1 の式: chi は log σ_stoch の一部で、φ はその全体に掛かる)。
+        # ガウス公式ではなく数値 (c_chi) — 詳細は _simulate_chaos。φ の前に足す
+        # (式: chi は log σ_stoch の一部で、φ はその全体に掛かる)。
         # 本番では 1 配列 936MB なので、補間はチャンクで in-place 加算する。
         if cfg.enable_chaos_vol:
             chaos_t_days, chi_norm, a_chi, c_chi = self._simulate_chaos(float(t_days[-1]))
@@ -1381,7 +1381,7 @@ class GBMPriceLayer:
         else:
             subsample["chi_term"] = np.zeros(n_sub)
             subsample["c_chi"] = 0.0
-        # S4: 日内季節性を**観測ボラへの乗法変調**として掛ける。
+        # S4: 日内季節性を観測ボラへの乗法変調として掛ける。
         # log sigma_obs = log phi_sigma(u) + log sigma_stoch。
         # 確率ボラ成分そのものには掛けない (§3) — phi で割れば S3 の系列が
         # 完全に復元でき、それが S4 のゲートの検定力の源になる。
@@ -1432,7 +1432,7 @@ class GBMPriceLayer:
     # S13: 因子合成
     # ------------------------------------------------------------------
     def _compose_factor_innovation(self, z: np.ndarray) -> np.ndarray:
-        """z_i = β_i z_F + √(1−β_i²) z_i^idio (指示書 §4.1)。
+        """z_i = β_i z_F + √(1−β_i²) z_i^idio 。
 
         z (固有チャネル — bridge 済み) を in-place で合成後の革新に変換する。
         両項とも線形なので、固有側の bridge が保証するセル内無相関・単位分散は
@@ -1440,7 +1440,7 @@ class GBMPriceLayer:
         相関は全スケールで β_i β_j。
 
         β=0 は完全スキップ (乗算すら行わない) — 退化テスト (§8.3) が
-        「因子経路を通しても資産 0 は S12 とビット単位一致」を固定する。
+        因子経路を通しても資産 0 は S12 とビット単位一致を固定する。
         """
         if self._common is None or self._factor_beta == 0.0:
             return z
@@ -1468,10 +1468,10 @@ class GBMPriceLayer:
         ``log_p[i+1] = log_p[i] + (mu - 0.5 sigma_i^2 - lambda_i k) dt
         + sigma_i sqrt(dt) z_i + J_i``
 
-        ボラは区間の**左端**の値を使う (Euler-Maruyama)。右端や区間平均を使うと
+        ボラは区間の左端の値を使う (Euler-Maruyama)。右端や区間平均を使うと
         レバレッジで未来のボラ情報が当該区間のリターンへ漏れる (ルックアヘッド)。
 
-        拡散乱数は ``l2.diffusion`` から**最初に n-1 個を一括で**引く。レバレッジ
+        拡散乱数は ``l2.diffusion`` から最初に n-1 個を一括で引く。レバレッジ
         有効時はその列 b を bridge 分解 (§6) で z に変換するが、**消費列そのものは
         S0 以来不変** (rng_diffusion ゲートがこれを検証する)。無効時は z = b で
         S2 までの経路とビット単位同一。
@@ -1495,8 +1495,8 @@ class GBMPriceLayer:
 
             # 長期チャンネル: OU の駆動 xi = rho_slow z + sqrt(1-rho^2) w2。
             # z を先に構成してから xi を導出する (順序を逆にしない — §6.3)。
-            # ★S13: xi は**固有チャネルの z** (合成前) から作る — 固有 OU の駆動
-            # (指示書 §4.4 の「固有チャネルに同じ ρ」)。共通 OU の駆動は
+            # S13: xi は固有チャネルの z (合成前) から作る — 固有 OU の駆動
+            # (固有チャネルに同じ ρ)。共通 OU の駆動は
             # cross_factor が z_F から同じ ρ_slow で作る (共通チャネル側)。
             rho_s = cfg.leverage_rho_slow
             xi = self._rng.get("l2.leverage_slow").standard_normal(n - 1)
@@ -1508,7 +1508,7 @@ class GBMPriceLayer:
                 (np.dot(z, xi) / z.shape[0] - z.mean() * xi.mean())
                 / (z.std() * xi.std())
             )
-            # 中速レバレッジ成分 (日次グリッド)。既定は無効 (var=0 — ③ 保全の
+            # 中速レバレッジ成分 (日次グリッド)。既定は無効 (var=0 — (3) 保全の
             # 裁定 2026-08-20)。有効時のみ z から前日集計 u_d を作る。
             x_mid = (
                 self._simulate_mid_leverage(z, t)
@@ -1516,7 +1516,7 @@ class GBMPriceLayer:
                 else None
             )
             # S13: 因子合成 z_i = β z_F + √(1−β²) z_id (§4.1)。xi (固有 OU 駆動) の
-            # 構成後・z_acf の測定前に行う — z_acf は**合成後**のセル内無相関
+            # 構成後・z_acf の測定前に行う — z_acf は合成後のセル内無相関
             # (各資産で個別に再検証すべき箇所 §4.1) を測る。
             z = self._compose_factor_innovation(z)
             log_vol = self._log_vol_path(
@@ -1592,8 +1592,8 @@ class GBMPriceLayer:
             increments += jump_add
             del jump_add, jump_compensation
 
-        # S13: 共通 (システマティック) ジャンプ — 全資産に**同一の対数サイズ**で
-        # 入る (§4.3「市場全体のニュース」)。補償も共通側で計算済み (同一配列を
+        # S13: 共通 (システマティック) ジャンプ — 全資産に同一の対数サイズで
+        # 入る (§4.3市場全体のニュース)。補償も共通側で計算済み (同一配列を
         # 全資産が読む — increments += は共有配列を変異させない)。
         if (
             self._common is not None

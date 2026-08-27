@@ -4,39 +4,39 @@
 
 ``scripts/generate_charts.py`` は単一資産 (``run``) 専用で、S13 の設定
 (``n_assets > 1``) を渡すと ``run()`` が構成エラーで止まる。こちらは
-``run_multi`` を使い、**1 実行 = 相関した 3 銘柄**を生成する。チャート番号は
+``run_multi`` を使い、1 実行 = 相関した 3 銘柄を生成する。チャート番号は
 (実行, 資産) の辞書順で、100 本 = 34 実行 (最後の実行は資産 0 のみ)。
 
 日足の作り方 (ここが本スクリプトの中身)
 --------------------------------------
-1. **日中**は板のミッド (観測) を 1 秒刻みで見て OHLC を取る。高値・安値は
+1. 日中は板のミッド (観測) を 1 秒刻みで見て OHLC を取る。高値・安値は
    終値だけからは復元できない量なので、日中経路を実際に見ていることの証拠になる。
-2. **日境界**には S4 のオーバーナイト・ギャップを合成する。``log_p_star`` も
+2. 日境界には S4 のオーバーナイト・ギャップを合成する。``log_p_star`` も
    観測系列も日中のみの連続経路で、ギャップは別配列に分離されている
    (``types.PriceProcess.overnight_gaps`` の規約: 「クローズ・トゥ・クローズ系列は
    検証側でギャップと合成して作る」)。合成しないと**日次分散の 20%
    (overnight_variance_share) がチャートから消える。**
-3. **出来高**は板の集約約定から日次合計。S0 では「注文流が無いので出来高を
+3. 出来高は板の集約約定から日次合計。S0 では「注文流が無いので出来高を
    付けたら捏造」だったが、S6 以降は内生的に決まるので実データとして書ける。
 
-集団としての検証 (individual が「それらしく」見えても足りない)
+集団としての検証 (individual がそれらしく見えても足りない)
 -----------------------------------------------------------
-- **実行をまたぐチャートは独立**でなければならない (名前ハッシュ RNG)
-- **同一実行内の 3 銘柄は因子構造どおりに相関**していなければならない。
-  ★ただしチャートはクローズ・トゥ・クローズなので、資産別ストリーム由来で
+- 実行をまたぐチャートは独立でなければならない (名前ハッシュ RNG)
+- 同一実行内の 3 銘柄は因子構造どおりに相関していなければならない。
+  ただしチャートはクローズ・トゥ・クローズなので、資産別ストリーム由来で
   資産間共分散を持たない ON ギャップの分だけ相関が希釈される:
 
-      corr_cc = corr_intraday x (1 - ON シェア)     (= x 0.80)
+      corr_cc = corr_intraday x (1 - ON シェア) (= x 0.80)
 
   この予測が当たるかを ``ensemble_metrics.json`` の ``prediction`` に記録する。
 - σ̄ の正規化: クローズ・トゥ・クローズ日次リターンの SD x √252 ≈ σ̄ x √T_daily
 
 出力 (``results/S13/charts/``)
 -----------------------------
-``daily_ohlcv.parquet``   全チャートの日足 OHLCV (1 行 = 1 チャート 1 日)
-``charts_index.parquet``  チャートごとの seed・資産・パラメータ・要約統計・ダイジェスト
+``daily_ohlcv.parquet`` 全チャートの日足 OHLCV (1 行 = 1 チャート 1 日)
+``charts_index.parquet`` チャートごとの seed・資産・パラメータ・要約統計・ダイジェスト
 ``ensemble_metrics.json`` 集団検証 (こちらが本体)
-``images/``               個別チャート 100 枚 + 一覧 (ギャラリー) + showcase
+``images/`` 個別チャート 100 枚 + 一覧 (ギャラリー) + showcase
 """
 
 from __future__ import annotations
@@ -99,7 +99,7 @@ def compose_overnight(
 def realized_vol_5min(log_price: np.ndarray, n_days: int, steps_per_day: int) -> np.ndarray:
     """5 分リターンからの日次実現ボラ (年率)。
 
-    ★1 秒リターンではなく 5 分。1 秒はバイド・アスク・バウンスでマイクロ構造
+    1 秒リターンではなく 5 分。1 秒はバイド・アスク・バウンスでマイクロ構造
     ノイズが実現分散を大きく膨らませる (S10b で jv_share が誤検出になった機構)。
     """
     stride = max(int(round(steps_per_day / 78)), 1)  # 6.5h / 5min = 78 本
@@ -119,7 +119,7 @@ def max_drawdown(close: np.ndarray) -> float:
 def latent_daily_returns(cfg: Config, seed: int) -> dict[int, np.ndarray]:
     """潜在 (p*) の日次クローズ・トゥ・クローズ・リターンを資産ごとに返す。
 
-    **板を外した run_multi から取る。** L2 は板 on/off でビット単位一致する
+    板を外した run_multi から取る。 L2 は板 on/off でビット単位一致する
     (S13 の l2_frozen_multi ゲートが保証) ので潜在経路は同一で、板カーネルを
     回さない分 6 倍速い。流動性オーバーライドは L3/L1 のパラメータのみなので
     ここでも外す (L2 に影響しないことは同ゲートが検証済み)。
@@ -155,7 +155,7 @@ def generate_runs(cfg: Config, n_runs: int, parts_dir: Path, base_seed: int) -> 
     # 窓逸脱シードの記録。品質選別で本数が不足すると generate_runs は
     # base_seed から walk し直すので、記録が無いと**落ちると分かっている
     # シードを毎ラウンド 60 秒かけて引き直す** (実測 4 分の無駄)。
-    # ★設定 (シード以外) が変われば逸脱するシードも変わるので、
+    # 設定 (シード以外) が変われば逸脱するシードも変わるので、
     # config_hash をキーにして古い記録を使い回さない。
     cache_path = parts_dir / "skipped_seeds.json"
     cfg_key = cfg.replace(seed=0).config_hash()
@@ -216,7 +216,7 @@ def generate_runs(cfg: Config, n_runs: int, parts_dir: Path, base_seed: int) -> 
         latent = latent_daily_returns(cfg, seed)
 
         spd = int(round(cfg.steps_per_day))
-        # ★板のウォームアップ期間を捨てる。板は init_levels=30 x init_size=20 の
+        # 板のウォームアップ期間を捨てる。板は init_levels=30 x init_size=20 の
         # 人工的に厚い状態から始まり、定常に達するまでが book_burn_in_days
         # (既定 5 日)。この区間は本プロジェクトの統計収集からも除外されており
         # (§8.1)、チャートに残すと全 100 本の冒頭が一様に「不自然に穏やか」になる。
@@ -245,7 +245,7 @@ def generate_runs(cfg: Config, n_runs: int, parts_dir: Path, base_seed: int) -> 
         runs.append({"seed": seed, "path": part})
         el = time.perf_counter() - started
         done = len(runs)
-        print(f"  実行 {done}/{n_runs} (seed {seed}) 完了  経過 {el:.0f}s / "
+        print(f"  実行 {done}/{n_runs} (seed {seed}) 完了 経過 {el:.0f}s / "
               f"残り約 {el / max(done, 1) * (n_runs - done):.0f}s", flush=True)
         del multi
         seed += 1
@@ -255,7 +255,7 @@ def generate_runs(cfg: Config, n_runs: int, parts_dir: Path, base_seed: int) -> 
 def build_frames(cfg: Config, runs: list[dict], n_charts: int, t_max: float):
     """parts から日足テーブルと index を組み立てる (品質選別つき)。
 
-    ★選別: 伝達比 T = Var(観測日次 cc)/Var(潜在日次 cc) が ``t_max`` 以上の
+    選別: 伝達比 T = Var(観測日次 cc)/Var(潜在日次 cc) が ``t_max`` 以上の
     チャートを除外する。板ミッドが p* から decouple した本 (実測で潜在が
     −0.67% の日に観測が −60.9% という例) を弾くため。
 
@@ -338,7 +338,7 @@ def build_frames(cfg: Config, runs: list[dict], n_charts: int, t_max: float):
                     "annualized_vol_latent": float(
                         math.sqrt(v_lat * TRADING_DAYS_PER_YEAR)
                     ),
-                    # ★伝達比は分散**全体**で見るので、1 日だけ飛んで翌日戻る
+                    # 伝達比は分散全体で見るので、1 日だけ飛んで翌日戻る
                     # 単発スパイク (板の一時的な暴走の名残) は捕まらない。
                     # 用途に応じて絞れるよう最大日次リターンも出す
                     # (潜在の最大は実測 9.1% — これを大きく超える本は要注意)。
@@ -366,7 +366,7 @@ def ensemble_metrics(
     cfg: Config,
     runtime_sec: float,
 ) -> dict[str, Any]:
-    """集団としての検証。個々が「それらしい」だけでは足りない。"""
+    """集団としての検証。個々がそれらしいだけでは足りない。"""
     n_charts = int(index_df.shape[0])
     n_days = cfg.n_days - int(round(cfg.book_burn_in_days))
     ret = daily["log_return"].to_numpy().reshape(n_charts, n_days)
@@ -385,12 +385,12 @@ def ensemble_metrics(
     n_pairs = int(cross.size)
     tail = 2.0 * stats.norm.sf(float(np.max(np.abs(z_cross))))
 
-    # ★帰無対照 (符号ランダム化)。素朴な SE 1/√(n-1) は**等分散正規**を仮定した
+    # 帰無対照 (符号ランダム化)。素朴な SE 1/√(n-1) は等分散正規を仮定した
     # 式で、この系のリターン (共有 χ による不均一分散 + Hill α ≈ 2.5 の裾) には
-    # 当てはまらない。実際、素朴式では max|z| = 7.4 が p < 1e-9 の「独立性の破れ」
+    # 当てはまらない。実際、素朴式では max|z| = 7.4 が p < 1e-9 の独立性の破れ
     # に見えるが、各チャートの |r| 経路 (= 共有ボラ構造・共有された極値日) を
     # そのままに符号だけ日ごと独立に振り直した帰無分布では max|z| の中央値が
-    # 7.9 で、観測はむしろ**下側**にある。判定はこちらの経験帰無で行う。
+    # 7.9 で、観測はむしろ下側にある。判定はこちらの経験帰無で行う。
     rng_null = np.random.default_rng(0xC0FFEE)
     absr = np.abs(ret)
     n_null = 200
@@ -474,7 +474,7 @@ def ensemble_metrics(
             "max_abs_corr": num(float(np.max(np.abs(cross)))),
             "z_std": num(obs_zsd),
             "max_abs_z": num(obs_maxz),
-            # ★判定はこちら (経験帰無)。素朴式の値は下の naive_* に残す。
+            # 判定はこちら (経験帰無)。素朴式の値は下の naive_* に残す。
             "null_z_std_median": num(float(np.median(null_zsd))),
             "null_z_std_p95": num(float(np.percentile(null_zsd, 97.5))),
             "z_std_pvalue_vs_null": num(float(np.mean(null_zsd >= obs_zsd))),
@@ -634,7 +634,7 @@ def draw_charts(daily: pd.DataFrame, index_df: pd.DataFrame, out_dir: Path) -> i
         ax.set_title(
             f"chart {cid:03d}  asset {int(row['asset'])}"
             f" (β={row['beta']:.1f}, κ={row['kappa']:.1f},"
-            f" {row['trades_per_day']:.0f} trades/day)  — last 250 days",
+            f" {row['trades_per_day']:.0f} trades/day) — last 250 days",
             fontsize=9, loc="left",
         )
         ax.grid(alpha=0.15, lw=0.5)
@@ -745,7 +745,7 @@ def main() -> int:
                 for a in range(ASSETS_PER_RUN)
             },
             "note": (
-                "★暴走は「窓に収まったか」では捕まらない (窓逸脱でスキップされた"
+                "暴走は窓に収まったかでは捕まらない (窓逸脱でスキップされた"
                 "実行とは別に、窓内に留まりながら decouple する本がある)。"
                 "流動性 (実効アンカー束 κ·μ) が低い資産ほど起きやすい — "
                 "資産 1 (κ·μ が参照の 3 倍) は全数が T ≤ 1.6 で健全"

@@ -1,7 +1,7 @@
 """結果の永続化・プロット・段階間比較。
 
-``results/<stage>/metrics.json`` は単なるログではなく**回帰テストの基準**である。
-後段で異常が出たときに「どの段階までは正常だったか」を遡るために、段階ごとに
+``results/<stage>/metrics.json`` は単なるログではなく回帰テストの基準である。
+後段で異常が出たときにどの段階までは正常だったかを遡るために、段階ごとに
 必ず残す。したがって書式は段階をまたいで安定していなければならない。
 
 プロットのラベルは英語で書いてある。matplotlib の既定フォントに日本語グリフが
@@ -99,9 +99,9 @@ def write_metrics(
 ) -> Path:
     """``results/<stage>/metrics.json`` を書き出してパスを返す。
 
-    ★``git`` には**実行開始時点**の :func:`git_info` を渡すこと。書き出し時に
+    ``git`` には実行開始時点の :func:`git_info` を渡すこと。書き出し時に
     取り直すと、この関数自身の出力 (metrics.json の上書き / 初回の未追跡
-    results ディレクトリ) が status に映って **dirty が常に True になる**
+    results ディレクトリ) が status に映って dirty が常に True になる
     (S5〜S7 の本番記録が実際に全てこの自己汚染を受けていた)。
     """
     out_dir = results_dir(stage, root)
@@ -144,7 +144,7 @@ def load_metrics(stage: str, root: str | Path | None = None) -> dict[str, Any]:
 def verify_metrics_file(path: str | Path) -> dict[str, Any]:
     """書き出した metrics.json を読み直して必須項目の有無を確認する。
 
-    「書いたつもり」で終わらせないために、書いた後に必ず読み直す。
+    書いたつもりで終わらせないために、書いた後に必ず読み直す。
     """
     path = Path(path)
     if not path.exists():
@@ -215,7 +215,7 @@ def make_plots(
         ax.plot(lim, lim, "r-", lw=1)
         ax.set_xlabel("normal quantiles")
         ax.set_ylabel("empirical quantiles (standardized)")
-        ax.set_title(f"{stage}: normal QQ  (R^2={qq['r2']:.5f})")
+        ax.set_title(f"{stage}: normal QQ (R^2={qq['r2']:.5f})")
         save(fig, "qq_normal.png")
 
     # 3. ACF

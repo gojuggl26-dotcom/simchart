@@ -68,9 +68,9 @@ def bns_jump_test(r: np.ndarray, steps_per_window: int) -> dict:
 
 
 def hill_by_scale(r_daily: np.ndarray, scales_days=(1, 2, 5, 10, 20), k_frac: float = 0.05) -> dict:
-    """Hill α の集計スケール依存 (S3 — ⑱ の定量化)。
+    """Hill α の集計スケール依存 (S3 — (18) の定量化)。
 
-    指数テールのジャンプ + ボラ混合では α がスケールとともに**上昇**する
+    指数テールのジャンプ + ボラ混合では α がスケールとともに上昇する
     (集計でテールが相対的に薄れる)。べき則ジャンプだと α が不変になるので、
     その識別でもある。判定は「隣接スケールで非減少 (小さな逆転は許容) かつ
     最粗 > 最細」ではなく、単調性を回帰傾きで見る (ノイズ耐性)。
@@ -121,7 +121,7 @@ def _clean(r: np.ndarray) -> np.ndarray:
 def basic_moments(r: np.ndarray) -> dict:
     """平均・標準偏差・歪度・尖度と Jarque-Bera 検定。
 
-    尖度は **excess ではない**値 (正規分布で 3) を ``value`` に入れる。指示書 §8 の
+    尖度は excess ではない値 (正規分布で 3) を ``value`` に入れる。
     ゲートが 2.7〜3.3 という表現なのでそれに合わせる。excess も併記する。
     """
     x = _clean(r)

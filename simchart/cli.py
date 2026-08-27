@@ -4,7 +4,7 @@
     python -m simchart.cli validate --stage S0
     python -m simchart.cli compare --stages S0 S1
 
-``run`` は「実行 -> 検証 -> ゲート判定 -> 永続化 -> 書き出しの確認 -> ゲート再判定」
+``run`` は実行 -> 検証 -> ゲート判定 -> 永続化 -> 書き出しの確認 -> ゲート再判定
 という順で動く。最後の 2 段は ``artifacts_written`` ゲートのためで、書いたつもりで
 終わらせないために metrics.json を読み直してから最終版を書く。
 """
@@ -69,9 +69,9 @@ def _fmt(value: Any) -> str:
             return f"{value:.4e}"
         return f"{value:.6g}"
     if isinstance(value, Mapping):
-        # ★jsonable を通す。検証関数が numpy 配列を返す枝があり (S4 のスペクトル
+        # jsonable を通す。検証関数が numpy 配列を返す枝があり (S4 のスペクトル
         # 検定の ratios など)、生の dict を json.dumps すると TypeError で
-        # **ゲート表示の途中で実行が落ちる**。表示のために解析を落とすのは本末転倒。
+        # ゲート表示の途中で実行が落ちる。表示のために解析を落とすのは本末転倒。
         return json.dumps(jsonable(value), ensure_ascii=False, separators=(",", ":"))[:60]
     if isinstance(value, np.ndarray):
         return f"<配列 {value.shape}>"
@@ -81,8 +81,8 @@ def _fmt(value: Any) -> str:
 def _intraday_gph_pair(result, config: Config) -> tuple[float | None, float | None]:
     """日内バー |r| の GPH d を (生, 真値 φ 除去後) の組で返す (S4)。
 
-    ★真値 φ で除く。推定 φ̂ ではなく真値を使うのは、ここで測りたいのが
-    「季節性が推定を汚す量」であって「推定器の性能」ではないから。φ̂ の性能は
+    真値 φ で除く。推定 φ̂ ではなく真値を使うのは、ここで測りたいのが
+    季節性が推定を汚す量であって推定器の性能ではないから。φ̂ の性能は
     別の枝 (seasonality.deseasonalization.recovery) が測る。
     """
     import numpy as np
@@ -112,16 +112,16 @@ def _intraday_gph_pair(result, config: Config) -> tuple[float | None, float | No
 
 
 def _dilution_correlations(r5, r4) -> dict[str, float]:
-    """レバレッジ希釈の相関ベース 3 計器 (S5 — **記録のみ**)。
+    """レバレッジ希釈の相関ベース 3 計器 (S5 — 記録のみ)。
 
-    A. corr(r_t, RV_{t+1})     — 現行 multiseed の計器 (レベル領域、RV ノイズ入り)
-    B. corr(r_t, IV_{t+1})     — 真値積分分散 (レベル領域)
+    A. corr(r_t, RV_{t+1}) — 現行 multiseed の計器 (レベル領域、RV ノイズ入り)
+    B. corr(r_t, IV_{t+1}) — 真値積分分散 (レベル領域)
     C. corr(r_t, log IV_{t+1}) — log 領域 (希釈式が形式的に当てはまる)
 
-    ★ゲートには使わない (2026-08-21 裁定)。|L| ~ 0.02〜0.05 (S3 裁定の水準) に
+    ゲートには使わない (2026-08-21 裁定)。|L| ~ 0.02〜0.05 (S3 裁定の水準) に
     対し相関推定の SE ~0.014 が信号の 30〜40% あり、シード別の比は [−0.13, +3.04]
     と無統制になる。判定は log σ の経路 SD 比 (推定ノイズなし) が行い、こちらは
-    「指示書の字義の計器ではどう見えるか」の記録。
+    設計要件の字義の計器ではどう見えるかの記録。
     """
     import numpy as np
 
@@ -157,7 +157,7 @@ def _book_seed_stats(result, config: Config) -> dict[str, float | None]:
     """S6 のシード別板統計 (multiseed の中央値記録用)。
 
     ゲート判定は seed 42 の単一実行で行う (板統計は L2 統計より遥かに速く収束する
-    — 指示書 §4)。ここでの多シード値はシード間ばらつきの記録。
+    — 設計要件)。ここでの多シード値はシード間ばらつきの記録。
     """
     import math
 
@@ -303,8 +303,8 @@ def _qr_seed_stats(result, config: Config) -> dict[str, float | None]:
 def _coupling_seed_stats(result, config: Config) -> dict[str, float | None]:
     """S10 のシード別結合統計 (multiseed の中央値判定用)。
 
-    ⑪ の保存判定は**残差符号の γ** (raw の C(ℓ) には κ 追跡の情報チャネルが
-    重畳する — S10a の解剖)。T_daily・乖離半減期・⑦ も whale/エポックで
+    (11) の保存判定は残差符号の γ (raw の C(ℓ) には κ 追跡の情報チャネルが
+    重畳する — S10a の解剖)。T_daily・乖離半減期・(7) も whale/エポックで
     シード間に散らばるため中央値で判定する。
     """
     from .validation.suite import _coupling_metrics
@@ -352,7 +352,7 @@ def _nt_series(result, config: Config):
 
 
 def _nt_window_means(result, config: Config, window_days: float):
-    """窓 (5 日) ごとの平均 n_t (§8.1 の「脆弱性の窓」の直接検証素材)。"""
+    """窓 (5 日) ごとの平均 n_t (§8.1 の脆弱性の窓の直接検証素材)。"""
     meta = result.events.meta if isinstance(result.events.meta, dict) else {}
     step = float(meta.get("fb_u_step_sec", 60.0))
     nt_b = _nt_series(result, config)
@@ -377,11 +377,11 @@ def _u_time_mean(result, config: Config) -> float | None:
 
 
 def _feedback_solo_stats(result, config: Config) -> dict[str, float | None]:
-    """S11/S13 のシード別フィードバック統計のうち **off 対を要しない**部分。
+    """S11/S13 のシード別フィードバック統計のうち off 対を要しない部分。
 
     S13 の多資産ループは参照資産についてこれだけを収集する (ペア量 g・発散・
     T_off・深さ CV 比は S12 から繰り越し — ループ機構は n1 回帰がビット単位で
-    同一と保証しており、§11 の「参照資産の単変量性質は S12 の結果を流用」の実装)。
+    同一と保証しており、§11 の参照資産の単変量性質は S12 の結果を流用の実装)。
     """
     from .validation import feedback as fbv
 
@@ -393,7 +393,7 @@ def _feedback_solo_stats(result, config: Config) -> dict[str, float | None]:
     )
     fb = (result.meta.get("l3") or {}).get("feedback") or {}
 
-    # ⑧ の判定は**危機日除外の Hill α** (指示書 §6.2 の分解そのもの)。全体 α は
+    # (8) の判定は危機日除外の Hill α (分解そのもの)。全体 α は
     # 増幅が whale 日に集中するため構造的に低下する (フロンティア実測 — 記録)。
     def _hill_split():
         from .validation.tails import hill_estimator
@@ -414,9 +414,9 @@ def _feedback_solo_stats(result, config: Config) -> dict[str, float | None]:
 
     hill_all, hill_ex = _hill_split()
 
-    # ③ の判定は危機日を**対でマスク**した gph_d 差 — 危機スパイクは日次 |r| の
+    # (3) の判定は危機日を対でマスクした gph_d 差 — 危機スパイクは日次 |r| の
     # GPH を白色希釈する (S3 で解剖済みの機構)。同じ日を両系列から除くので
-    # 「観測は潜在の記憶を保存するか」を共通サポートで問える。
+    # 観測は潜在の記憶を保存するかを共通サポートで問える。
     def _masked_gph_diff() -> float | None:
         from .validation.memory import gph_estimator
 
@@ -427,7 +427,7 @@ def _feedback_solo_stats(result, config: Config) -> dict[str, float | None]:
         # S12: χ₁ (4.7 日) は日次 GPH の推定帯の内側にあり obs 側の d を
         # ~−0.02 傾ける (設計変調 — R² 劣化と同機構)。既知の決定論係数
         # e^{a₁χ₁/2} (RV ∝ 活動度 → |r| ∝ √活動度) で除去してから測る —
-        # φ 脱季節化 (S4) と方法論的に同一の「既知変調の除去」。
+        # φ 脱季節化 (S4) と方法論的に同一の既知変調の除去。
         day_centers = np.arange(r_obs.size, dtype=np.float64) + 0.5
         if config.enable_chaos_lambda:
             from .chaos import chi_window
@@ -439,7 +439,7 @@ def _feedback_solo_stats(result, config: Config) -> dict[str, float | None]:
             chi1_day = np.interp(day_centers, t1d_, x1_)
             r_obs = r_obs / np.exp(0.5 * a1_ * chi1_day)
         if config.enable_chaos_branching and float(config.chi3_b) > 0.0:
-            # χ₃ の**決定論部分** (u=0 の n_t^det) が作る活動係数も同様に除去 —
+            # χ₃ の決定論部分 (u=0 の n_t^det) が作る活動係数も同様に除去 —
             # 13 日の近臨界窓は週スケールの振幅変調として GPH 帯内に低周波
             # パワーを足す (危機日マスクでは滑らかな変調は取れない)。
             # u 由来のシード固有部分は除去しない (それは実ダイナミクス)。
@@ -485,9 +485,9 @@ def _feedback_solo_stats(result, config: Config) -> dict[str, float | None]:
             else None
         ),
         "fb_nt_max": fb.get("nt_max"),
-        # ★§2.1 の定常性は**時間加重**平均で判定する。イベント加重 (エンジンの
+        # §2.1 の定常性は時間加重平均で判定する。イベント加重 (エンジンの
         # カウンタ) はイベントが高 u 状態に集積するため +1 前後になる —
-        # それ自体は「活動は驚きに集中する」という情報なので別名で記録。
+        # それ自体は活動は驚きに集中するという情報なので別名で記録。
         "fb_u_mean_time": _u_time_mean(result, config),
         "fb_u_mean_event": fb.get("u_mean"),
         "fb_gph_d_diff_masked": _masked_gph_diff(),
@@ -510,7 +510,7 @@ def _feedback_seed_stats(result, config: Config, result_off) -> dict[str, float 
     g = fbv.loop_gain_estimate(result, result_off, config)
     div = fbv.divergence_monitor(result, config, result_off=result_off)
 
-    # ⑭ デプス変動の増大 — 同一シード off 対との CV 比 (基準値不要のペア計器)
+    # (14) デプス変動の増大 — 同一シード off 対との CV 比 (基準値不要のペア計器)
     def _depth_cv(res) -> float | None:
         bk = res.book
         d = np.asarray(bk.bid_sz, dtype=np.float64).sum(axis=1) + np.asarray(
@@ -522,8 +522,8 @@ def _feedback_seed_stats(result, config: Config, result_off) -> dict[str, float 
     cv_on = _depth_cv(result)
     cv_off = _depth_cv(result_off)
 
-    # 結合忠実度 (T_daily) は **off 対で判定** — g ∈ [0.3,0.6] は日次分散の増幅を
-    # 強制するので、on 側の T ±0.07 は指示書内部で矛盾する (S11e 実測 T_on ~1.9)。
+    # 結合忠実度 (T_daily) は off 対で判定 — g ∈ [0.3,0.6] は日次分散の増幅を
+    # 強制するので、on 側の T ±0.07 は設計要件内部で矛盾する (S11e 実測 T_on ~1.9)。
     # κ/σ̄ はフィードバックが触らないため off 対がその検証。on 側は超過として記録
     # (幾何/算術の分解: 典型日 +8% / 平均分散 ×2 = 裾駆動 — 危機の物理そのもの)。
     from .validation.coupling import transmission
@@ -550,7 +550,7 @@ def _feedback_seed_stats(result, config: Config, result_off) -> dict[str, float 
 
 
 def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
-    """ノイズの大きい指標をシードを変えて測り、中央値・IQR を返す (S3 指示書 §8)。
+    """ノイズの大きい指標をシードを変えて測り、中央値・IQR を返す (S3 設計要件)。
 
     Hill α は 5000 日でも上位 5% が 250 観測しかなく単一シードで ±0.5 ばらつく。
     対象は hill_alpha / leverage_corr / jv_share / skewness の 4 つ (経路統計)。
@@ -567,7 +567,7 @@ def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
     per_seed: dict[str, list[float]] = {
         "hill_alpha": [], "leverage_corr": [], "jv_share": [], "skewness_daily": [],
         "hill_scale_slope": [], "gph_d": [],
-        # S4: 季節性が**日内**バーの長期記憶推定を汚す量。1 経路では GPH の
+        # S4: 季節性が日内バーの長期記憶推定を汚す量。1 経路では GPH の
         # SE 0.013 に埋もれる (実測バイアス +0.017) ため中央値で判定する。
         # 日次 gph_d は φ_σ の二乗正規化により汚染を受けない (別枝で確認)。
         "gph_d_intraday_raw": [], "gph_d_intraday_deseason": [], "gph_bias_intraday": [],
@@ -576,7 +576,7 @@ def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
         "dilution_sd_ratio": [],
         "dilution_corr_rv": [], "dilution_corr_iv": [], "dilution_corr_logiv": [],
     }
-    # S5: シード横断相関 (指示書 §8 — S5 の中核ゲート) 用に φ 除去済み log σ の
+    # S5: シード横断相関 (設計要件 — S5 の中核ゲート) 用に φ 除去済み log σ の
     # サブサンプルを保持する。1 分間引きで 1 シード ~16MB、10 シードで 156MB。
     cross_seed_paths: list[np.ndarray] = []
     chi_hashes: list[str] = []
@@ -586,9 +586,9 @@ def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
     skipped_seeds: list[dict[str, str]] = []
     for i, seed in enumerate(seeds):
         seed_config = config.replace(seed=seed)
-        # ★S8+: 超拡散ミッドは重い裾のトレンドを引き、稀に板窓 (価格正値性で
+        # S8+: 超拡散ミッドは重い裾のトレンドを引き、稀に板窓 (価格正値性で
         # 上限あり) から逸脱して RuntimeError で止まる。多シード判定では該当
-        # シードを**記録の上でスキップ**し、残りの中央値で判定する (欠落は
+        # シードを記録の上でスキップし、残りの中央値で判定する (欠落は
         # 最大トレンド側の打ち切りなので中央値への影響は片側・軽微 — README)。
         try:
             result = run_pipeline(seed_config)
@@ -616,10 +616,10 @@ def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
         per_seed["gph_d"].append(
             gph_estimator(np.abs(r_daily), config.validation.daily_gph_bandwidth_exponent).get("d")
         )
-        # S10 (κ>0): ③ の判定計器 — 同一シードの潜在 log p* で同じ gph_d を測り
-        # **per-seed 差**で判定する (S5 基準値は 5000 日測定で、1000 日の観測値と
+        # S10 (κ>0): (3) の判定計器 — 同一シードの潜在 log p* で同じ gph_d を測り
+        # per-seed 差で判定する (S5 基準値は 5000 日測定で、1000 日の観測値と
         # 有限標本バイアスが異なる。同一ラン・同一視野の差なら相殺する)。
-        # ⑧ の JV は 1 秒 BNS だとバウンスをジャンプと誤検出する (S10b) ので
+        # (8) の JV は 1 秒 BNS だとバウンスをジャンプと誤検出する (S10b) ので
         # バウンス頑健な 5 分サンプリング版も測る。
         if config.kappa > 0.0:
             ps = result.price.log_p_star
@@ -639,7 +639,7 @@ def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
             per_seed.setdefault("jv_share_5min", []).append(
                 bns_jump_test(r5, steps_per_day // stride5).get("jv_share")
             )
-            # ① の歪度も同一シード対で記録 (計器のペア差 SD 2.7 実測 — 検定力が
+            # (1) の歪度も同一シード対で記録 (計器のペア差 SD 2.7 実測 — 検定力が
             # 無いので記録のみ。ゲートは張らない)
             sk_lat = float(sp_stats.skew(r_daily_lat, bias=False))
             per_seed.setdefault("skew_daily_latent", []).append(sk_lat)
@@ -670,7 +670,7 @@ def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
                 # 相関ベース 3 計器: 同一シードで chi を厳密に除いた S4 相当ペアを
                 # 回す (log σ は引き算で厳密復元できるが、価格はジャンプ抽選が
                 # λ(σ) 経由で変わるため再実行が必要)。
-                # ★S10 (κ>0): アブレーション側は p* 経路が変わるため、本走が
+                # S10 (κ>0): アブレーション側は p* 経路が変わるため、本走が
                 # 完走しても窓逸脱で落ちうる — 記録の上スキップ (ice-off と同じ)。
                 try:
                     r4 = run_pipeline(seed_config.replace(enable_chaos_vol=False))
@@ -713,7 +713,7 @@ def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
             import dataclasses as _dc2
 
             defaults2 = {f.name: f.default for f in _dc2.fields(type(config))}
-            # ★off 対は χ₃ も外す (χ₃ は n_t 機構に乗るため単独では立てられない)。
+            # off 対は χ₃ も外す (χ₃ は n_t 機構に乗るため単独では立てられない)。
             # χ₁ は両脚に残す — 決定論変調は比で相殺し、ループだけが測れる。
             cfg_off = seed_config.replace(
                 enable_feedback=False, enable_chaos_branching=False,
@@ -768,7 +768,7 @@ def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
                     per_seed.setdefault("meta_gamma_ice_off", []).append(
                         g_off["meta_gamma"]
                     )
-                    # ★主計器は C(1): γ̂ は whale 支配でシード中央値同士の差にも
+                    # 主計器は C(1): γ̂ は whale 支配でシード中央値同士の差にも
                     # SD ~0.035 のノイズが残る (構造的にゼロ効果でも ±0.05 は
                     # 4 割の確率で偽陽性)。C(1) は SD ~0.002 で 20 倍鋭い。
                     per_seed.setdefault("meta_c1_ice_off", []).append(
@@ -793,8 +793,8 @@ def _run_multiseed(config: Config, n_seeds: int) -> dict[str, Any]:
         del cross_seed_paths
     # S12 §8: 窓再現性の二層計器 (シード横断)。
     #  - fb_nt_window_corr: 脆弱変数 n_t 自体の窓再現 (χ₃ 支配 → 高相関が正解)
-    #  - fb_window_repro: 危機**発火**の窓相関 (存在が鯨供給のため天井 ~0.15 —
-    #    ICC 分解込みで記録。「窓は再現・発火は確率的」§8.1 の定量形)
+    #  - fb_window_repro: 危機発火の窓相関 (存在が鯨供給のため天井 ~0.15 —
+    #    ICC 分解込みで記録。窓は再現・発火は確率的§8.1 の定量形)
     if fb_window_vecs:
         from .validation.feedback import crisis_window_reproducibility
 
@@ -834,7 +834,7 @@ def _path_seed_stats_s13(result, config: Config) -> dict[str, float | None]:
     """S13 用: 参照資産のシード別経路統計 (S12 の _run_multiseed 内の
     インラインブロックと同じキー・同じ計算)。
 
-    ★S12 ループはタグ済みの回帰資産なので触らない — ここは意図的な小さな
+    S12 ループはタグ済みの回帰資産なので触らない — ここは意図的な小さな
     複製で、キー名の一致は compare S12 S13 の前提。
     """
     import numpy as np
@@ -883,7 +883,7 @@ def _run_multiseed_s13(config: Config, n_seeds: int) -> dict[str, Any]:
     クロス資産統計を収集する。
 
     ペア量 (g・発散・T_off・深さ CV・iceberg) は収集しない — S12 から繰り越す
-    (§11「参照資産の単変量性質は S12 の結果を流用」、繰り越しの妥当性は
+    (§11参照資産の単変量性質は S12 の結果を流用、繰り越しの妥当性は
     n1 回帰のビット単位一致が担保する。metrics.s12_carryover を参照)。
     危機時相関はシード横断で日次系列をプールして測る (§11 の 2000 日以上の
     要求を 1000 日 × n シードのプールで満たす — 単一メカニズムの定常標本)。
@@ -983,7 +983,7 @@ def _run_multiseed_s13(config: Config, n_seeds: int) -> dict[str, Any]:
             per_seed.setdefault(f"x_trades_a{ai}", []).append(float(pa["n_trades"]))
 
         # 危機時相関のプール素材 (§11: 2000 日以上 → シード横断プール)。
-        # 3 条件付け: 和集合 (指示書の字義) / ブレッドス (≥2 資産同時 = 観測可能な
+        # 3 条件付け: 和集合 (設計要件の字義) / ブレッドス (≥2 資産同時 = 観測可能な
         # 市場危機日) / 潜在 big|z_F| (§7.1 の機構実在)。
         from .validation.cross import crisis_day_mask
 
@@ -1099,7 +1099,7 @@ def _s12_carryover(results_dir: str | None) -> dict[str, Any]:
 
     繰り越しの妥当性は n1_regression (ビット単位一致) が担保する: ループ機構の
     コードパスは S12 と同一で、多資産の結合 (因子合成・χ 共有) はフィードバック
-    経路に入らない。値は「参照資産の単変量性質」として S12 の実測をそのまま使う。
+    経路に入らない。値は参照資産の単変量性質として S12 の実測をそのまま使う。
     """
     from .report import load_metrics
 
@@ -1108,7 +1108,7 @@ def _s12_carryover(results_dir: str | None) -> dict[str, Any]:
         "fb_depth_cv_ratio", "fb_rv_excess_ari", "fb_rv_excess_geo",
         "fb_crises_per_year_off", "meta_gamma_ice_off", "meta_c1_ice_off",
         "meta_c1", "meta_gamma",
-        # ③ と Hill: 500 日では計器が検定力不足 (③ IQR 0.185 / hill k=18 点で
+        # (3) と Hill: 500 日では計器が検定力不足 ((3) IQR 0.185 / hill k=18 点で
         # IQR 0.78 — 事前測定 #3 実測)。1000 日 × 30 の S12 実測を繰り越す。
         "fb_gph_d_diff_masked", "fb_hill_ex_crisis", "fb_hill_all",
     )
@@ -1177,7 +1177,7 @@ def _run_s13(args: argparse.Namespace, config: Config) -> int:
     print(f"      資産追加の不変性 (N={config.n_assets}→{config.n_assets + 1}): "
           f"{addition['bitwise']}")
     # L2 凍結 (板は L2 を読むが書かない) — 板 off の多資産ランと潜在側を照合。
-    # ★流動性オーバーライドも外す: 許可キーは全て L3/L1 のパラメータで L2 には
+    # 流動性オーバーライドも外す: 許可キーは全て L3/L1 のパラメータで L2 には
     # 一切入らない (config の _S13_OVERRIDE_KEYS 検証がそれを保証している) ため、
     # 外しても L2 側の比較対象は変わらない — むしろ「オーバーライドが L2 に
     # 漏れていない」ことの検証を兼ねる。
@@ -1258,7 +1258,7 @@ def _run_s13(args: argparse.Namespace, config: Config) -> int:
             bool((med("x_epps_monotone") or 0) >= 1.0)
             if multiseed else cs.get("epps_monotone_all")
         ),
-        # ★per-seed の max 誤差はサンプリング雑音 (1000 日で SE≈0.032、3 ペア
+        # per-seed の max 誤差はサンプリング雑音 (1000 日で SE≈0.032、3 ペア
         # max の期待値 ~0.05) がゲート幅 ±0.05 を食い潰す — シード中央値の
         # 相関 vs 理論で判定する (5 シード中央値の SE ≈ 0.018、ペア max ~0.04)。
         "daily_corr_err": (
@@ -1486,14 +1486,14 @@ def cmd_run(args: argparse.Namespace) -> int:
     config = _build_config(args)
     if config.n_assets > 1:
         return _run_s13(args, config)
-    # ★実行ラベル: perp は "perp_<stage>" — 結果ディレクトリ (results/perp_S0)
+    # 実行ラベル: perp は "perp_<stage>" — 結果ディレクトリ (results/perp_S0)
     # とゲート集合を株式と衝突させない (S0-perp §9。株式の results/S0 は
     # ベースラインなので上書き厳禁)。config.stage 自体は S0 のまま。
     stage = (
         config.stage if config.market_type == "equity"
         else f"perp_{config.stage}"
     )
-    # ★コード版数は**実行開始時点**で確定する。書き出し時に取ると自分の出力
+    # コード版数は実行開始時点で確定する。書き出し時に取ると自分の出力
     # (metrics.json) が status に映って dirty が常に True になる (report.py 参照)。
     from .report import git_info
 
@@ -1520,7 +1520,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     if stage != "S0" or config.market_type == "perp_clob":
         low_steps = config.validation.scale_invariance_steps_per_day
         print(f"[3b/6] 時間スケール不変性 (steps_per_day={low_steps} で対照実行)")
-        # ★S10 (κ>0): 対照解像度は独立な板実現なので、本走が完走しても
+        # S10 (κ>0): 対照解像度は独立な板実現なので、本走が完走しても
         # 窓逸脱で落ちうる。落ちたら記録の上スキップ (潜在側の判定は
         # 本番 30 シードの multiseed が別途担う)。
         try:
@@ -1678,19 +1678,19 @@ def cmd_compare(args: argparse.Namespace) -> int:
 
     print("段階間比較: " + " vs ".join(stages))
     print()
-    print("  " + "指標".ljust(52) + "  " + "  ".join(s.rjust(14) for s in stages)
-          + ("      差分" if len(stages) == 2 else ""))
+    print(" " + "指標".ljust(52) + " " + " ".join(s.rjust(14) for s in stages)
+          + (" 差分" if len(stages) == 2 else ""))
     print("-" * (54 + 16 * len(stages) + 12))
     for row in diff["metrics"]:
-        cells = "  ".join(_fmt(row["values"][s]).rjust(14) for s in stages)
+        cells = " ".join(_fmt(row["values"][s]).rjust(14) for s in stages)
         delta = f"  {_fmt(row['delta']).rjust(12)}" if len(stages) == 2 else ""
         print(f"  {row['metric'][:52].ljust(52)}  {cells}{delta}")
 
     print()
-    print("  " + "ゲート".ljust(52) + "  " + "  ".join(s.rjust(14) for s in stages))
+    print(" " + "ゲート".ljust(52) + " " + " ".join(s.rjust(14) for s in stages))
     print("-" * (54 + 16 * len(stages)))
     for row in diff["gates"]:
-        cells = "  ".join(_fmt(row.get(s)).rjust(14) for s in stages)
+        cells = " ".join(_fmt(row.get(s)).rjust(14) for s in stages)
         print(f"  {row['gate'][:52].ljust(52)}  {cells}")
 
     if args.json:

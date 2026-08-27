@@ -1,7 +1,7 @@
 """未実装フラグの扱い。
 
-**暗黙の no-op が最悪の事故**なので、``True`` を渡したら必ず停止し、しかも
-「どの段階で実装されるか」がメッセージから判ること。
+暗黙の no-op が最悪の事故なので、``True`` を渡したら必ず停止し、しかも
+どの段階で実装されるかがメッセージから判ること。
 """
 
 from __future__ import annotations
@@ -112,7 +112,7 @@ def test_defaults_are_all_off() -> None:
 def test_l1_event_generation_refuses_instead_of_returning_empty() -> None:
     """イベント生成は空配列を返さず停止すること。
 
-    「イベントが 0 件だった」という測定結果と「まだ実装していない」を
+    イベントが 0 件だったという測定結果と「まだ実装していない」を
     取り違えないため。
     """
     config = Config(n_days=2, steps_per_day=234)

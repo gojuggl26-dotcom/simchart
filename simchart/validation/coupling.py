@@ -2,9 +2,9 @@
 
 中心は 4 つ:
 - **乖離 d = log p* − log p_obs の定常性** (AR(1) 半減期・SD)
-- **伝達率 T(h)** = Var[Δ_h log p_obs] / Var[Δ_h log p*]
-- **残差符号の γ** — 生成時バイアス E[ε|d] = tanh(κ·d/s) を引いた符号列で
-  分割構造 (⑪) の保存を判定する。raw の C(ℓ) には情報チャネル (追跡ハーディング
+- 伝達率 T(h) = Var[Δ_h log p_obs] / Var[Δ_h log p*]
+- 残差符号の γ — 生成時バイアス E[ε|d] = tanh(κ·d/s) を引いた符号列で
+  分割構造 ((11)) の保存を判定する。raw の C(ℓ) には情報チャネル (追跡ハーディング
   のこぶ、d 緩和スケール ℓ~30-1000) が重畳するのは結合の物理でありバグではない
   (S10a の解剖 — results/S10a/DECISION.md)
 - **p* 追随** (日次レベル/リターン相関)
@@ -55,7 +55,7 @@ def gap_metrics(result, cfg) -> dict[str, Any]:
 
 
 def transmission(result, cfg, horizons_sec=None) -> dict[str, Any]:
-    """伝達率 T(h)。短 h は板ノイズで >1、長 h は追随で → 1 (指示書 §5.2)。"""
+    """伝達率 T(h)。短 h は板ノイズで >1、長 h は追随で → 1 。"""
     obs = result.observation
     step = float(obs.step_seconds)
     if horizons_sec is None:
@@ -82,7 +82,7 @@ def transmission(result, cfg, horizons_sec=None) -> dict[str, Any]:
 
 
 def residual_sign_acf(result, cfg, fit_range=(2, 1000)) -> dict[str, Any]:
-    """生成時バイアスを引いた残差符号の γ (⑪ 保存の判定計器) + raw の記録。"""
+    """生成時バイアスを引いた残差符号の γ ((11) 保存の判定計器) + raw の記録。"""
     from .memory import acf_powerlaw_fit
 
     ev = result.events
@@ -129,9 +129,9 @@ def residual_sign_acf(result, cfg, fit_range=(2, 1000)) -> dict[str, Any]:
     mu_row = np.where(mt_k >= 0, mu_meta[np.clip(mt_k, 0, mu_meta.size - 1)], 0.0)
     resid = s_k - mu_row
     fit_res = acf_powerlaw_fit(resid, fit_range, max_lag=fit_range[1])
-    # ★テール窓 (30,1000): κ ハーディングの残滓は短ラグ (ℓ < 30) に集中し、
+    # テール窓 (30,1000): κ ハーディングの残滓は短ラグ (ℓ < 30) に集中し、
     # ℓ=2 からのフィットは初期減衰が寝て γ̂ を過小評価する (1000 日実測:
-    # (2,1000) 0.50 → (30,1000) 0.61 = S8 の 0.614 を回復)。⑪ 保存の判定計器は
+    # (2,1000) 0.50 → (30,1000) 0.61 = S8 の 0.614 を回復)。(11) 保存の判定計器は
     # テール側 — run length の裾指数はテールの傾きが担う。
     tail_range = (30, fit_range[1]) if fit_range[1] > 60 else fit_range
     fit_tail = acf_powerlaw_fit(resid, tail_range, max_lag=tail_range[1])
@@ -154,9 +154,9 @@ def residual_sign_acf(result, cfg, fit_range=(2, 1000)) -> dict[str, Any]:
 
 
 def vol_activity_link(result, cfg) -> dict[str, Any]:
-    """⑦ ボラ・出来高リンク (S10c): 日次 RV(p_obs) と日次出来高/スプレッドの相関。
+    """(7) ボラ・出来高リンク (S10c): 日次 RV(p_obs) と日次出来高/スプレッドの相関。
 
-    主計器は **log-log Pearson** (日次 RV は裾が重く (Hill≈3.4)、レベル相関は
+    主計器は log-log Pearson (日次 RV は裾が重く (Hill≈3.4)、レベル相関は
     少数の鯨日に支配される — S8/S9 で繰り返し確認した計器ノイズと同型)。
     レベル相関・イベント数版・日内スプレッド曲線 (§7.4) も記録する。
     """

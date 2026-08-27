@@ -2,10 +2,10 @@
 
     uv run python scripts/make_stage_comparison.py
 
-★同一シードなら全段階で拡散乱数・MSM・緩慢 OU の実現が**共通**になる
+同一シードなら全段階で拡散乱数・MSM・緩慢 OU の実現が共通になる
 (名前ハッシュ RNG の設計)。したがって左右に並べた 4 段階は「同じ乱数から、
 成分を足していったらどう変わるか」を直接示している — 別々の乱数で描いた
-「それらしい絵」の並置ではない。
+それらしい絵の並置ではない。
 """
 
 from __future__ import annotations
@@ -34,12 +34,12 @@ SEED = 42
 STAGES = [
     ("S0", dict(stage="S0"), "constant volatility (GBM only)"),
     ("S1", dict(stage="S1", enable_msm=True, enable_slow_ou=True),
-     "+ MSM & slow OU  (volatility clustering)"),
+     "+ MSM & slow OU (volatility clustering)"),
     ("S2", dict(stage="S2", enable_msm=True, enable_slow_ou=True, enable_rough=True),
-     "+ rough component  (H~0.1, jagged volatility)"),
+     "+ rough component (H~0.1, jagged volatility)"),
     ("S3", dict(stage="S3", enable_msm=True, enable_slow_ou=True, enable_rough=True,
                 enable_jump=True, enable_leverage=True),
-     "+ jumps & leverage  (fat tails, negative skew)"),
+     "+ jumps & leverage (fat tails, negative skew)"),
 ]
 
 
@@ -69,7 +69,7 @@ def main() -> int:
         ax.set_ylabel("price")
         ax.set_title(f"{name}: {subtitle}", fontsize=10, loc="left")
         if row == len(STAGES) - 1:
-            ax.set_xlabel(f"day  ({lo}-{hi}, same window and same seed for every stage)")
+            ax.set_xlabel(f"day ({lo}-{hi}, same window and same seed for every stage)")
 
         # 右: 同じ窓の瞬間ボラ (年率 %)。分単位のサブサンプルがあればそれを使う。
         ax2 = axes[row, 1]

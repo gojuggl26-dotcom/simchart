@@ -3,7 +3,7 @@
 最終系での役割
 --------------
 メタオーダー分割 -> 6 次元 Hawkes 注文流 -> queue-reactive 板 -> uncertainty zones
-による離散化。**観測価格は板のミッド**であり、p*(t) は外生生成された潜在情報価格に
+による離散化。観測価格は板のミッドであり、p*(t) は外生生成された潜在情報価格に
 すぎない。注文流の一部が p* 方向にバイアスを持つ (ハイブリッド方式) ことで、
 情報が価格に染み込む速度そのものが内生的に決まる。結合強度が ``kappa`` (S10)。
 
@@ -49,7 +49,7 @@ class PassThroughBook:
 
         S6 以降、観測時刻は L2 のグリッドから切り離され、板イベントの時刻になる。
         そのとき L2 の値は ``price.at(event_times)`` で引く。**呼び出し側が
-        「観測 = グリッド」を前提にしないよう、S0 の時点から
+        観測 = グリッドを前提にしないよう、S0 の時点から
         :class:`~simchart.types.Observation` に時刻を明示的に持たせている。**
         """
         del activity
@@ -69,8 +69,8 @@ class PassThroughBook:
 class ZIBook:
     """S6: zero-intelligence 板 (Smith et al. 2003 ベースライン、κ=0)。
 
-    観測価格は**板のミッド**になり、L2 の p* は κ=0 で切り離されている。
-    この段階の価格に ①③④⑧⑯⑱ は現れない — それが正しい状態 (指示書 §0)。
+    観測価格は板のミッドになり、L2 の p* は κ=0 で切り離されている。
+    この段階の価格に (1)(3)(4)(8)(16)(18) は現れない — それが正しい状態 。
     p* は各イベントで参照して記録だけする (§10: S10 の結合が 1 行の変更で済み、
     補間参照の性能をここで実測でき、corr(Δmid, Δp*) ≈ 0 が結合判定のベースラインになる)。
     """
@@ -94,8 +94,8 @@ class ZIBook:
     def _placement_tables(self) -> tuple[np.ndarray, np.ndarray]:
         """配置べき則の累積表 (板内 Δ>=0) と in-spread 重み (d=1..cap)。
 
-        P(Δ) ∝ (Δ + Δ0)^-(1+μ)。**最大距離で打ち切る** (裾を切らないと遠方に
-        無駄な注文が溜まる — 指示書 §6.2)。in-spread 側は同じ式の距離 |Δ| を使い、
+        P(Δ) ∝ (Δ + Δ0)^-(1+μ)。最大距離で打ち切る (裾を切らないと遠方に
+        無駄な注文が溜まる — 設計要件)。in-spread 側は同じ式の距離 |Δ| を使い、
         実際の許容幅 (spread-1 と cap の小さい方) はイベント時にカーネル側で絞る。
         """
         cfg = self._config
@@ -198,7 +198,7 @@ class ZIBook:
             phi_max = 1.0
             h_cap = 1.0
             h_day_cap = 1
-            # ★S6 経路のビット単位不変: レジストリのストリームは取得だけでも
+            # S6 経路のビット単位不変: レジストリのストリームは取得だけでも
             # 名前ハッシュ独立なので他ストリームに影響しないが、紛れを避けるため
             # 使い捨ての Generator を渡す (カーネルは一度も呼ばない)。
             rng_hawkes = np.random.default_rng(0)
@@ -215,8 +215,8 @@ class ZIBook:
                 lam_mo_total = float(r_vec[0])
             else:
                 lam_mo_total = 2.0 * cfg.book_mu_mo
-            # E[N] は**実際のサンプラー** N = floor(N_min·(1−u)^{-1/α}) の期待値。
-            # ★連続 Pareto の α·N_min/(α−1) を使ってはならない (N_min=1, α=1.6 で
+            # E[N] は実際のサンプラー N = floor(N_min·(1−u)^{-1/α}) の期待値。
+            # 連続 Pareto の α·N_min/(α−1) を使ってはならない (N_min=1, α=1.6 で
             # 2.67 vs 実サンプラー ζ(1.6)=2.286 — 15% ずれて釣り合いが狂う)。
             # E[N] = Σ_{n≥1} P(N≥n)、P(N≥n) = min(1, (N_min/n)^α)。
             nm = int(cfg.meta_n_min)
@@ -224,7 +224,7 @@ class ZIBook:
             partial = sum(k ** (-alpha) for k in range(1, nm + 1))
             e_len = nm + (nm**alpha) * (float(_zeta(alpha)) - partial)
             # 子の需要 ψ·λ_MO に対し供給 λ_meta·E[N] を ρ (< 1) 倍で与える。
-            # ★ρ=1 の厳密な釣り合いは臨界負荷 (E[N²]=∞) でプール占有が
+            # ρ=1 の厳密な釣り合いは臨界負荷 (E[N²]=∞) でプール占有が
             # さまよい定常にならない — 不足分は空プール時の即時生成が埋める。
             meta_lambda_day = (
                 0.0
@@ -255,7 +255,7 @@ class ZIBook:
 
         # ---------------- S10: κ 結合の引数 ----------------
         # s = σ_t·√τ_meta [log 価格単位]。σ_t は L2 の瞬間ボラ (年率) —
-        # 年率 → 「τ_meta 秒あたり」へ √(τ / (252·session)) で換算する。
+        # 年率 → τ_meta 秒あたりへ √(τ / (252·session)) で換算する。
         tick_f = float(cfg.tick_size)
         base_price_f = float(cfg.p0 - p0_tick * tick_f)
         kappa_f = float(cfg.kappa)
@@ -360,7 +360,7 @@ class ZIBook:
             cvol_diag = None
 
         # ---------------- S11: RV フィードバックの引数 ----------------
-        # EWMA 減衰は「1 グリッド刻み (= mid_grid の刻み = step_sec) あたり」
+        # EWMA 減衰は1 グリッド刻み (= mid_grid の刻み = step_sec) あたり
         # λ = 0.5^(step/半減期)。脱季節化は φ_σ² (無季節構成では 1)。
         use_feedback = bool(cfg.enable_feedback)
         if use_feedback:
@@ -405,7 +405,7 @@ class ZIBook:
             chi3_info = None
 
         # JIT ウォームアップ (コンパイル / キャッシュロードを計測から外す)。
-        # ★使い捨ての Generator を使う — レジストリのストリームを消費すると
+        # 使い捨ての Generator を使う — レジストリのストリームを消費すると
         # 決定論が壊れる。出力は捨てる。
         _warm = [np.random.default_rng(i) for i in range(6)]
         run_zi_book(
@@ -540,7 +540,7 @@ class ZIBook:
         obs_mid_ticks = mid_grid
         if cfg.enable_uncertainty_zones:
             # S9 §8.2 の fallback。観測系列だけを離散化し、板・イベントログは
-            # 生のまま (UZ は「刷り値」の層であって板の動学ではない)。
+            # 生のまま (UZ は刷り値の層であって板の動学ではない)。
             from .book_engine import uz_transform
 
             obs_mid_ticks = uz_transform(
@@ -565,7 +565,7 @@ class ZIBook:
         px_ticks = ev[EV_PRICE, :n_events]
         px = np.where(px_ticks >= 0, base_price + px_ticks * tick, np.nan)
         # S8: EV_META は行種別で意味が変わる (book_engine の定義参照)。
-        # agent_id には**成行/約定行のメタオーダー行番号**を移す (ノイズ・非該当 -1)。
+        # agent_id には成行/約定行のメタオーダー行番号を移す (ノイズ・非該当 -1)。
         # LIMIT_ADD 行の値 (アイスバーグ表示量) は別キーへ分離する。
         meta_col = ev[EV_META, :n_events]
         is_mo_or_trade = (etype == int(EventType.MARKET)) | (
@@ -622,8 +622,8 @@ class ZIBook:
                 "spawned_empty": m_spawned_empty[:n_meta].copy(),
             }
 
-        # --- BookSnapshot (top-K レベル、-1 = 空)。★n_snaps で必ず切る —
-        # 容量いっぱいの配列をそのまま渡すと末尾のゼロ行が「価格 = 窓下端」の
+        # --- BookSnapshot (top-K レベル、-1 = 空)。n_snaps で必ず切る —
+        # 容量いっぱいの配列をそのまま渡すと末尾のゼロ行が価格 = 窓下端の
         # 偽スナップショットとして混入する (実際にテストで検出した)。---
         k = cfg.book_snapshot_levels
         snap_px_v = snap_px[:n_snaps]
@@ -640,10 +640,10 @@ class ZIBook:
         )
 
         # --- 攻撃注文単位に集約した約定系列 ---
-        # ★TRADE 行のまま符号 ACF を測ってはならない: 1 本の成行が複数レベルを
+        # TRADE 行のまま符号 ACF を測ってはならない: 1 本の成行が複数レベルを
         # 掃くと同符号の行が連続し、機械的な正の自己相関 (実測 +0.38) が出る。
-        # これは注文流の性質ではなく記録粒度の人工物。⑪ (符号 ACF) と propagator は
-        # **攻撃注文 1 本 = 1 観測** の系列で測る (同一攻撃注文の約定は同時刻なので
+        # これは注文流の性質ではなく記録粒度の人工物。(11) (符号 ACF) と propagator は
+        # 攻撃注文 1 本 = 1 観測 の系列で測る (同一攻撃注文の約定は同時刻なので
         # 時刻の変化で束ねられる)。
         tr_mask = etype == int(EventType.TRADE)
         tr_t = t_arr[tr_mask]
@@ -658,10 +658,10 @@ class ZIBook:
             events.meta["agg_trade_log_vwap"] = np.log(
                 np.add.reduceat(tr_sz * tr_px, starts) / agg_size
             )
-            # S8: 攻撃注文ごとのメタオーダー行番号 (-1 = ノイズ)。⑪ の帰属分解用。
+            # S8: 攻撃注文ごとのメタオーダー行番号 (-1 = ノイズ)。(11) の帰属分解用。
             events.meta["agg_trade_meta"] = agent[tr_mask][starts]
-            # propagator 用: 各攻撃注文**直前**のミッド (ティック)。
-            # ★EV_BB/BA は「イベント後」の値で、攻撃注文の行 (最初の TRADE の
+            # propagator 用: 各攻撃注文直前のミッド (ティック)。
+            # EV_BB/BA はイベント後の値で、攻撃注文の行 (最初の TRADE の
             # 1 つ前) は既に約定後の板を映している。直前状態は**前のイベント束の
             # 最終行** = 最初の TRADE 行の 2 つ前にある (MO/LO 行が必ず TRADE の
             # 直前に 1 行入る構造による)。

@@ -2,17 +2,17 @@
 
 README に載せる 4 枚:
 
-1. ``s4_phi_profiles.png``   — φ_σ と φ_λ の形と、正規化の規約が違うこと
-2. ``s4_deseasonalize.png``  — 日内ボラ・プロファイルが除去で平らになる
-3. ``s4_spectrum.png``       — |r| のスペクトルに立つ日内高調波と、除去後の消失
-4. ``s4_overnight.png``      — ギャップの分布・引けボラとの連動・帰無対照
+1. ``s4_phi_profiles.png`` — φ_σ と φ_λ の形と、正規化の規約が違うこと
+2. ``s4_deseasonalize.png`` — 日内ボラ・プロファイルが除去で平らになる
+3. ``s4_spectrum.png`` — |r| のスペクトルに立つ日内高調波と、除去後の消失
+4. ``s4_overnight.png`` — ギャップの分布・引けボラとの連動・帰無対照
 
-★図のラベルは英語で書く (既存の図スクリプトと同じ慣習)。matplotlib の既定フォントに
+図のラベルは英語で書く (既存の図スクリプトと同じ慣習)。matplotlib の既定フォントに
 日本語グリフが無く、環境によって豆腐になるため。説明は README 本文が持つ。
 
-★図を作るためだけに本番設定 (5000 日 x 23400) を回さない。季節性は日内の構造なので
+図を作るためだけに本番設定 (5000 日 x 23400) を回さない。季節性は日内の構造なので
 1000 日あれば形は十分に決まり、メモリも 1/5 で済む。数値そのものは metrics.json
-(本番設定) を正とし、この図は「見え方」を伝えるためのものと位置づける。
+(本番設定) を正とし、この図は見え方を伝えるためのものと位置づける。
 """
 
 from __future__ import annotations
@@ -73,7 +73,7 @@ def fig_phi_profiles(calendar) -> None:
     ax.axhline(1.0, color=GREY, lw=0.9, ls=":")
     ax.set_title(
         "volatility: the SQUARE is normalised\n"
-        rf"$(1/T)\!\int\!\varphi_\sigma^2 du = 1$,  peak/trough of $\varphi^2$ = "
+        rf"$(1/T)\!\int\!\varphi_\sigma^2 du = 1$, peak/trough of $\varphi^2$ = "
         f"{(ps**2).max() / (ps**2).min():.2f}",
         fontsize=10,
     )
@@ -86,7 +86,7 @@ def fig_phi_profiles(calendar) -> None:
     ax.axhline(1.0, color=GREY, lw=0.9, ls=":")
     ax.set_title(
         "activity: the LEVEL is normalised\n"
-        rf"$(1/T)\!\int\!\varphi_\lambda du = 1$,  peak/trough = {pl.max() / pl.min():.2f}",
+        rf"$(1/T)\!\int\!\varphi_\lambda du = 1$, peak/trough = {pl.max() / pl.min():.2f}",
         fontsize=10,
     )
     for x, y, txt, dx in ((0.0, pl[0], f"open {pl[0]:.2f}", 6), (6.5, pl[-1], f"close {pl[-1]:.2f}", -58)):
@@ -136,11 +136,11 @@ def fig_deseasonalize(r_2d: np.ndarray, phi_true: np.ndarray, phi_hat: np.ndarra
 
     ax = axes[1]
     ax.plot(hours, raw / raw.mean(), color=GREY, lw=1.4,
-            label=f"before  ({f_raw['excess_over_se']:.2f} x SE)")
+            label=f"before ({f_raw['excess_over_se']:.2f} x SE)")
     ax.plot(hours, p_true / p_true.mean(), color=BLUE, lw=1.6,
-            label=f"true $\\varphi$ removed  ({f_true['excess_over_se']:.2f} x SE)")
+            label=f"true $\\varphi$ removed ({f_true['excess_over_se']:.2f} x SE)")
     ax.plot(hours, p_est / p_est.mean(), color=ORANGE, lw=1.2, ls="--",
-            label=f"est. $\\hat\\varphi$ removed  ({f_est['excess_over_se']:.2f} x SE)")
+            label=f"est. $\\hat\\varphi$ removed ({f_est['excess_over_se']:.2f} x SE)")
     ax.axhline(1.0, color="k", lw=0.8, ls=":")
     ax.set_title(
         "after removal the profile sits at the sampling-noise floor\n"
@@ -195,7 +195,7 @@ def fig_spectrum(r_2d: np.ndarray, phi_true: np.ndarray, r3_2d: np.ndarray) -> N
     ax.set_title(
         "Seasonality puts power on discrete harmonics only — long memory is a continuous "
         "spectrum, so the two separate exactly here\n"
-        f"harmonic ratio vs local median:  raw {raw_stat['mean_ratio']:.1f}  →  "
+        f"harmonic ratio vs local median: raw {raw_stat['mean_ratio']:.1f}  →  "
         f"after removal {dsn_stat['mean_ratio']:.2f}   (null expectation = 1)",
         fontsize=10,
     )
@@ -211,9 +211,9 @@ def fig_overnight(gaps: np.ndarray, r_daily: np.ndarray, sigma_close: np.ndarray
     fig, axes = plt.subplots(1, 3, figsize=(14.0, 4.3))
 
     ax = axes[0]
-    # ★それぞれ自分の SD で標準化してから比べる。ON は総分散の 2 割しか持たないので
-    # 生のままだと「ギャップのほうが分布が狭い」という**逆の**印象になり、伝えたい
-    # 「裾が厚い」が読めない。ここで見せたいのは水準ではなく形である。
+    # それぞれ自分の SD で標準化してから比べる。ON は総分散の 2 割しか持たないので
+    # 生のままだとギャップのほうが分布が狭いという逆の印象になり、伝えたい
+    # 裾が厚いが読めない。ここで見せたいのは水準ではなく形である。
     zg = gaps / gaps.std()
     zi = r_daily / r_daily.std()
     lim = float(np.percentile(np.abs(np.concatenate([zg, zi])), 99.8))

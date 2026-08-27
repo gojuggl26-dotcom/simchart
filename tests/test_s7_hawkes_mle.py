@@ -79,7 +79,7 @@ def test_time_rescaling_rejects_wrong_model(synthetic):
     (棄却できない検定は検定ではない — CLAUDE.md の検査項目)
     """
     times, marks, t_end, a, betas, w, mu_day, n_design = synthetic
-    # 実現レートに合わせた「励起なし」モデル (レートは正しいが構造が誤り)
+    # 実現レートに合わせた励起なしモデル (レートは正しいが構造が誤り)
     rates = np.array([(marks == y).sum() / t_end for y in range(3)])
     res = time_rescaling_test(
         times, marks, t_end, betas, w, rates, np.zeros((3, 3))
@@ -88,7 +88,7 @@ def test_time_rescaling_rejects_wrong_model(synthetic):
 
 
 def test_raw_path_inflated_by_seasonality_synthetic(synthetic):
-    """★Filimonov–Sornette の罠の実証 (合成): U 字を除去しないと n̂ が過大。"""
+    """Filimonov–Sornette の罠の実証 (合成): U 字を除去しないと n̂ が過大。"""
     _, _, _, a, betas, w, mu_day, n_design = synthetic
     m = 512
     u = (np.arange(m) + 0.5) / m
@@ -180,7 +180,7 @@ def test_branching_vs_thinning_cross_validation():
     """同一パラメータの 2 つの生成器 (分枝表現 / エンジンの thinning) で
     レートとクラスタリング統計が整合すること。
 
-    ★厳密一致は期待しない: エンジンの CX ベースラインは φ·δ0·N(t) で、
+    厳密一致は期待しない: エンジンの CX ベースラインは φ·δ0·N(t) で、
     分枝表現は定数 μ_cx = δ0·N̄ref。実現 N̄ の目標比のずれ (−3〜6%) が
     そのままレート差になる。許容 ±10%。
     """

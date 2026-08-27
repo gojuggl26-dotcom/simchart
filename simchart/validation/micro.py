@@ -10,7 +10,7 @@ S0 では全部 ``not_applicable`` になる。それでも**スタブではな�
 ``beta = (1 - gamma) / 2`` を満たしていなければならない。相関の効果を減衰する
 インパクトがちょうど打ち消す、というのがこの関係の中身である。
 
-これは **S8 で実装する機能ではなく、S8 の設計を縛る制約**である。メタオーダーの
+これは S8 で実装する機能ではなく、S8 の設計を縛る制約である。メタオーダーの
 分割則 (gamma を決める) とインパクトの減衰 (beta を決める) を独立にチューニング
 すると、必ずどちらかが壊れる。測定手段を先に用意しておけば、S8 で「どちらを
 動かすべきか」が即座に判る。後付けできない類のものなので S0 で書く。
@@ -138,7 +138,7 @@ def propagator_fit(
     ``R(l) = sum_{j>=1} G(j) * [C(|l-j|) - C(j)]``
 
     という関係が成り立つ (``C`` は符号の自己共分散、``C(0)=1``)。これを
-    ``l = 1..L`` について並べた線形系を**非負最小二乗**で解いて ``G`` を得る。
+    ``l = 1..L`` について並べた線形系を非負最小二乗で解いて ``G`` を得る。
     非負制約を入れるのは、符号つきインパクトが負になる解は物理的に意味が無く、
     無制約だと打ち切り誤差で振動するため。
 
@@ -285,7 +285,7 @@ def metaorder_length_check(
 
     生成則は ``N = floor(N_min·(1−u)^{-1/α})`` で、離散裾
     ``P(N ≥ n) = (N_min/n)^α`` が厳密に成り立つ。推定は連続近似 (Hill) ではなく
-    **離散モデルの MLE**: ``P(N = n) = (N_min/n)^α − (N_min/(n+1))^α``。
+    離散モデルの MLE: ``P(N = n) = (N_min/n)^α − (N_min/(n+1))^α``。
     SE は対数尤度の数値曲率から。あわせて固定点の裾確率の二項 z も返す
     (MLE が壊れても裾のずれを直接見られるように)。
     """
@@ -334,10 +334,10 @@ def metaorder_length_check(
 def pool_stationarity(pool_grid, burn_points: int = 0) -> dict:
     """メタオーダー・プール占有 (グリッド標本) の定常性 (S8)。
 
-    ゲートは「前半と後半の平均が ±10% 以内・増加トレンドなし」(指示書 §10)。
+    ゲートは前半と後半の平均が ±10% 以内・増加トレンドなし。
     前後半比較そのものがトレンドの計器なので、OLS 勾配は記録に留める
     (系列は強く自己相関しており naive な傾き検定の p 値は意味を持たない)。
-    ★α<2 の Pareto 長では占有の裾が重く (whale 滞留)、平均は少数の episode に
+    α<2 の Pareto 長では占有の裾が重く (whale 滞留)、平均は少数の episode に
     引かれる — 中央値と分位も併記する。
     """
     arr = np.asarray(pool_grid, dtype=np.float64).ravel()[burn_points:]
@@ -390,10 +390,10 @@ def iceberg_stats(diag: Mapping[str, Any] | None) -> dict:
 def estimate_eta(price_ticks) -> dict:
     """Robert–Rosenbaum の実効 η (S9 §8): 価格変化の継続/交替比 N_c/(2N_a)。
 
-    ティック離散の価格列から**ゼロでない変化**の方向列を作り、
+    ティック離散の価格列からゼロでない変化の方向列を作り、
     継続 (同方向) N_c と交替 (反転) N_a から η̂ = N_c / (2 N_a)。
     iid の ±1 変化なら η = 0.5、交替過多 (バウンス) で η < 0.5。
-    ★経験値 0.1〜0.3 は**取引価格**系列の値 (R-R の枠組み自体が取引価格の
+    経験値 0.1〜0.3 は取引価格系列の値 (R-R の枠組み自体が取引価格の
     離散化モデル)。ミッドに当てた値は別物として記録する — 系列を混ぜないこと。
     """
     arr = np.asarray(price_ticks, dtype=np.float64).ravel()
@@ -423,10 +423,10 @@ def estimate_eta(price_ticks) -> dict:
 
 
 def obi_predictive(imbalance, mid, horizons=(1, 2, 5, 10)) -> dict:
-    """⑩ OBI の予測相関: corr(I_k, m_{k+h} − m_k) (S9 §7)。
+    """(10) OBI の予測相関: corr(I_k, m_{k+h} − m_k) (S9 §7)。
 
     ``imbalance`` と ``mid`` は同じイベント格子 (攻撃注文ごと等) に整列した列。
-    I は**その時点で観測できる**板の量、リターンは**その後**のミッド変化 —
+    I はその時点で観測できる板の量、リターンはその後のミッド変化 —
     時間契約 (説明変数の確定時刻 ≤ 目的変数の開始時刻) を満たす予測相関。
     """
     i_arr = np.asarray(imbalance, dtype=np.float64).ravel()
@@ -455,7 +455,7 @@ def obi_predictive(imbalance, mid, horizons=(1, 2, 5, 10)) -> dict:
 def mean_reversion_profile(signs, mid, meta_ids=None, horizons=(1, 2, 3, 5, 10, 20, 50)) -> dict:
     """約定後のミッド戻り曲線 R(h) = E[ε_k·(m_{k+h} − m_k)] (S9 §10)。
 
-    ★無条件の R(h) は符号の長期記憶 (将来の同符号フロー) で増加し、板の
+    無条件の R(h) は符号の長期記憶 (将来の同符号フロー) で増加し、板の
     復元力が見えない。``meta_ids`` を渡すと**ノイズトレード (meta_id < 0) に
     条件付け**る — ノイズの符号は iid なので将来フローと独立で、曲線は
     純粋な板応答 (インパクト → 部分的な戻り) になる。
@@ -516,7 +516,7 @@ def branching_ratio_reestimate(
     ``Var / Mean -> 1 / (1 - n)^2`` に収束する。したがって
     ``n_hat = 1 - sqrt(Mean / Var)``。カーネル形状を仮定しないので、
     S7 で入れた n が S8〜S11 の改変を経ても保たれているかの確認に使える
-    (**設定値をそのまま報告するのではなく、出力から測り直す**ことに意味がある)。
+    (設定値をそのまま報告するのではなく、出力から測り直すことに意味がある)。
 
     Parameters
     ----------
@@ -589,7 +589,7 @@ def branching_ratio_reestimate(
 
 
 # ---------------------------------------------------------------------------
-# S6: ZI 板の測定 (指示書 §12)
+# S6: ZI 板の測定 
 # ---------------------------------------------------------------------------
 def _burned(t: np.ndarray, burn_in_sec: float) -> np.ndarray:
     return np.asarray(t, dtype=np.float64) >= burn_in_sec
@@ -622,7 +622,7 @@ def depth_profile(book_snapshots, burn_in_sec: float = 0.0,
                   tick_size: float | None = None) -> dict:
     """best からの距離別の平均デプス (スナップショットのレベル順位ベース)。
 
-    ★「デプスのピークが best (Δ=0) でない」のが ZI 板の健全な形 (指示書 §13
+    「デプスのピークが best (Δ=0) でない」のが ZI 板の健全な形 (設計要件
     depth_front_depletion): best は成行に最初に食われるので前方が消耗し、ピークは
     数レベル奥に来る。ピークが best にあるなら約定による前方消耗が働いていない。
     """
@@ -678,7 +678,7 @@ def queue_length_distribution(book_snapshots, burn_in_sec: float = 0.0) -> dict:
 
 def order_size_check(sizes: np.ndarray, lot_values, lot_probs, w_round: float,
                      pareto_alpha: float) -> dict:
-    """サイズ分布の仕様適合 (指示書 §6.3)。
+    """サイズ分布の仕様適合 。
 
     混合 (離散ロット + 切り上げ Pareto) なので素朴な KS は使えない (離散原子が
     あると KS の帰無分布が成り立たない)。代わりに (a) 各ロット点の質量が仕様の
@@ -733,9 +733,9 @@ def placement_check(
     prev_best_bid_tick: np.ndarray, prev_best_ask_tick: np.ndarray,
     mu_place_spec: float, place_offset: float, max_place: int,
 ) -> dict:
-    """配置距離分布の仕様適合: べき指数の推定が仕様 ±0.2 (指示書 §13)。
+    """配置距離分布の仕様適合: べき指数の推定が仕様 ±0.2 。
 
-    Δ = 発注**直前**の同サイド best からの板内距離。イベントログの best は
+    Δ = 発注直前の同サイド best からの板内距離。イベントログの best は
     イベント後の値なので、呼び出し側は前イベントの best を渡すこと (improvement は
     自分が best を書き換えるため)。推定は板内配置 (Δ >= 1) の対数ビン回帰:
     log P(Δ) = 定数 − (1+μ) log(Δ+Δ0)。
@@ -776,7 +776,7 @@ def placement_check(
 
 def book_liveness(empty_time_sec: float, horizon_sec: float,
                   n_reject_events: float, reject_vol: float) -> dict:
-    """片側枯渇の頻度 (指示書 §8.2 — 時間比率 < 0.1% がゲート)。"""
+    """片側枯渇の頻度 (設計要件 — 時間比率 < 0.1% がゲート)。"""
     frac = empty_time_sec / horizon_sec if horizon_sec > 0 else float("nan")
     return ok(
         num(frac),
@@ -789,14 +789,14 @@ def book_liveness(empty_time_sec: float, horizon_sec: float,
 
 def interevent_times(t: np.ndarray, burn_in_sec: float = 0.0,
                      window_sec: float = 1800.0) -> dict:
-    """到着間隔の指数性 (S7 の比較基準 — 指示書 §13)。
+    """到着間隔の指数性 (S7 の比較基準 — 設計要件)。
 
     2 つの独立な検査を返す:
     - CV² = Var(Δt)/E[Δt]²。指数分布なら 1
     - 窓あたり件数の過分散指数 (Fano factor) Var(N)/E[N]。Poisson なら 1
 
     S7 で Hawkes を入れるとどちらも 1 を大きく超える (クラスタリング) ので、
-    ここで ≈1 を記録しておくことが「自己励起が入った」ことの検定の対照になる。
+    ここで ≈1 を記録しておくことが自己励起が入ったことの検定の対照になる。
     """
     tt = np.asarray(t, dtype=np.float64)
     tt = tt[tt >= burn_in_sec]

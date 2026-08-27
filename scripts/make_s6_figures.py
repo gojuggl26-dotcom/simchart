@@ -2,9 +2,9 @@
 
 README に載せる 3 枚:
 
-1. ``s6_book.png``       — デプスプロファイル・スプレッド分布・配置べき則
+1. ``s6_book.png`` — デプスプロファイル・スプレッド分布・配置べき則
 2. ``s6_decoupling.png`` — ミッドと p* の切断 (κ=0): 経路の重ね描き + リターン相関
-3. ``s6_vr.png``         — ミッド VR の 2 レジーム (1/δ 以下の subdiffusion と日次の拡散)
+3. ``s6_vr.png`` — ミッド VR の 2 レジーム (1/δ 以下の subdiffusion と日次の拡散)
 
 ラベルは英語 (既存の慣習)。数値の正は results/S6/metrics.json。
 """

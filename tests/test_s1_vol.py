@@ -1,6 +1,6 @@
 """S1 の確率ボラ (MSM + 緩慢 OU) の単体検証。
 
-分散予算・凸性補正・厳密離散化・RNG 分離という「後段全体を規定する」性質を固定する。
+分散予算・凸性補正・厳密離散化・RNG 分離という後段全体を規定する性質を固定する。
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ S1 = dict(stage="S1", enable_msm=True, enable_slow_ou=True)
 # 分散予算ユーティリティ
 # ---------------------------------------------------------------------------
 def test_solve_m0_matches_the_spec_value() -> None:
-    """k=10, target=0.125 -> m0 ~ 1.220 (指示書 §6 の数値例)。"""
+    """k=10, target=0.125 -> m0 ~ 1.220 (数値例)。"""
     assert solve_m0(10, 0.125) == pytest.approx(1.220, abs=0.001)
 
 
@@ -60,7 +60,7 @@ def test_convexity_correction_normalizes_e_sigma2() -> None:
 def test_missing_convexity_correction_is_detected() -> None:
     """補正 -Var(X) を落とすと E[sigma^2] が e^{2Var} 倍に膨らむ (帰無対照)。
 
-    「なんとなくボラが高い」としか見えない典型的バグを、断面検定が数値で
+    なんとなくボラが高いとしか見えない典型的バグを、断面検定が数値で
     捕まえられることの確認。
     """
     cfg = Config(**S1)
@@ -132,7 +132,7 @@ def test_variance_budget_shares_in_cross_section() -> None:
 
 
 def test_overspending_the_budget_is_rejected() -> None:
-    """配分合計が最終予算 0.25 を超える設定は構成エラー (指示書 §6)。"""
+    """配分合計が最終予算 0.25 を超える設定は構成エラー 。"""
     with pytest.raises(ValueError, match="予算"):
         Config(stage="S1", enable_msm=True, enable_slow_ou=True,
                vol_var_target_msm=0.22, vol_var_target_slow=0.06)
@@ -157,7 +157,7 @@ def test_composition_coefficient_bug_is_detected() -> None:
 def _msm_reference(config: Config, t_days: np.ndarray, rng) -> np.ndarray:
     """MSM の素朴なリファレンス実装 (成分ごとに全格子点を searchsorted)。
 
-    本実装は速度のため向きを逆にした区間埋めを使う。両者が**ビット単位で一致**
+    本実装は速度のため向きを逆にした区間埋めを使う。両者がビット単位で一致
     することをここで固定する。一致しなくなったら、それは最適化が経路を変えた
     ということであり、S1 の基準値 (results/S1/metrics.json) が無効になる。
     """
@@ -248,7 +248,7 @@ def test_ou_stationary_variance_across_seeds() -> None:
 def test_diffusion_stream_is_untouched_by_s1() -> None:
     """S1 のフラグを立てても l2.diffusion の消費列が S0 相当と一致する。
 
-    S0 の RNG 設計 (名前ハッシュ) の最初の実地テスト (指示書 §2)。
+    S0 の RNG 設計 (名前ハッシュ) の最初の実地テスト 。
     """
     cfg = Config(n_days=20, steps_per_day=390, **S1)
     result = run(cfg)
@@ -299,7 +299,7 @@ def test_msm_only_and_ou_only_compose() -> None:
 def test_standardized_returns_are_iid_normal_under_s1() -> None:
     """r_std が N(0,1) に従う (std ~ 1, 尖度 ~ 3)。
 
-    確率ボラの「効果を取り除く」変換が正しいことの検証。これが成り立つから
+    確率ボラの効果を取り除く変換が正しいことの検証。これが成り立つから
     acf_r / ljung_box の不変ゲートを標準化系列で判定できる。
     """
     result = run(Config(seed=5, n_days=400, steps_per_day=390, **S1))

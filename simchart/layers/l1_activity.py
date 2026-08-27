@@ -44,7 +44,7 @@ class ConstantActivity:
     def branching_ratio(self) -> float | None:
         """Hawkes の分岐比。S0 には自己励起が無いので ``None``。
 
-        ``0.0`` ではなく ``None`` を返すのは、「自己励起が無効」と「分岐比を
+        ``0.0`` ではなく ``None`` を返すのは、自己励起が無効と「分岐比を
         推定したらゼロだった」を取り違えないため。検証側はこれを見て
         ``not_applicable`` を返す。
         """
@@ -54,7 +54,7 @@ class ConstantActivity:
         """区間内のイベント時刻。
 
         S0 の L3 はイベント駆動ではないため、この経路は使われない。呼ばれた場合は
-        黙って空配列を返さず停止する。空を返すと「イベントが 0 件だった」という
+        黙って空配列を返さず停止する。空を返すとイベントが 0 件だったという
         測定結果と区別がつかなくなるため。
         """
         raise NotImplementedError(
@@ -65,17 +65,17 @@ class ConstantActivity:
 
 
 class HawkesActivity:
-    """S7: 符号対称な 6 次元 Hawkes 注文流の**仕様の保持者**。
+    """S7: 符号対称な 6 次元 Hawkes 注文流の仕様の保持者。
 
     生成そのものは板カーネル (:mod:`.book_engine`) に融合されている。取消強度が
     板の生存注文数 ``δ0·N(t)`` に依存するため、板から切り離した「イベント時刻の
     事前生成」は原理的にできない (N(t) は板を進めないと判らない)。この層は
     パラメータの単一の出所であり、分岐比などの導出量をここで計算する。
 
-    符号対称制約 (指示書 §3.1: Φ[買X→買Y] = Φ[買X→売Y]) の下では、6 次元系は
-    「型レベル 3 次元 Hawkes + 独立な等確率符号」と厳密に等価で、6×6 ブロック
+    符号対称制約 (設計要件: Φ[買X→買Y] = Φ[買X→売Y]) の下では、6 次元系は
+    型レベル 3 次元 Hawkes + 独立な等確率符号と厳密に等価で、6×6 ブロック
     行列 [[A/2, A/2], [A/2, A/2]] のスペクトル半径は 3×3 の A のそれに一致する。
-    実装もその表現を使う (符号の相関構造 ⑪ は S8 のメタオーダーの仕事)。
+    実装もその表現を使う (符号の相関構造 (11) は S8 のメタオーダーの仕事)。
     """
 
     name = "l1.hawkes"
@@ -105,8 +105,8 @@ class HawkesActivity:
     def stationary_rates(self) -> np.ndarray:
         """定常イベントレート r = (I − aᵀ)⁻¹ μ [件/日] (MO計, LO計, CX計)。
 
-        CX ベースラインは δ0·N̄ref。N̄ref は **S6 本番の実測平均生存注文数**
-        (config.hawkes_nbar_ref = 取消数/日/δ ≈ 239)。★2α/δ (= 600) を使っては
+        CX ベースラインは δ0·N̄ref。N̄ref は S6 本番の実測平均生存注文数
+        (config.hawkes_nbar_ref = 取消数/日/δ ≈ 239)。2α/δ (= 600) を使っては
         ならない — あれは容量見積用の粗い上限で、実測の 2.5 倍ある。板の実際の
         N(t) が揺らぐぶんは実測との差になる — 目安であり厳密な予言ではない。
         """
@@ -123,7 +123,7 @@ class HawkesActivity:
     def intensity(self, t: float | np.ndarray) -> float | np.ndarray:
         """ベースライン強度 φ_λ(t)·μ_total [件/日]。
 
-        ★これは**励起項を含まない**。完全な λ(t) はイベント履歴の関数であり、
+        これは励起項を含まない。完全な λ(t) はイベント履歴の関数であり、
         シミュレーション本体か検証側の再構成 (validation/hawkes.py) でしか
         評価できない。
         """
@@ -142,9 +142,9 @@ class HawkesActivity:
 def build_activity(
     config: Config, rng: RNGRegistry, calendar: ConstantCalendar
 ) -> ConstantActivity | HawkesActivity:
-    # S12: χ₁/χ₃ は L1 の**仕様** (活動度ベースライン・分岐比) を変調するが、
+    # S12: χ₁/χ₃ は L1 の仕様 (活動度ベースライン・分岐比) を変調するが、
     # 実装は板カーネル側 (χ₁ は Z_total への畳み込み、χ₃ は n_t の sigmoid) —
-    # S7 以降の「生成は板カーネルに融合」と同じ配置 (README の作法)。
+    # S7 以降の生成は板カーネルに融合と同じ配置 (README の作法)。
     del rng  # 乱数は L3 側がレジストリから直接引く (l1.hawkes ストリーム)
     if config.enable_hawkes:
         return HawkesActivity(config, calendar)

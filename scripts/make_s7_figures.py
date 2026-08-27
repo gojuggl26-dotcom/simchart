@@ -2,7 +2,7 @@
 
 README に載せる 3 枚:
 
-1. ``s7_three_way.png``  — 分岐比 3 経路 (Filimonov–Sornette の罠の実証) と
+1. ``s7_three_way.png`` — 分岐比 3 経路 (Filimonov–Sornette の罠の実証) と
                            強度 λ(t) の再構成 (バーストの可視化)
 2. ``s7_clustering.png`` — S6 vs S7: 分ごとの件数・間隔の生存関数・Fano の窓依存
 3. ``s7_seasonality.png``— 日内 U 字 (件数 vs φ_λ) と出来高 ACF

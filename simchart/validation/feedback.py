@@ -1,12 +1,12 @@
-"""S11: フィードバックと内生的危機の測定群 (指示書 §9)。
+"""S11: フィードバックと内生的危機の測定群 。
 
-- **loop_gain_estimate**: 同一シード on/off の log RV 分散比から g を推定 (§4.1)。
-  ★ループが増幅するのは**短期帯域** (RV_long が追随する緩慢帯域は u に現れず
-  増幅されない) ので、日次版 (指示書の式そのまま) と短期帯域版の両方を出す。
-- **crisis_detect / crisis_anatomy**: 3 条件 (価格・スプレッド・デプス) の同時
+- loop_gain_estimate: 同一シード on/off の log RV 分散比から g を推定 (§4.1)。
+  ループが増幅するのは短期帯域 (RV_long が追随する緩慢帯域は u に現れず
+  増幅されない) ので、日次版 (設計要件の式そのまま) と短期帯域版の両方を出す。
+- crisis_detect / crisis_anatomy: 3 条件 (価格・スプレッド・デプス) の同時
   成立をエピソード化し、頻度・継続・深さ・回復率を測る (§6)。
-- **divergence_monitor**: RV の発散検出 (§10 no_divergence)。
-- **nt_distribution**: u 系列から n_t の実現分布を再構成 (§8.3)。
+- divergence_monitor: RV の発散検出 (§10 no_divergence)。
+- nt_distribution: u 系列から n_t の実現分布を再構成 (§8.3)。
 """
 
 from __future__ import annotations
@@ -44,9 +44,9 @@ def _log_rv_series(obs, cfg, window_sec: float) -> np.ndarray:
 
 
 def loop_gain_estimate(result_on, result_off, cfg) -> dict[str, Any]:
-    """g = 1 − sqrt(Var_off(log RV)/Var_on(log RV)) (指示書 §4.1)。
+    """g = 1 − sqrt(Var_off(log RV)/Var_on(log RV)) 。
 
-    日次 (指示書そのまま) と 30 分帯域 (ループが実際に増幅する側) の両方。
+    日次 (設計要件そのまま) と 30 分帯域 (ループが実際に増幅する側) の両方。
     同一シード・同一 L2 経路で呼ぶこと (呼び出し側の責任)。
     """
     rows: dict[str, Any] = {}
@@ -65,7 +65,7 @@ def loop_gain_estimate(result_on, result_off, cfg) -> dict[str, Any]:
 
 
 def _ewma(x: np.ndarray, lam: float) -> np.ndarray:
-    """バイアス補正つき EWMA (先頭から因果)。NaN は**更新をスキップ**する
+    """バイアス補正つき EWMA (先頭から因果)。NaN は更新をスキップする
     (定数で埋めると単位依存の汚染になる — 実測でスプレッドはドル単位)。"""
     out = np.empty_like(x)
     acc = 0.0
@@ -84,7 +84,7 @@ def _ewma(x: np.ndarray, lam: float) -> np.ndarray:
 def crisis_detect(result, cfg) -> dict[str, Any]:
     """3 条件 (§6.1) の同時成立をスナップショット格子 (60s) 上でエピソード化。
 
-    「通常」はどの条件も**長期 EWMA (RV_long と同じ半減期)** を基準にする —
+    通常はどの条件も長期 EWMA (RV_long と同じ半減期) を基準にする —
     市場参加者が直近履歴から通常水準を推定するという §2.2 と同じ解釈。
     """
     obs = result.observation
@@ -189,10 +189,10 @@ def crisis_anatomy(result, cfg, detection: dict[str, Any] | None = None) -> dict
     sp_norm = _ewma(spread, lam)
     dp_norm = np.maximum(_ewma(depth, lam), 1e-12)
 
-    # 情報性の分類 (★この分割が回復率の解釈を決める):
+    # 情報性の分類 (この分割が回復率の解釈を決める):
     #   catch-up (|d| 縮小) = κ ハーディングの追いつきカスケード — ミッドが
-    #     効率価格 p* **へ**動いた事件。恒久で、回復**しない**のが正しい。
-    #   dislocation (|d| 拡大) = 無情報スイープ — p* から**離れた**事件。
+    #     効率価格 p* へ動いた事件。恒久で、回復しないのが正しい。
+    #   dislocation (|d| 拡大) = 無情報スイープ — p* から離れた事件。
     #     κ が引き戻す = フラッシュ・クラッシュ型。回復ゲートはこちらに課す。
     ps = np.asarray(result.price.log_p_star)
     idx_ps = np.minimum(
@@ -264,10 +264,10 @@ def divergence_monitor(
 ) -> dict[str, Any]:
     """発散検出 (§10 no_divergence)。
 
-    ★単独ランの「RV > 閾値×中央値の持続」は **L2 のボラエポック (MSM 高状態) で
+    単独ランのRV > 閾値×中央値の持続は **L2 のボラエポック (MSM 高状態) で
     偽陽性を出す** (S11a 実測: b_δ=1.5 で 3 件 — フィードバック無しでも起きる水準)。
     `result_off` (同一シードのフィードバック off 対) を与えると判定は
-    **log(RV_on/RV_off) の持続** に切り替わり、L2 起因が厳密に相殺される —
+    log(RV_on/RV_off) の持続 に切り替わり、L2 起因が厳密に相殺される —
     残るのはループ自身の寄与だけ。ゲートはペア版で判定すること。
     """
     lrv = _log_rv_series(result.observation, cfg, _session(cfg))
@@ -277,9 +277,9 @@ def divergence_monitor(
         loff = _log_rv_series(result_off.observation, cfg, _session(cfg))
         n = min(lrv.size, loff.size)
         daily = lrv[:n] - loff[:n]
-        # ★日次のペア差は whale の**出方の不一致**で ±3〜5 揺れる (パスが
+        # 日次のペア差は whale の出方の不一致で ±3〜5 揺れる (パスが
         # 脱相関した後、同じ鯨が片側にしか現れない日がある — S11e 実測)。
-        # 真の発散 (g ≥ 1) の署名は**持続的な**天井増幅なので、30 日移動平均が
+        # 真の発散 (g ≥ 1) の署名は持続的な天井増幅なので、30 日移動平均が
         # log(threshold) を超えることを判定に使う (鯨タイミング差は多週で相殺)。
         w = 30
         if daily.size < w + 5:
