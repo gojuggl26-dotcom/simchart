@@ -19,7 +19,7 @@
   perp は 1 日 = 24 時間 (86,400 秒) $\times$ 年 365 日の連続市場で、窓は機構ごと
   存在しない — 実測でも日 d の始値と日 $d - 1$ の終値の差は厳密に 0 だった。
 - (2) 同じ乱数・違う時計: 同一シード・同一 $\bar{\sigma}$ で時計だけを変えた対照。
-  乱数の消費列は完全に同一 (`market_type` は RNG の鍵に入れていない ) なので
+  乱数の消費列は完全に同一 (`market_type` は RNG の鍵に入れていない) なので
   2 本の経路は形がそっくりのまま振幅だけが $\sqrt{252/365} = 0.831$ 倍になる。
   それぞれ自分の時計で年率化すれば両方とも $\bar{\sigma}$ に戻る (図では 0.569 / 0.569 —
   $\bar{\sigma} 0.60$ との差は 365 日標本のゆらぎ) が、時計を取り違えると 0.473 になり
@@ -64,7 +64,7 @@
 `tests/baselines_equity_fork.json` に固定し、`tests/test_perp_fork.py::
 test_equity_baselines_unchanged_*` が毎回再実行して照合する — 時間軸
 リファクタと全 perp 追加の後も 4 構成すべてビット単位一致 (全体 377 テスト
-グリーン)。market_type は乱数の鍵に入れない ( — 入れると株式の全経路が
+グリーン)。market_type は乱数の鍵に入れない (入れると株式の全経路が
 変わる)。
 
 ### 設計要件既存不備 3 件の検証結果: 本リポジトリには存在しない (main への反映なし)
@@ -82,7 +82,7 @@ test_equity_baselines_unchanged_*` が毎回再実行して照合する — 時�
 (phi_sigma_normalization / phi_lambda_normalization / chaos_tau_band) が
 毎実行で機構を検査する。
 
-### 時間軸の単一情報源 ( — 24/7 化の最大事故要因)
+### 時間軸の単一情報源 (24/7 化の最大事故要因)
 
 `simchart/grid.py` の `TimeGrid` + `config.ann_days` / `config.seconds_per_day`
 が唯一の定義点。生成系の直接参照 (TRADING_DAYS_PER_YEAR / SESSION_SECONDS /
@@ -135,7 +135,7 @@ LiquidationEvent)。`validation/perp.py` は全 11 関数を宣言済み (S6/S10
 | 尖度 (1 分、N=4.03M) | 3.0039 | [2.7, 3.3] 合格 (SE 0.0024) |
 | ACF(1) の z | $- 0.22$ | \|z\| < 2 合格 (60 日スモークの +3.12 は seed42 の抽選 — 5 シードで $\pm 1.6$ を確認) |
 | GPH d / VR 最大乖離 | 0.007 / 0.009 | 合格 |
-| 時間スケール不変性 (1440 vs 288 steps) | 一致 | 合格 ( — 24/7 化の最重要検査) |
+| 時間スケール不変性 (1440 vs 288 steps) | 一致 | 合格 (24/7 化の最重要検査) |
 | 週内プロファイル (7 ビン) | max/min = 1.0028 | < 1.05 合格 平坦 (週次季節性は S4-perp) |
 | $\phi$ 正規化機構 | 誤差 4.5e-5 / 4.4e-5 | $\pm 0.001$ 合格 |
 | 年率換算 | ann_days=365・86,400 s/日 | 合格 ($\sigma_{\mathrm{step}} = 0.60/ \sqrt{365 \cdot 1440}$ をテストが固定) |
