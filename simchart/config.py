@@ -56,6 +56,29 @@ UNIMPLEMENTED_FLAGS: dict[str, tuple[str, str, str]] = {
     "enable_jump_hawkes": ("S11d", "ジャンプ自己励起 (任意 — S11d で見送り判断済み、再検討条件は results/S11d)", "simchart/layers/l2_price.py"),
 }
 
+#: perp フォーク (S0-perp) で宣言された未実装フラグ。担当段階は perp 系列。
+#: ★「全段階分を先に宣言する」方針 (S0 §4) の perp 版 — L4 まで全部宣言し、
+#: 有効化は NotImplementedError で止める (暗黙 no-op の構造的防止)。
+_PERP_UNIMPLEMENTED: dict[str, tuple[str, str, str]] = {
+    "enable_weekly_seasonality": (
+        "S4-perp", "週次季節性 (168h 周期の φ)", "simchart/layers/l0_calendar.py"),
+    "enable_funding": (
+        "S10-perp", "資金調達率 (TWAP 基差 → 8h ごとの funding)", "simchart/layers/l4_positions.py"),
+    "enable_arbitrageur": (
+        "S10-perp", "現物-perp 裁定エージェント (基差の定常化)", "simchart/layers/l3_book.py"),
+    "enable_positions": (
+        "S11-perp", "建玉・レバレッジ分布 (L4。S10-perp で基差が定常になってから)", "simchart/layers/l4_positions.py"),
+    "enable_liquidation": (
+        "S11-perp", "清算スキャンとカスケード (L4)", "simchart/layers/l4_positions.py"),
+    "enable_insurance_fund": (
+        "S11-perp", "保険基金", "simchart/layers/l4_positions.py"),
+    "enable_adl": (
+        "S11-perp", "自動デレバレッジ (ADL)", "simchart/layers/l4_positions.py"),
+    "enable_cross_margin": (
+        "S13-perp", "クロスマージン (多資産建玉)", "simchart/layers/l4_positions.py"),
+}
+UNIMPLEMENTED_FLAGS.update(_PERP_UNIMPLEMENTED)
+
 #: 実装済みの機能フラグ。UNIMPLEMENTED_FLAGS から行を移すときはこちらに追記する。
 #: (テストが「全 bool フラグはどちらかの台帳に載っている」ことを強制し、
 #:  新フラグの登録漏れ = 暗黙 no-op を構造的に防ぐ)
@@ -84,7 +107,18 @@ IMPLEMENTED_FLAGS: tuple[str, ...] = (
 )
 
 #: フラグ以外 (数値パラメータ) の未実装条件。
-_UNIMPLEMENTED_NUMERIC: dict[str, tuple[str, str, str, float]] = {}
+_UNIMPLEMENTED_NUMERIC: dict[str, tuple[str, str, str, Any]] = {
+    # --- perp (S0-perp で宣言、S6-perp / S12-perp で実装) ---
+    "block_time_ms": (
+        "S6-perp", "ブロック時間の離散化 (イベントをブロック単位で確定)",
+        "simchart/layers/l3_book.py", 1000),
+    "sequencer_rule": (
+        "S6-perp", "シーケンサ規則 (arrival_fifo / priority)",
+        "simchart/layers/l3_book.py", "arrival_fifo"),
+    "chaos_branching_target": (
+        "S12-perp", "χ₃ の注入先切替 (n_t / leverage_appetite)",
+        "simchart/layers/l4_positions.py", "n_t"),
+}
 
 
 def _not_implemented(name: str, stage: str, what: str, where: str, value: Any) -> NotImplementedError:
@@ -733,8 +767,61 @@ class Config:
     #: 構造には触れない §2)。
     asset_overrides: tuple[Any, ...] = ()
 
+    # --- 市場タイプ (perp フォーク、S0-perp §1) ---
+    #: "equity" (株式: 6.5h セッション・年 252 日) | "perp_clob" (PerpDEX:
+    #: 24/7・年 365 日)。分岐は**レイヤー実装の差し替え**で行い (l0_calendar の
+    #: PerpCalendar 選択)、共通コア (rng/grid/L2 の確率過程/検証) は分岐しない。
+    #: ★時間換算は config.ann_days / config.seconds_per_day (= grid.TimeGrid) を
+    #: 唯一の情報源とし、TRADING_DAYS_PER_YEAR / SESSION_SECONDS を config.py の
+    #: 外から直接参照しない (S0-perp §4 — 24/7 化で年率・半減期・強度が静かに
+    #: ずれるのを構造的に防ぐ)。
+    market_type: str = "equity"
+
+    # --- perp: L0 24/7 カレンダー (S4-perp) ---
+    weekly_period_hours: float = 168.0
+    enable_weekly_seasonality: bool = False
+
+    # --- perp: L3 ブロック時間 (S6-perp) ---
+    block_time_ms: int = 1000
+    sequencer_rule: str = "arrival_fifo"  # "arrival_fifo" | "priority"
+
+    # --- perp: 資金調達率と基差 (S10-perp) ---
+    enable_funding: bool = False
+    funding_interval_hours: float = 8.0
+    funding_cap: float = 0.0075
+    enable_arbitrageur: bool = False
+    arb_threshold_bps: float = 5.0
+
+    # --- perp: L4 建玉と清算 (S11-perp 以降) ---
+    enable_positions: bool = False
+    enable_liquidation: bool = False
+    position_repr: str = "density"  # "density" | "agent"
+    maintenance_margin: float = 0.005
+    max_leverage: float = 50.0
+    leverage_pareto_alpha: float = 2.0
+    partial_liquidation_frac: float = 0.2
+    enable_insurance_fund: bool = False
+    enable_adl: bool = False
+    enable_cross_margin: bool = False  # S13-perp
+
+    # --- perp: χ₃ の注入先切替 (S12-perp) ---
+    chaos_branching_target: str = "n_t"  # "n_t" | "leverage_appetite"
+
     # --- 検証スイートの測定器設定 (モデル設定ではない) ---
     validation: ValidationConfig = field(default_factory=ValidationConfig)
+
+    # ------------------------------------------------------------------
+    # 時間軸 (単一情報源 — grid.TimeGrid.from_config がこれを読む)
+    # ------------------------------------------------------------------
+    @property
+    def ann_days(self) -> int:
+        """年率換算の日数。equity 252 / perp_clob 365。"""
+        return 365 if self.market_type == "perp_clob" else TRADING_DAYS_PER_YEAR
+
+    @property
+    def seconds_per_day(self) -> float:
+        """1 日の取引秒数。equity 23,400 (6.5h) / perp_clob 86,400 (24h)。"""
+        return 86400.0 if self.market_type == "perp_clob" else SESSION_SECONDS
 
     # ------------------------------------------------------------------
     # 検証
@@ -756,11 +843,87 @@ class Config:
             raise ValueError("n_assets は 1 以上である必要があります")
         if not isinstance(self.validation, ValidationConfig):
             raise TypeError("validation は ValidationConfig である必要があります")
-        if self.validation.primary_bar_sec > SESSION_SECONDS:
+        if self.validation.primary_bar_sec > self.seconds_per_day:
             raise ValueError(
                 f"primary_bar_sec ({self.validation.primary_bar_sec}s) が"
-                f" セッション長 ({SESSION_SECONDS:.0f}s) を超えています"
+                f" セッション長 ({self.seconds_per_day:.0f}s) を超えています"
             )
+        self._check_perp()
+
+    def _check_perp(self) -> None:
+        """perp フォークの整合性検証 (S0-perp §5.3)。"""
+        if self.market_type not in ("equity", "perp_clob"):
+            raise ValueError(
+                f"market_type は equity / perp_clob のいずれかです: {self.market_type!r}"
+            )
+        defaults = {f.name: f.default for f in dataclasses.fields(type(self))}
+        if self.market_type == "equity":
+            # equity では perp 専用パラメータを動かさない (暗黙 no-op ガード)。
+            changed = [
+                n for n in self._PERP_PARAMS if getattr(self, n) != defaults[n]
+            ]
+            if changed:
+                raise ValueError(
+                    f"market_type=equity のまま perp パラメータ {', '.join(changed)} が"
+                    f" 既定値から変更されています (暗黙 no-op)。perp を使うなら"
+                    f" market_type='perp_clob' を設定してください。"
+                )
+            return
+        # --- perp_clob ---
+        if self.session_type != "24h":
+            raise ValueError(
+                "market_type='perp_clob' には session_type='24h' が必要です"
+                " (24/7 市場にセッション概念はない)"
+            )
+        if self.enable_overnight:
+            raise ValueError(
+                "perp_clob と enable_overnight は併用できません (24/7 市場に"
+                "オーバーナイトは存在しない)。フィールドは株式互換のため残る"
+            )
+        if self.enable_seasonality:
+            raise NotImplementedError(
+                "perp の季節性 (日内 UTC プロファイル + 週次 168h) は S4-perp で"
+                "実装されます。S0-perp では enable_seasonality=False にすること。"
+            )
+        if self.n_assets > 1:
+            raise NotImplementedError(
+                "perp の多資産 (クロスマージン) は S13-perp で実装されます"
+            )
+        if self.maintenance_margin >= 1.0 / self.max_leverage:
+            raise ValueError(
+                f"maintenance_margin ({self.maintenance_margin}) は 1/max_leverage"
+                f" ({1.0 / self.max_leverage:.4f}) 未満である必要があります"
+                f" (開始時点で清算対象になるレバレッジが存在してしまう)"
+            )
+        interval_sec = self.funding_interval_hours * 3600.0
+        if interval_sec <= 0 or (self.seconds_per_day % interval_sec) != 0.0:
+            raise ValueError(
+                f"funding_interval_hours ({self.funding_interval_hours}h) は 1 日"
+                f" ({self.seconds_per_day:.0f}s) を割り切る必要があります"
+            )
+        if self.weekly_period_hours <= 0:
+            raise ValueError("weekly_period_hours は正である必要があります")
+        if self.position_repr not in ("density", "agent"):
+            raise ValueError(
+                f"position_repr は density / agent のいずれかです: {self.position_repr!r}"
+            )
+        if not (0.0 < self.funding_cap < 1.0):
+            raise ValueError("funding_cap は (0, 1) の範囲である必要があります")
+        if self.arb_threshold_bps <= 0:
+            raise ValueError("arb_threshold_bps は正である必要があります")
+        if not (1.0 < self.leverage_pareto_alpha):
+            raise ValueError("leverage_pareto_alpha は 1 より大きい必要があります (平均の存在)")
+        if not (0.0 < self.partial_liquidation_frac <= 1.0):
+            raise ValueError("partial_liquidation_frac は (0, 1] の範囲である必要があります")
+
+    #: perp 専用パラメータ (equity では既定値必須 — 暗黙 no-op ガード)。
+    _PERP_PARAMS = (
+        "weekly_period_hours", "block_time_ms", "sequencer_rule",
+        "funding_interval_hours", "funding_cap", "arb_threshold_bps",
+        "position_repr", "maintenance_margin", "max_leverage",
+        "leverage_pareto_alpha", "partial_liquidation_frac",
+        "chaos_branching_target",
+    )
 
     def _check_stage(self) -> None:
         if self.stage not in STAGES:
@@ -935,7 +1098,7 @@ class Config:
                 )
             if self.rough_grid_seconds <= 0:
                 raise ValueError("rough_grid_seconds は正である必要があります")
-            if SESSION_SECONDS % self.rough_grid_seconds != 0:
+            if self.seconds_per_day % self.rough_grid_seconds != 0:
                 raise ValueError(
                     "rough_grid_seconds はセッション長を割り切る必要があります"
                     " (日境界でグリッドが揃わないと物理時間定義が壊れる)"
@@ -1264,7 +1427,7 @@ class Config:
             if self.fb_rv_short_halflife_min <= 0 or self.fb_rv_long_halflife_days <= 0:
                 raise ValueError("fb_rv_*_halflife は正である必要があります")
             if (self.fb_rv_short_halflife_min * 60.0
-                    >= self.fb_rv_long_halflife_days * SESSION_SECONDS):
+                    >= self.fb_rv_long_halflife_days * self.seconds_per_day):
                 raise ValueError(
                     "RV_short の半減期が RV_long 以上です (驚き信号 u が定義できない)"
                 )
@@ -1444,7 +1607,7 @@ class Config:
     @property
     def dt_years(self) -> float:
         """1 ステップの長さ (年)。年率ボラを 1 ステップに落とすときに使う。"""
-        return 1.0 / (TRADING_DAYS_PER_YEAR * self.steps_per_day)
+        return 1.0 / (self.ann_days * self.steps_per_day)
 
     @property
     def sigma_step(self) -> float:

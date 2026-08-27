@@ -487,8 +487,9 @@ class GBMPriceLayer:
         else:
             self._factor_beta = 0.0
             self._common = None
-        #: 秒 -> 年 の換算。年 = 252 立会日 x 1 セッションの秒数。
-        self._seconds_per_year = TRADING_DAYS_PER_YEAR * calendar.session_seconds()
+        #: 秒 -> 年 の換算。年 = ann_days 日 x 1 日の取引秒数 (equity 252 x 23400 /
+        #: perp 365 x 86400 — 時間軸の単一情報源は config、S0-perp §4)。
+        self._seconds_per_year = config.ann_days * calendar.session_seconds()
         #: 秒 -> 日 の換算。gamma_i と theta は「1 日あたり」の物理時間定義 (§7)。
         self._seconds_per_day = calendar.session_seconds()
         #: 直近の simulate() の診断。pipeline が StageResult.meta に回収する。
@@ -1111,7 +1112,7 @@ class GBMPriceLayer:
         # ★sigma_bar_diffusion (拡散のみ) から (1-share) 経由で逆算してはならない —
         # 日中の分散にはジャンプ分も含まれるため share がずれる。
         share = cfg.overnight_variance_share
-        var_on_target = cfg.sigma_bar**2 * share / TRADING_DAYS_PER_YEAR
+        var_on_target = cfg.sigma_bar**2 * share / cfg.ann_days
 
         # ジャンプは**分散シェアで指定**し、そこから Kou の eta スケールを逆算する。
         # サイズ倍率で指定すると E[J^2] が ON の分散予算と噛み合わず、実測シェアが
@@ -1143,12 +1144,12 @@ class GBMPriceLayer:
         if cfg.enable_seasonality and hasattr(self._calendar, "phi_sigma_of_u"):
             u_close = (steps_per_day - 1) / steps_per_day
             phi_close = float(self._calendar.phi_sigma_of_u(u_close))
-        c_on = math.sqrt(var_on_diffusion * TRADING_DAYS_PER_YEAR) / (
+        c_on = math.sqrt(var_on_diffusion * cfg.ann_days) / (
             self.sigma_bar_diffusion * phi_close
         )
 
         z = rng.standard_normal(n_gaps)
-        sigma_on = c_on * sigma_close / math.sqrt(TRADING_DAYS_PER_YEAR)
+        sigma_on = c_on * sigma_close / math.sqrt(cfg.ann_days)
         gaps = sigma_on * z
 
         n_on_jumps = 0

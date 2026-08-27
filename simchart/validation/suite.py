@@ -983,7 +983,7 @@ def _hawkes_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
                         z_arr = np.asarray(zg_r, dtype=np.float64)
                         zs_r = float(ev_meta_r.get("cvol_z_step_sec", 60.0))
                         us_r = float(ev_meta_r.get("fb_u_step_sec", 60.0))
-                        start_r = int(cfg.book_burn_in_days * 23400.0 / us_r)
+                        start_r = int(cfg.book_burn_in_days * cfg.seconds_per_day / us_r)
                         idx_r = np.minimum(
                             ((start_r + np.arange(nt.size)) * us_r / zs_r).astype(np.int64),
                             z_arr.size - 1,
@@ -1420,7 +1420,7 @@ def _chi_l1_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
         a1 = chi1_diag.get("a1")
         if a1 is None:
             return na("chi1 診断がありません")
-        tz = np.arange(np.asarray(zg).size, dtype=np.float64) * z_step / 23400.0
+        tz = np.arange(np.asarray(zg).size, dtype=np.float64) * z_step / cfg.seconds_per_day
         term = float(a1) * np.interp(tz, t1, x1)
         share = float(term.var() / np.log(np.asarray(zg)).var())
         return ok(
@@ -1437,7 +1437,7 @@ def _chi_l1_metrics(result: StageResult, cfg: Config) -> dict[str, Any]:
         if peak is None:
             return na("chi1 のピークが測れていません")
         kernel_max_sec = float(max(cfg.hawkes_tau_seconds))
-        ratio = float(peak) * 23400.0 / kernel_max_sec
+        ratio = float(peak) * cfg.seconds_per_day / kernel_max_sec
         return ok(num(ratio), ratio_over_kernel=num(ratio),
                   peak_days=num(float(peak)), kernel_max_sec=num(kernel_max_sec))
 

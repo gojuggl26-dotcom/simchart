@@ -27,13 +27,15 @@ __all__ = [
     "crisis_window_reproducibility",
 ]
 
-_SESSION = 23400.0
+def _session(cfg) -> float:
+    """1 日の取引秒数 (時間軸の単一情報源は config — S0-perp §4)。"""
+    return float(cfg.seconds_per_day)
 
 
 def _log_rv_series(obs, cfg, window_sec: float) -> np.ndarray:
     """窓ごとの log RV (脱季節化なし — on/off 比なので季節性は相殺する)。"""
     step = float(obs.step_seconds)
-    burn = int(cfg.book_burn_in_days * _SESSION / step)
+    burn = int(cfg.book_burn_in_days * _session(cfg) / step)
     r = np.diff(np.asarray(obs.log_price)[burn:])
     w = max(1, int(round(window_sec / step)))
     n_w = r.size // w
@@ -48,7 +50,7 @@ def loop_gain_estimate(result_on, result_off, cfg) -> dict[str, Any]:
     同一シード・同一 L2 経路で呼ぶこと (呼び出し側の責任)。
     """
     rows: dict[str, Any] = {}
-    for label, win in (("daily", _SESSION), ("30min", 1800.0)):
+    for label, win in (("daily", _session(cfg)), ("30min", 1800.0)):
         lon = _log_rv_series(result_on.observation, cfg, win)
         loff = _log_rv_series(result_off.observation, cfg, win)
         v_on = float(lon.var())
@@ -88,7 +90,7 @@ def crisis_detect(result, cfg) -> dict[str, Any]:
     obs = result.observation
     book = result.book
     step_snap = float(book.t[1] - book.t[0]) if book.t.size > 1 else 60.0
-    burn = int(cfg.book_burn_in_days * _SESSION / step_snap)
+    burn = int(cfg.book_burn_in_days * _session(cfg) / step_snap)
     bb = np.asarray(book.bid_px[:, 0], dtype=np.float64)
     ba = np.asarray(book.ask_px[:, 0], dtype=np.float64)
     valid = (bb >= 0) & (ba >= 0)
@@ -109,7 +111,7 @@ def crisis_detect(result, cfg) -> dict[str, Any]:
     r5 = np.zeros_like(lp_snap)
     r5[k5:] = lp_snap[k5:] - lp_snap[:-k5]
 
-    lam = float(0.5 ** (step_snap / (cfg.crisis_norm_halflife_days * _SESSION)))
+    lam = float(0.5 ** (step_snap / (cfg.crisis_norm_halflife_days * _session(cfg))))
     sig5 = np.sqrt(np.maximum(_ewma(r5**2, lam), 1e-18))
     sp_norm = _ewma(spread, lam)
     dp_norm = np.maximum(_ewma(depth, lam), 1e-12)
@@ -183,7 +185,7 @@ def crisis_anatomy(result, cfg, detection: dict[str, Any] | None = None) -> dict
     depth = np.asarray(book.bid_sz, dtype=np.float64).sum(axis=1) + np.asarray(
         book.ask_sz, dtype=np.float64
     ).sum(axis=1)
-    lam = float(0.5 ** (step_snap / (cfg.crisis_norm_halflife_days * _SESSION)))
+    lam = float(0.5 ** (step_snap / (cfg.crisis_norm_halflife_days * _session(cfg))))
     sp_norm = _ewma(spread, lam)
     dp_norm = np.maximum(_ewma(depth, lam), 1e-12)
 
@@ -200,7 +202,7 @@ def crisis_anatomy(result, cfg, detection: dict[str, Any] | None = None) -> dict
     d_snap = ps[idx_ps] - lp_snap
 
     k30 = max(1, int(round(1800.0 / step_snap)))
-    k1d = max(1, int(round(_SESSION / step_snap)))
+    k1d = max(1, int(round(_session(cfg) / step_snap)))
     rows = []
     for a, b in det["episodes"]:
         seg = lp_snap[a: b + 1]
@@ -268,11 +270,11 @@ def divergence_monitor(
     **log(RV_on/RV_off) の持続** に切り替わり、L2 起因が厳密に相殺される —
     残るのはループ自身の寄与だけ。ゲートはペア版で判定すること。
     """
-    lrv = _log_rv_series(result.observation, cfg, _SESSION)
+    lrv = _log_rv_series(result.observation, cfg, _session(cfg))
     if lrv.size < 30:
         return na(f"日数が足りません (n={lrv.size})")
     if result_off is not None:
-        loff = _log_rv_series(result_off.observation, cfg, _SESSION)
+        loff = _log_rv_series(result_off.observation, cfg, _session(cfg))
         n = min(lrv.size, loff.size)
         daily = lrv[:n] - loff[:n]
         # ★日次のペア差は whale の**出方の不一致**で ±3〜5 揺れる (パスが
@@ -319,7 +321,7 @@ def crisis_window_counts(
     counts = np.zeros(max(n_w, 1), dtype=np.float64)
     step_snap = det.get("step_sec") or 60.0
     for a, _b in det.get("episodes") or []:
-        day = a * step_snap / _SESSION
+        day = a * step_snap / _session(cfg)
         w = int((day - burn_d) / window_days)
         if 0 <= w < n_w:
             counts[w] += 1.0

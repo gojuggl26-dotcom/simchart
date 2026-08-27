@@ -28,7 +28,7 @@ from typing import Any
 
 import numpy as np
 
-from ..config import TRADING_DAYS_PER_YEAR, Config
+from ..config import Config
 from ..rng import RNGRegistry
 from .l2_price import (
     prepare_chaos_component,
@@ -157,7 +157,7 @@ def _common_jumps(
     ここで 1 回だけ計算する。
     """
     n_steps = int(t.shape[0]) - 1
-    dt_years = float(t[1] - t[0]) / (TRADING_DAYS_PER_YEAR * calendar.session_seconds())
+    dt_years = float(t[1] - t[0]) / (config.ann_days * calendar.session_seconds())
 
     # log ratio_c を組み立ててから exp (in-place、大配列 1 本)
     lam = np.zeros(n_steps, dtype=np.float64)

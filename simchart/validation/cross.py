@@ -262,12 +262,15 @@ def lead_lag_profile(
     )
 
 
-def crisis_day_mask(episodes: Sequence, step_sec: float, n_days: int) -> np.ndarray:
+def crisis_day_mask(
+    episodes: Sequence, step_sec: float, n_days: int,
+    seconds_per_day: float = 23400.0,
+) -> np.ndarray:
     """危機エピソード (スナップショット区間) を日マスクへ変換する (±1 日パッド)。"""
     mask = np.zeros(n_days, dtype=bool)
     for a, b in episodes or []:
-        d0 = int(a * step_sec / 23400.0)
-        d1 = int(b * step_sec / 23400.0)
+        d0 = int(a * step_sec / seconds_per_day)
+        d1 = int(b * step_sec / seconds_per_day)
         mask[max(d0 - 1, 0) : min(d1 + 2, n_days)] = True
     return mask
 
@@ -383,7 +386,7 @@ def theoretical_daily_corr(config) -> dict:
     var_rough = 0.0
     if config.enable_rough:
         theta_r = math.log(2.0) / config.rough_half_life_days
-        dt_days = config.rough_grid_seconds / 23400.0
+        dt_days = config.rough_grid_seconds / config.seconds_per_day
         eta = solve_eta_rough(config.rough_hurst, theta_r, config.vol_var_target_rough)
         var_rough = rough_discrete_stationary_variance(
             config.rough_hurst, theta_r, dt_days, eta

@@ -38,6 +38,7 @@ from ..rng import RNGRegistry
 __all__ = [
     "ConstantCalendar",
     "SeasonalCalendar",
+    "PerpCalendar",
     "build_calendar",
     "SESSION_SECONDS",
     "fourier_profile",
@@ -128,8 +129,11 @@ class ConstantCalendar:
 
     def __init__(self, config: Config) -> None:
         self._config = config
-        self._session_seconds = SESSION_SECONDS
-        self._step_seconds = SESSION_SECONDS / config.steps_per_day
+        # ★時間軸の単一情報源 (S0-perp §4): equity では config.seconds_per_day ==
+        # SESSION_SECONDS (23400.0) と同一 float なので経路は 1 bit も変わらない。
+        # perp_clob では 86400.0 (24/7)。
+        self._session_seconds = config.seconds_per_day
+        self._step_seconds = self._session_seconds / config.steps_per_day
 
     # ------------------------------------------------------------------
     def session_seconds(self) -> float:
@@ -278,8 +282,44 @@ class SeasonalCalendar(ConstantCalendar):
         }
 
 
+class PerpCalendar(ConstantCalendar):
+    """perp_clob: 24/7 カレンダー (S0-perp)。
+
+    1 日 = 86,400 秒の連続市場。セッション概念が無いので:
+
+    - オーバーナイト・ギャップは**存在しない** (config が併用を弾く)
+    - 「日」境界は UTC 0 時の集計上の区切りにすぎず、価格グリッドは
+      ConstantCalendar と同じ通し等間隔グリッド (境界点を共有)
+    - 季節性は S4-perp で日内 (UTC) + 週次 (168h) の 2 周期として実装する。
+      S0-perp では φ ≡ 1 (weekly_profile_flat ゲートが平坦を確認する)
+
+    実装は ConstantCalendar と同一で、セッション長だけが config 経由で
+    86,400 秒になる — これが §1.2 の「分岐はレイヤー差し替えで行い、共通
+    コアは分岐しない」の実体 (時間換算は全て session_seconds() を通る)。
+    """
+
+    name = "l0.perp_24_7"
+
+    def weekly_position(self, t: np.ndarray) -> np.ndarray:
+        """週内の相対位置 w ∈ [0, 1) (S4-perp の週次 φ が使う)。"""
+        period = self._config.weekly_period_hours * 3600.0
+        return np.mod(np.asarray(t, dtype=np.float64) / period, 1.0)
+
+    def diagnostics(self) -> dict[str, Any]:
+        return {
+            "seasonality": False,
+            "overnight": False,
+            "market_type": "perp_clob",
+            "seconds_per_day": self._session_seconds,
+            "weekly_period_hours": self._config.weekly_period_hours,
+        }
+
+
 def build_calendar(config: Config, rng: RNGRegistry) -> ConstantCalendar:
-    """設定に応じた L0 を組み立てる。"""
+    """設定に応じた L0 を組み立てる (market_type で実装を差し替える §1.2)。"""
+    if config.market_type == "perp_clob":
+        del rng  # S0-perp の L0 は乱数を使わない
+        return PerpCalendar(config)
     if config.enable_seasonality or config.enable_overnight:
         return SeasonalCalendar(config, rng)
     del rng  # S0〜S3 の L0 は乱数を使わない

@@ -343,11 +343,11 @@ def _nt_series(result, config: Config):
         from .chaos import chi_window
 
         t3_days, chi3_norm, _ = chi_window(config, float(config.n_days) + 1.0, "chi3")
-        t_days = np.arange(u.size, dtype=np.float64) * step / 23400.0
+        t_days = np.arange(u.size, dtype=np.float64) * step / config.seconds_per_day
         arg = arg + float(config.chi3_b) * np.interp(t_days, t3_days, chi3_norm)
     sig = 1.0 / (1.0 + np.exp(-arg))
     nt = float(config.fb_n_min) + (float(config.fb_n_max) - float(config.fb_n_min)) * sig
-    start = int(config.book_burn_in_days * 23400.0 / step)
+    start = int(config.book_burn_in_days * config.seconds_per_day / step)
     return nt[start:]
 
 
@@ -358,7 +358,7 @@ def _nt_window_means(result, config: Config, window_days: float):
     nt_b = _nt_series(result, config)
     if nt_b is None:
         return None
-    spw = int(round(window_days * 23400.0 / step))
+    spw = int(round(window_days * config.seconds_per_day / step))
     n_w = nt_b.size // spw
     return nt_b[: n_w * spw].reshape(n_w, spw).mean(axis=1)
 
@@ -372,7 +372,7 @@ def _u_time_mean(result, config: Config) -> float | None:
     if not u.size:
         return None
     step = float(meta.get("fb_u_step_sec", 60.0))
-    burn = int(config.book_burn_in_days * 23400.0 / step)
+    burn = int(config.book_burn_in_days * config.seconds_per_day / step)
     return float(u[burn:].mean()) if u.size > burn else None
 
 
@@ -400,14 +400,14 @@ def _feedback_solo_stats(result, config: Config) -> dict[str, float | None]:
 
         det_ = fbv.crisis_detect(result, config)
         obs = result.observation
-        spd = int(round(23400.0 / obs.step_seconds))
+        spd = int(round(obs.session_seconds / obs.step_seconds))
         r_d = np.diff(np.asarray(obs.log_price)[::spd])
         h_all = hill_estimator(r_d, 0.05, "both").get("alpha")
         mask = np.ones(r_d.size, dtype=bool)
         step_snap = det_.get("step_sec") or 60.0
         for a, b in det_.get("episodes") or []:
-            d0 = int(a * step_snap / 23400.0)
-            d1 = int(b * step_snap / 23400.0)
+            d0 = int(a * step_snap / config.seconds_per_day)
+            d1 = int(b * step_snap / config.seconds_per_day)
             mask[max(d0 - 1, 0): min(d1 + 2, r_d.size)] = False
         h_ex = hill_estimator(r_d[mask], 0.05, "both").get("alpha")
         return h_all, h_ex
@@ -422,7 +422,7 @@ def _feedback_solo_stats(result, config: Config) -> dict[str, float | None]:
 
         det_ = fbv.crisis_detect(result, config)
         obs = result.observation
-        spd = int(round(23400.0 / obs.step_seconds))
+        spd = int(round(obs.session_seconds / obs.step_seconds))
         r_obs = np.diff(np.asarray(obs.log_price)[::spd])
         # S12: χ₁ (4.7 日) は日次 GPH の推定帯の内側にあり obs 側の d を
         # ~−0.02 傾ける (設計変調 — R² 劣化と同機構)。既知の決定論係数
@@ -456,14 +456,14 @@ def _feedback_solo_stats(result, config: Config) -> dict[str, float | None]:
             f_det = (1.0 - n_design_) / (1.0 - nt_det)
             r_obs = r_obs / np.sqrt(f_det)
         ps = np.asarray(result.price.log_p_star)
-        spd_g = int(round(23400.0 / float(result.price.t[1] - result.price.t[0])))
+        spd_g = int(round(obs.session_seconds / float(result.price.t[1] - result.price.t[0])))
         r_lat = np.diff(ps[::spd_g])
         n = min(r_obs.size, r_lat.size)
         mask = np.ones(n, dtype=bool)
         step_snap = det_.get("step_sec") or 60.0
         for a, b in det_.get("episodes") or []:
-            d0 = int(a * step_snap / 23400.0)
-            d1 = int(b * step_snap / 23400.0)
+            d0 = int(a * step_snap / config.seconds_per_day)
+            d1 = int(b * step_snap / config.seconds_per_day)
             mask[max(d0 - 1, 0): min(d1 + 2, n)] = False
         bw = config.validation.daily_gph_bandwidth_exponent
         d_o = gph_estimator(np.abs(r_obs[:n][mask]), bw).get("d")
@@ -531,8 +531,8 @@ def _feedback_seed_stats(result, config: Config, result_off) -> dict[str, float 
     t_off = transmission(result_off, config)
     from .validation.feedback import _log_rv_series
 
-    lon = _log_rv_series(result.observation, config, 23400.0)
-    loff = _log_rv_series(result_off.observation, config, 23400.0)
+    lon = _log_rv_series(result.observation, config, config.seconds_per_day)
+    loff = _log_rv_series(result_off.observation, config, config.seconds_per_day)
     n_c = min(lon.size, loff.size)
     out.update({
         "fb_g_30min": g.get("g_30min"),

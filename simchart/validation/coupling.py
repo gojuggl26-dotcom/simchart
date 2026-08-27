@@ -26,14 +26,16 @@ __all__ = [
     "vol_activity_link",
 ]
 
-_SESSION = 23400.0
+def _session(cfg) -> float:
+    """1 日の取引秒数 (時間軸の単一情報源は config — S0-perp §4)。"""
+    return float(cfg.seconds_per_day)
 
 
 def gap_metrics(result, cfg) -> dict[str, Any]:
     """d = log p* − log p_obs の定常性: SD・1 分 AR(1)・半減期・平均。"""
     obs = result.observation
     step = float(obs.step_seconds)
-    burn = int(cfg.book_burn_in_days * _SESSION / step)
+    burn = int(cfg.book_burn_in_days * _session(cfg) / step)
     d = (result.price.log_p_star - obs.log_price)[burn:]
     if d.size < 10_000:
         return na(f"標本が足りません (n={d.size})")
@@ -52,11 +54,14 @@ def gap_metrics(result, cfg) -> dict[str, Any]:
     )
 
 
-def transmission(result, cfg, horizons_sec=(60.0, 600.0, 23400.0, 117000.0)) -> dict[str, Any]:
+def transmission(result, cfg, horizons_sec=None) -> dict[str, Any]:
     """伝達率 T(h)。短 h は板ノイズで >1、長 h は追随で → 1 (指示書 §5.2)。"""
     obs = result.observation
     step = float(obs.step_seconds)
-    burn = int(cfg.book_burn_in_days * _SESSION / step)
+    if horizons_sec is None:
+        day = _session(cfg)
+        horizons_sec = (60.0, 600.0, day, 5.0 * day)
+    burn = int(cfg.book_burn_in_days * _session(cfg) / step)
     lp = obs.log_price[burn:]
     ps = result.price.log_p_star[burn:]
     rows: dict[str, Any] = {}
@@ -72,7 +77,7 @@ def transmission(result, cfg, horizons_sec=(60.0, 600.0, 23400.0, 117000.0)) -> 
         rows[key] = num(float(do.var() / dp.var()))
     if not rows:
         return na("有効なホライズンがありません")
-    t_daily = rows.get(f"h{int(_SESSION)}s")
+    t_daily = rows.get(f"h{int(_session(cfg))}s")
     return ok(t_daily, T=rows, T_daily=t_daily)
 
 
@@ -85,7 +90,7 @@ def residual_sign_acf(result, cfg, fit_range=(2, 1000)) -> dict[str, Any]:
     s_arr = np.asarray(meta.get("agg_trade_side", np.empty(0)), dtype=np.float64)
     t = np.asarray(meta.get("agg_trade_t", np.empty(0)))
     mt = np.asarray(meta.get("agg_trade_meta", np.empty(0)), dtype=np.float64)
-    keep = t >= cfg.book_burn_in_days * _SESSION
+    keep = t >= cfg.book_burn_in_days * _session(cfg)
     s_k = s_arr[keep]
     if s_k.size < 20_000:
         return na(f"攻撃注文が足りません (n={s_k.size})")
@@ -113,7 +118,7 @@ def residual_sign_acf(result, cfg, fit_range=(2, 1000)) -> dict[str, Any]:
         0, result.price.log_p_star.size - 1,
     )
     sgrid = np.exp(result.price.log_vol) * np.sqrt(
-        float(cfg.kappa_tau_meta_sec) / (252.0 * _SESSION)
+        float(cfg.kappa_tau_meta_sec) / (cfg.ann_days * _session(cfg))
     )
     mu_meta = np.tanh(
         kappa
@@ -159,7 +164,7 @@ def vol_activity_link(result, cfg) -> dict[str, Any]:
 
     obs = result.observation
     step = float(obs.step_seconds)
-    spd = int(round(_SESSION / step))
+    spd = int(round(_session(cfg) / step))
     burn_d = int(cfg.book_burn_in_days)
     n_days = int(cfg.n_days)
 
@@ -172,7 +177,7 @@ def vol_activity_link(result, cfg) -> dict[str, Any]:
     t_ev = np.asarray(result.events.t)
     etype = np.asarray(result.events.event_type)
     size = np.asarray(result.events.size)
-    day_ev = (t_ev / _SESSION).astype(np.int64)
+    day_ev = (t_ev / _session(cfg)).astype(np.int64)
     is_tr = etype == int(EventType.TRADE)
     vol = np.bincount(day_ev[is_tr], weights=size[is_tr], minlength=n_days)[:n_days]
     n_ev = np.bincount(day_ev, minlength=n_days)[:n_days].astype(np.float64)
@@ -191,7 +196,7 @@ def vol_activity_link(result, cfg) -> dict[str, Any]:
         sp_daily = np.where(s_cnt > 0, s_sum / np.maximum(s_cnt, 1), np.nan)
         n_bins = 26
         u_bin = np.clip(
-            ((t_ev[ok_sp] % _SESSION) / _SESSION * n_bins).astype(np.int64), 0, n_bins - 1
+            ((t_ev[ok_sp] % _session(cfg)) / _session(cfg) * n_bins).astype(np.int64), 0, n_bins - 1
         )
         keep_b = d_sp >= burn_d
         sp_curve = (
@@ -227,8 +232,8 @@ def pstar_tracking(result, cfg) -> dict[str, Any]:
     """p* 追随: 日次レベル相関 (ゲート > 0.9) とリターン相関 (記録)。"""
     obs = result.observation
     step = float(obs.step_seconds)
-    burn = int(cfg.book_burn_in_days * _SESSION / step)
-    spd = int(round(_SESSION / step))
+    burn = int(cfg.book_burn_in_days * _session(cfg) / step)
+    spd = int(round(_session(cfg) / step))
     lp_d = obs.log_price[burn::spd]
     ps_d = result.price.log_p_star[burn::spd]
     if lp_d.size < 60:
