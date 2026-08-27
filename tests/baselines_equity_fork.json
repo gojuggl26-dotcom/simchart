@@ -1,0 +1,22 @@
+{
+ "s0_gbm_250d": {
+  "config_hash": "60108ace22932a5417b7cb2ab11a2b3dad13f1a328dbf78e317381491bbb68e4",
+  "digest": "c9498516710de95e236b7d7377e57e67653195a8a9a2cebeba8b4f3702939819"
+ },
+ "s3_l2_120d": {
+  "config_hash": "94fbac64fa95453b5b48a675a908c79306eac1565b582720c4dc43a8fd4439ab",
+  "digest": "b8f37d4b19fce649d57f6a95c7fb643f923d62c5667f676f5a46d2b3f7d445a5"
+ },
+ "s12_full_30d": {
+  "config_hash": "911bf8b0dad71e5f2e8a618c79f664e9f1cf2b445c1f77a3ea828c6d8ec27b8e",
+  "digest": "b3f7e4a7baae0eaa28532d439d9ba1d2a83c918b3edf1c33b7481c4efe6263da"
+ },
+ "s13_multi_20d": {
+  "config_hash": "7f9d7729d21b0a5013e0fa213e6465bb4f1c151143affd96a7ffa95ca7df3978",
+  "digests": {
+   "1": "b0a54ddf036715e504ffa4cfd3dc93adb6e319c1de2710b638135022c3dad4e8",
+   "2": "e7acd8c7b21b58fc2287978dba803e2e71597bcc4676b4012838fc56d38ffc34",
+   "0": "558a2fcb287b378404dad2cf50d7a37ef29ec8a9cfc5c034e5be1e2de59d311c"
+  }
+ }
+}
